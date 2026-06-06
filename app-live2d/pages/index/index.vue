@@ -95,6 +95,91 @@
       </view>
     </view>
 
+    <view
+      v-if="tripInfoDialogVisible"
+      class="trip-info-mask"
+      @click.stop
+      @touchmove.stop.prevent
+    >
+      <view class="trip-info-dialog" @click.stop>
+        <view class="trip-info-title">本次出行信息</view>
+        <view class="trip-info-subtitle">
+          {{ (pendingTripInfoArea && pendingTripInfoArea.areaName) || '当前景区' }}现场导览将根据这些信息生成讲解和路线建议
+        </view>
+
+        <view class="trip-info-field">
+          <view class="trip-info-label">出行人数</view>
+          <view class="trip-info-options">
+            <view
+              v-for="item in groupSizeOptions"
+              :key="item"
+              class="trip-info-chip"
+              :class="{ active: tripInfoForm.groupSize === item }"
+              @click="selectTripInfoField('groupSize', item)"
+            >
+              {{ item }}
+            </view>
+          </view>
+        </view>
+
+        <view class="trip-info-field">
+          <view class="trip-info-label">出行类型</view>
+          <view class="trip-info-options">
+            <view
+              v-for="item in travelTypeOptions"
+              :key="item"
+              class="trip-info-chip"
+              :class="{ active: tripInfoForm.travelType === item }"
+              @click="selectTripInfoField('travelType', item)"
+            >
+              {{ item }}
+            </view>
+          </view>
+        </view>
+
+        <view class="trip-info-field">
+          <view class="trip-info-label">游玩偏好</view>
+          <view class="trip-info-options">
+            <view
+              v-for="item in visitPreferenceOptions"
+              :key="item"
+              class="trip-info-chip"
+              :class="{ active: tripInfoForm.visitPreference === item }"
+              @click="selectTripInfoField('visitPreference', item)"
+            >
+              {{ item }}
+            </view>
+          </view>
+        </view>
+
+        <view class="trip-info-field">
+          <view class="trip-info-label">游玩时长</view>
+          <view class="trip-info-options">
+            <view
+              v-for="item in tripDurationOptions"
+              :key="item"
+              class="trip-info-chip"
+              :class="{ active: tripInfoForm.estimatedDuration === item }"
+              @click="selectTripInfoField('estimatedDuration', item)"
+            >
+              {{ item }}
+            </view>
+          </view>
+        </view>
+
+        <view class="trip-info-actions">
+          <view class="trip-info-cancel" @click="cancelTripInfoForm">稍后再说</view>
+          <view
+            class="trip-info-submit"
+            :class="{ disabled: tripInfoSubmitting }"
+            @click="submitTripInfoForm"
+          >
+            {{ tripInfoSubmitting ? '正在开启...' : '提交并开启导览' }}
+          </view>
+        </view>
+      </view>
+    </view>
+
     <view class="section-header">
       <view class="section-title">快捷服务</view>
       <view class="section-more">常用功能</view>
@@ -233,7 +318,11 @@ import {
   clearCurrentVisitInfo,
   checkPendingGuideReturn,
   goVisitReport,
-  isLoginRequiredVisitError
+  isLoginRequiredVisitError,
+  startVisitGuide,
+  TRIP_GROUP_SIZE_OPTIONS,
+  TRIP_TRAVEL_TYPE_OPTIONS,
+  TRIP_VISIT_PREFERENCE_OPTIONS
 } from '@/utils/visit'
 import {
   getCurrentOnsiteStatus,
@@ -251,6 +340,7 @@ const SETTINGS_KEY = 'appSettings'
 const CURRENT_DEMO_PARK_ID_KEY = 'currentDemoParkId'
 const CURRENT_DEMO_PARK_NAME_KEY = 'currentDemoParkName'
 const HERO_TITLE_DOUBLE_CLICK_INTERVAL = 420
+const TRIP_DURATION_OPTIONS = ['1小时', '2小时', '半天', '全天']
 
 const defaultAppSettings = {
   enableVoice: true,
@@ -333,12 +423,19 @@ const parkLoading = ref(false)
 const noticeLoading = ref(false)
 const showHomeNotice = ref(true)
 const openingNativeGuide = ref(false)
+const tripInfoDialogVisible = ref(false)
+const tripInfoSubmitting = ref(false)
 const currentVisitId = ref('')
 const onsiteGuideState = ref('NORMAL')
 const lastEndedVisitId = ref('')
 const lastEndedAreaName = ref('')
 const syncingVisitStatus = ref(false)
 const imageErrorMap = ref({})
+
+const groupSizeOptions = TRIP_GROUP_SIZE_OPTIONS
+const travelTypeOptions = TRIP_TRAVEL_TYPE_OPTIONS
+const visitPreferenceOptions = TRIP_VISIT_PREFERENCE_OPTIONS
+const tripDurationOptions = TRIP_DURATION_OPTIONS
 
 const onsiteStatus = ref({
   inside: false
@@ -368,6 +465,15 @@ const reportState = ref({
   reportVisitId: '',
   reportAreaName: '',
   finishedAt: ''
+})
+
+const pendingTripInfoArea = ref(null)
+const pendingTripInfoSource = ref('gps')
+const tripInfoForm = ref({
+  groupSize: groupSizeOptions[0],
+  travelType: travelTypeOptions[0],
+  visitPreference: visitPreferenceOptions[0],
+  estimatedDuration: tripDurationOptions[1]
 })
 
 const promptState = ref({
@@ -1020,23 +1126,185 @@ function goVisitStart(area = locationState.value.hitArea, source = locationState
     return
   }
 
-  const query = {
-    areaId: normalizedArea.areaId,
-    parkId: normalizedArea.parkId || normalizedArea.areaId,
-    areaCode: normalizedArea.areaCode || '',
-    parkCode: normalizedArea.parkCode || normalizedArea.areaCode || '',
-    areaName: normalizedArea.areaName,
-    parkName: normalizedArea.parkName || normalizedArea.areaName,
-    entrySource: source === 'demo' ? 'demo' : 'gps',
-    latitude: normalizedArea.latitude || '',
-    longitude: normalizedArea.longitude || '',
-    distanceText: normalizedArea.distanceText || '',
-    sourceFrom: 'index'
+  showTripInfoForm(normalizedArea, source)
+}
+
+function resetTripInfoForm() {
+  tripInfoForm.value = {
+    groupSize: groupSizeOptions[0],
+    travelType: travelTypeOptions[0],
+    visitPreference: visitPreferenceOptions[0],
+    estimatedDuration: tripDurationOptions[1]
+  }
+}
+
+function showTripInfoForm(area = locationState.value.hitArea, source = locationState.value.source) {
+  const normalizedArea = normalizeArea(area || {})
+
+  if (!normalizedArea.areaId) {
+    uni.showToast({
+      title: '景区ID异常，请重新进入现场导览',
+      icon: 'none'
+    })
+    return
   }
 
-  uni.navigateTo({
-    url: `/pages/visit/start?${buildPageQuery(query)}`
-  })
+  if (visitState.value.hasRunningVisit || getCurrentVisitId()) {
+    uni.showToast({
+      title: '当前已有进行中的现场导览',
+      icon: 'none'
+    })
+    return
+  }
+
+  pendingTripInfoArea.value = normalizedArea
+  pendingTripInfoSource.value = source === 'demo' ? 'demo' : 'gps'
+  resetTripInfoForm()
+  tripInfoDialogVisible.value = true
+}
+
+function cancelTripInfoForm() {
+  if (tripInfoSubmitting.value) {
+    return
+  }
+
+  tripInfoDialogVisible.value = false
+  pendingTripInfoArea.value = null
+}
+
+function selectTripInfoField(field, value) {
+  if (tripInfoSubmitting.value) {
+    return
+  }
+
+  tripInfoForm.value = {
+    ...tripInfoForm.value,
+    [field]: value
+  }
+}
+
+async function submitTripInfoForm() {
+  if (tripInfoSubmitting.value) {
+    return
+  }
+
+  const area = normalizeArea(pendingTripInfoArea.value || locationState.value.hitArea || {})
+
+  if (!area.areaId) {
+    uni.showToast({
+      title: '景区ID异常，请重新进入现场导览',
+      icon: 'none'
+    })
+    return
+  }
+
+  if (!requireLogin()) {
+    return
+  }
+
+  const userId = getCurrentUserId()
+
+  if (!isRealLoginUserId(userId)) {
+    uni.showToast({
+      title: '请使用登录账号开启导览',
+      icon: 'none'
+    })
+    return
+  }
+
+  const entrySource = pendingTripInfoSource.value === 'demo' ? 'demo' : 'gps'
+  const startSource = entrySource === 'gps' ? 'gps' : 'manual'
+  const finalAreaId = parseNumericAreaId(area.areaId, area.parkId, area.areaCode, area.parkCode)
+  const finalParkId = parseNumericAreaId(area.parkId, area.areaId, area.parkCode, area.areaCode) || finalAreaId
+  const finalAreaCode = area.areaCode || pickAreaCode(area.areaId, area.parkId, area.parkCode)
+  const finalParkCode = area.parkCode || finalAreaCode
+  const finalAreaName = area.areaName || area.parkName || '当前景区'
+  const finalParkName = area.parkName || area.areaName || finalAreaName
+
+  tripInfoSubmitting.value = true
+
+  try {
+    const form = tripInfoForm.value
+    const startResult = await startVisitGuide({
+      userId,
+      areaId: finalAreaId,
+      areaCode: finalAreaCode,
+      areaName: finalAreaName,
+      parkId: finalParkId,
+      parkCode: finalParkCode,
+      parkName: finalParkName,
+      entrySource,
+      startSource,
+      latitude: area.latitude || '',
+      longitude: area.longitude || '',
+      travelPeopleCount: form.groupSize,
+      groupSize: form.groupSize,
+      travelType: form.travelType,
+      travelPreference: form.visitPreference,
+      visitPreference: form.visitPreference,
+      estimatedDuration: form.estimatedDuration
+    })
+
+    const visitId = startResult.visitId
+
+    if (!visitId) {
+      throw new Error('visitId missing')
+    }
+
+    setRunningVisit({
+      visitId,
+      areaId: finalParkId,
+      areaName: finalParkName,
+      startedAt: Date.now()
+    })
+
+    const opened = await openNativeLive2DGuide({
+      entry: 'home-start-onsite-guide',
+      source: NATIVE_LIVE2D_SOURCE,
+      mode: 'onsite',
+      isOnsiteGuide: true,
+      startVisitGuide: false,
+      allowEndVisit: true,
+      visitId,
+      areaId: finalAreaId,
+      areaCode: finalAreaCode,
+      areaName: finalAreaName,
+      parkId: finalParkId,
+      parkCode: finalParkCode,
+      parkName: finalParkName,
+      scenicId: finalAreaId,
+      scenicName: finalAreaName,
+      contextType: 'park',
+      contextName: finalAreaName,
+      trigger: entrySource === 'demo' ? 'demo-onsite' : 'gps-onsite',
+      entrySource,
+      latitude: area.latitude || '',
+      longitude: area.longitude || '',
+      travelPeopleCount: form.groupSize,
+      groupSize: form.groupSize,
+      travelType: form.travelType,
+      travelPreference: form.visitPreference,
+      visitPreference: form.visitPreference,
+      estimatedDuration: form.estimatedDuration,
+      autoQuestion: '',
+      welcomeText: `欢迎来到${finalAreaName}，我是你的AI数字人导游。现场导览已开启，你可以主动向我提问或点击推荐路线。`
+    })
+
+    if (opened) {
+      tripInfoDialogVisible.value = false
+      pendingTripInfoArea.value = null
+    }
+  } catch (error) {
+    console.log('首页开启现场导览失败：', error)
+    uni.showToast({
+      title: error?.message || '开启导览失败，请稍后重试',
+      icon: 'none'
+    })
+  } finally {
+    setTimeout(() => {
+      tripInfoSubmitting.value = false
+    }, 800)
+  }
 }
 
 function handleHeroTitleClick() {
@@ -2005,6 +2273,111 @@ onShow(() => {
   font-size: 24rpx;
   text-align: center;
   box-sizing: border-box;
+}
+
+.trip-info-mask {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 99;
+  background: rgba(15, 23, 42, 0.45);
+  display: flex;
+  align-items: flex-end;
+  padding: 28rpx;
+  box-sizing: border-box;
+}
+
+.trip-info-dialog {
+  width: 100%;
+  max-height: 86vh;
+  overflow-y: auto;
+  background: #ffffff;
+  border-radius: 28rpx 28rpx 18rpx 18rpx;
+  padding: 30rpx 26rpx 26rpx;
+  box-sizing: border-box;
+}
+
+.trip-info-title {
+  font-size: 32rpx;
+  font-weight: 700;
+  color: #1f2937;
+  line-height: 1.45;
+}
+
+.trip-info-subtitle {
+  margin-top: 8rpx;
+  font-size: 23rpx;
+  color: #6b7280;
+  line-height: 1.6;
+}
+
+.trip-info-field {
+  margin-top: 24rpx;
+}
+
+.trip-info-label {
+  font-size: 25rpx;
+  font-weight: 600;
+  color: #374151;
+}
+
+.trip-info-options {
+  margin-top: 14rpx;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12rpx;
+}
+
+.trip-info-chip {
+  min-width: 132rpx;
+  height: 56rpx;
+  line-height: 56rpx;
+  padding: 0 18rpx;
+  border-radius: 999rpx;
+  background: #f3f4f6;
+  color: #4b5563;
+  font-size: 23rpx;
+  text-align: center;
+  box-sizing: border-box;
+}
+
+.trip-info-chip.active {
+  background: #18b368;
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.trip-info-actions {
+  margin-top: 30rpx;
+  display: flex;
+  gap: 16rpx;
+}
+
+.trip-info-cancel,
+.trip-info-submit {
+  flex: 1;
+  height: 66rpx;
+  line-height: 66rpx;
+  border-radius: 999rpx;
+  font-size: 24rpx;
+  text-align: center;
+  font-weight: 600;
+}
+
+.trip-info-cancel {
+  background: #f3f4f6;
+  color: #4b5563;
+}
+
+.trip-info-submit {
+  background: #18b368;
+  color: #ffffff;
+}
+
+.trip-info-submit.disabled {
+  opacity: 0.62;
 }
 
 .section-header {

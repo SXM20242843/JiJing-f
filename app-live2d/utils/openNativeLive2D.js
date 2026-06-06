@@ -12,10 +12,7 @@ import {
   normalizeDigitalHumanConfig
 } from './digitalHuman'
 import {
-  takePendingTripInfoSelection,
   markPendingGuideReturnCheck,
-  startVisitGuide,
-  shouldStartVisitGuide,
   switchActiveScenicVisit
 } from './visit'
 
@@ -51,7 +48,6 @@ export async function openNativeLive2DGuide(options = {}) {
 
     const storedContext = getStoredAiContext()
     const authPayload = getAuthPayload()
-    const storedVisitId = safeGetStorage('currentVisitId')
     const storedParkId = safeGetStorage('currentParkId')
     const storedParkName = safeGetStorage('currentParkName')
     const storedGroupSize = safeGetStorage('groupSize')
@@ -199,8 +195,23 @@ export async function openNativeLive2DGuide(options = {}) {
       ''
     )
     const isOnsiteGuide = resolveIsOnsiteGuideMode(options, mode, entry)
-    const requestedStartVisitGuide = resolveRequestedStartVisitGuide(options)
-    const shouldCreateVisit = isOnsiteGuide && requestedStartVisitGuide && !explicitVisitId
+    const requestedStartVisitGuide = false
+
+    if (isOnsiteGuide && !explicitVisitId) {
+      console.warn('[openNativeLive2DGuide] 现场导览缺少显式 visitId，已拦截打开：', {
+        entry,
+        mode,
+        parkId,
+        parkName,
+        scenicId,
+        scenicName
+      })
+      uni.showToast({
+        title: '请先提交出行信息开启导览',
+        icon: 'none'
+      })
+      return false
+    }
 
     const rawAllowEndVisit = getOption(
       options,
@@ -342,67 +353,7 @@ export async function openNativeLive2DGuide(options = {}) {
     // visitor_ 只能作为游客标识，不能作为后端登录用户 ID。
     const realUserId = userId || ''
 
-    const tripInfoSelection = takePendingTripInfoSelection()
-    const startSource = resolveVisitStartSource(options, mode, trigger)
-    let visitStartResult = null
-
-    if (tripInfoSelection && shouldCreateVisit) {
-      if (
-        shouldStartVisitGuide({
-          contextType,
-          parkId,
-          parkName
-        })
-      ) {
-        try {
-          visitStartResult = await startVisitGuide({
-            userId: userId || '',
-            parkId,
-            parkName,
-            groupSize: tripInfoSelection.groupSize,
-            travelType: tripInfoSelection.travelType,
-            visitPreference: tripInfoSelection.visitPreference,
-            startSource,
-            latitude,
-            longitude
-          })
-        } catch (error) {
-          console.error('创建 visitId 失败：', error)
-          uni.showToast({
-            title: '开启导览失败，请稍后重试',
-            icon: 'none'
-          })
-          return false
-        }
-      } else {
-        console.warn('当前现场导览入口缺少 parkId 或 parkName，跳过 /api/visit/start：', {
-          entry,
-          mode,
-          contextType,
-          parkId,
-          parkName,
-          scenicId,
-          scenicName,
-          startSource
-        })
-      }
-    } else if (tripInfoSelection && !shouldCreateVisit) {
-      console.log('非现场导览模式，跳过 /api/visit/start：', {
-        entry,
-        mode,
-        contextType,
-        parkId,
-        parkName
-      })
-    }
-
-    const visitId = pickFirstFilledValue(
-      explicitVisitId,
-      visitStartResult?.visitId,
-      isOnsiteGuide ? safeGetStorage('currentVisitId') : '',
-      isOnsiteGuide ? storedVisitId : '',
-      ''
-    )
+    const visitId = explicitVisitId
 
     if (isOnsiteGuide && visitId) {
       markPendingGuideReturnCheck({
@@ -416,7 +367,6 @@ export async function openNativeLive2DGuide(options = {}) {
       options.group_size,
       options.travelPeopleCount,
       options.travel_people_count,
-      tripInfoSelection?.groupSize,
       safeGetStorage('groupSize'),
       storedGroupSize,
       ''
@@ -425,7 +375,6 @@ export async function openNativeLive2DGuide(options = {}) {
     const finalTravelType = pickFirstFilledValue(
       options.travelType,
       options.travel_type,
-      tripInfoSelection?.travelType,
       safeGetStorage('travelType'),
       storedTravelType,
       ''
@@ -436,7 +385,6 @@ export async function openNativeLive2DGuide(options = {}) {
       options.visit_preference,
       options.travelPreference,
       options.travel_preference,
-      tripInfoSelection?.visitPreference,
       safeGetStorage('visitPreference'),
       storedVisitPreference,
       ''
@@ -810,7 +758,6 @@ export async function openNativeLive2DGuide(options = {}) {
   // #endif
 
   // #ifndef APP-PLUS
-  takePendingTripInfoSelection()
   uni.showToast({
     title: '浏览器不能打开原生 Activity，请运行到 Android 真机',
     icon: 'none'
@@ -894,20 +841,6 @@ function pickFirstFilledValue(...values) {
   return ''
 }
 
-function resolveVisitStartSource(options, mode, trigger) {
-  const explicit = getOption(options, 'startSource', getOption(options, 'start_source', ''))
-
-  if (explicit === 'gps' || explicit === 'manual') {
-    return explicit
-  }
-
-  if (mode === 'onsite' || trigger === 'gps') {
-    return 'gps'
-  }
-
-  return 'manual'
-}
-
 function resolveIsOnsiteGuideMode(options, mode, entry = '') {
   const explicit = getOption(
     options,
@@ -927,16 +860,6 @@ function resolveIsOnsiteGuideMode(options, mode, entry = '') {
   return mode === 'onsite' ||
     entryText.includes('onsite') ||
     entryText.includes('continue-onsite-guide')
-}
-
-function resolveRequestedStartVisitGuide(options) {
-  const explicit = getOption(
-    options,
-    'startVisitGuide',
-    getOption(options, 'start_visit_guide', undefined)
-  )
-
-  return explicit === true || explicit === 'true'
 }
 
 function resolveScenicVisitTarget({ options, contextType, scenicId, scenicName, spotId, spotName, parkName }) {
