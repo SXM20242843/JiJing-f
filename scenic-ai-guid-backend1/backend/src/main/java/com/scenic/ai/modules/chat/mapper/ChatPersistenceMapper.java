@@ -6,6 +6,7 @@ import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 
 @Mapper
 public interface ChatPersistenceMapper {
@@ -36,6 +37,18 @@ public interface ChatPersistenceMapper {
         LIMIT 1
     """)
     Long selectSpotIdById(@Param("spotId") Long spotId);
+
+    @Select("""
+        SELECT COUNT(1)
+        FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = #{tableName}
+          AND COLUMN_NAME = #{columnName}
+    """)
+    Integer countTableColumn(
+            @Param("tableName") String tableName,
+            @Param("columnName") String columnName
+    );
 
     @Insert("""
         INSERT INTO chat_session (
@@ -128,4 +141,31 @@ public interface ChatPersistenceMapper {
         )
     """)
     int insertChatMessage(@Param("message") ChatMessage message);
+
+    @Update("""
+        UPDATE chat_session
+        SET visit_id = #{visitId},
+            updated_at = NOW()
+        WHERE session_id = #{sessionId}
+          AND user_id = #{userId}
+          AND (visit_id IS NULL OR visit_id = 0)
+    """)
+    int bindChatSessionVisitId(
+            @Param("sessionId") String sessionId,
+            @Param("userId") String userId,
+            @Param("visitId") Long visitId
+    );
+
+    @Update("""
+        UPDATE chat_message
+        SET visit_id = #{visitId}
+        WHERE session_id = #{sessionId}
+          AND user_id = #{userId}
+          AND (visit_id IS NULL OR visit_id = 0)
+    """)
+    int bindChatMessageVisitId(
+            @Param("sessionId") String sessionId,
+            @Param("userId") String userId,
+            @Param("visitId") Long visitId
+    );
 }

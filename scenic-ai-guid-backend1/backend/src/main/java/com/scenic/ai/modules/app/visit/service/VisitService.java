@@ -72,6 +72,7 @@ public class VisitService {
         if (userId.isEmpty()) {
             throw new IllegalArgumentException("userId 不能为空");
         }
+        validateCoreUserId(userId);
 
         Long areaId = resolveAreaId(request);
         if (areaId == null) {
@@ -142,6 +143,7 @@ public class VisitService {
         if (session == null || session.areaId == null) {
             throw new IllegalArgumentException("未找到对应游玩会话");
         }
+        validateCoreUserId(session.userId);
         if (!isRunningStatus(session.visitStatus, session.endTime)) {
             throw new IllegalArgumentException("游玩会话已结束，不能进入景点");
         }
@@ -202,6 +204,7 @@ public class VisitService {
         if (session == null || session.areaId == null) {
             throw new IllegalArgumentException("未找到对应游玩会话");
         }
+        validateCoreUserId(session.userId);
 
         validateVisitOwner(request.getUserIdText(), session.userId);
 
@@ -262,6 +265,7 @@ public class VisitService {
         if (session == null) {
             throw new IllegalArgumentException("未找到对应游玩会话");
         }
+        validateCoreUserId(session.userId);
 
         validateVisitOwner(request.getUserIdText(), session.userId);
 
@@ -500,6 +504,16 @@ public class VisitService {
         }
     }
 
+    private void validateCoreUserId(String userId) {
+        String value = firstNotBlank(userId).toLowerCase();
+        if (value.isEmpty()
+                || "anonymous".equals(value)
+                || value.startsWith("visitor_")
+                || value.startsWith("android-live2d-")) {
+            throw new IllegalArgumentException("请先登录");
+        }
+    }
+
     private VisitStartResponse buildVisitStartResponse(
             TouristVisitSession session,
             String areaCode,
@@ -666,7 +680,7 @@ public class VisitService {
         extra.put("travelPreference", request.getTravelPreferenceText());
         extra.put("estimatedDuration", firstNotBlank(estimatedDuration));
         event.extra = extra;
-        behaviorEventService.addBehaviorEvent(event, session.userId);
+        addBehaviorEventSafely(event, session.userId, "visit_start", session.id);
     }
 
     private void recordSpotLeaveNoopEvent(
@@ -700,7 +714,7 @@ public class VisitService {
             extra.put("source", event.sourcePage);
             extra.put("noop", true);
             event.extra = extra;
-            behaviorEventService.addBehaviorEvent(event, session.userId);
+            addBehaviorEventSafely(event, session.userId, "spot_leave_noop", session.id);
         } catch (Exception e) {
             log.warn("记录无 active spot 的离开事件失败，不影响离开兜底。visitId={}, error={}",
                     session.id, e.getMessage());
@@ -745,7 +759,7 @@ public class VisitService {
                 request.getTriggerText(),
                 request.getDemoModeValue()
         );
-        behaviorEventService.addBehaviorEvent(event, record.userId);
+        addBehaviorEventSafely(event, record.userId, "spot_enter", record.visitId);
     }
 
     private void recordSpotLeaveEvent(
@@ -788,7 +802,7 @@ public class VisitService {
                 request.getTriggerText(),
                 request.getDemoModeValue()
         );
-        behaviorEventService.addBehaviorEvent(event, record.userId);
+        addBehaviorEventSafely(event, record.userId, "spot_leave", record.visitId);
     }
 
     private void recordVisitEndEvent(VisitEndRequest request, TouristVisitSession session) {
@@ -824,7 +838,21 @@ public class VisitService {
                 request.getTriggerText(),
                 request.getDemoModeValue()
         );
-        behaviorEventService.addBehaviorEvent(event, session.userId);
+        addBehaviorEventSafely(event, session.userId, "visit_end", session.id);
+    }
+
+    private void addBehaviorEventSafely(
+            BehaviorEventRequest event,
+            String userId,
+            String eventType,
+            Long visitId
+    ) {
+        try {
+            behaviorEventService.addBehaviorEvent(event, userId);
+        } catch (Exception e) {
+            log.warn("记录行为事件失败，不影响现场导览主流程。eventType={}, visitId={}, userId={}, error={}",
+                    eventType, visitId, userId, e.getMessage());
+        }
     }
 
     private Map<String, Object> buildVisitEventExtra(
@@ -984,6 +1012,7 @@ public class VisitService {
         if (userId == null || userId.isEmpty()) {
             throw new IllegalArgumentException("userId 不能为空");
         }
+        validateCoreUserId(userId);
         Long areaId = resolveAreaId(firstNotBlank(parkId), firstNotBlank(parkName));
         if (areaId == null) {
             throw new IllegalArgumentException("parkId 不能为空");

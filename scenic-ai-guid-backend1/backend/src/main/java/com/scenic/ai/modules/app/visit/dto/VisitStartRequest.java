@@ -16,8 +16,8 @@ public class VisitStartRequest {
 
     public String park_name;
     public String parkName;
-    public Long area_id;
-    public Long areaId;
+    public Object area_id;
+    public Object areaId;
     public String area_name;
     public String areaName;
 
@@ -57,8 +57,8 @@ public class VisitStartRequest {
         if (areaCode != null && !areaCode.trim().isEmpty()) return areaCode.trim();
         if (park_code != null && !park_code.trim().isEmpty()) return park_code.trim();
         if (parkCode != null && !parkCode.trim().isEmpty()) return parkCode.trim();
-        if (area_id != null) return String.valueOf(area_id);
-        if (areaId != null) return String.valueOf(areaId);
+        if (area_id != null) return String.valueOf(area_id).trim();
+        if (areaId != null) return String.valueOf(areaId).trim();
         return "";
     }
 
@@ -73,7 +73,7 @@ public class VisitStartRequest {
     }
 
     public Long getAreaIdValue() {
-        return area_id != null ? area_id : areaId;
+        return parseLongOrNull(area_id != null ? area_id : areaId);
     }
 
     public String getParkNameText() {
@@ -130,5 +130,23 @@ public class VisitStartRequest {
         if (estimated_duration != null && !estimated_duration.trim().isEmpty()) return estimated_duration.trim();
         if (estimatedDuration != null && !estimatedDuration.trim().isEmpty()) return estimatedDuration.trim();
         return "";
+    }
+
+    private Long parseLongOrNull(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        String text = String.valueOf(value).trim();
+        if (text.isEmpty()) {
+            return null;
+        }
+        try {
+            return Long.parseLong(text);
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 }

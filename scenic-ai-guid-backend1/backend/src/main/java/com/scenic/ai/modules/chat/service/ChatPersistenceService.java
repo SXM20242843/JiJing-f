@@ -50,6 +50,7 @@ public class ChatPersistenceService {
             }
 
             Long areaId = resolveAreaId(request.getAreaId(), request.getEffectiveParkId());
+            Long visitId = parseLongOrNull(request.getVisitId());
             Long sceneId = resolveSceneId(request.getEffectiveCurrentSpotId());
             String areaCode = nullIfBlank(request.getEffectiveParkId());
             String areaName = nullIfBlank(request.getEffectiveParkName());
@@ -103,6 +104,8 @@ public class ChatPersistenceService {
                         writeJson(response.getSources())
                 );
             }
+
+            bindVisitIdSafely(sessionId, userId, visitId);
         } catch (Exception e) {
             log.warn("保存文本聊天记录失败，不影响AI响应。userId={}", userId, e);
         }
@@ -313,6 +316,46 @@ public class ChatPersistenceService {
             return chatPersistenceMapper.selectSpotIdById(spotId);
         } catch (NumberFormatException ignored) {
             return chatPersistenceMapper.selectSpotIdBySceneCode(value);
+        }
+    }
+
+    private void bindVisitIdSafely(String sessionId, String userId, Long visitId) {
+        if (visitId == null || !hasText(sessionId) || !hasText(userId)) {
+            return;
+        }
+
+        try {
+            if (hasColumn("chat_session", "visit_id")) {
+                chatPersistenceMapper.bindChatSessionVisitId(sessionId, userId, visitId);
+            }
+            if (hasColumn("chat_message", "visit_id")) {
+                chatPersistenceMapper.bindChatMessageVisitId(sessionId, userId, visitId);
+            }
+        } catch (Exception e) {
+            log.warn("绑定聊天记录 visitId 失败，不影响AI响应。visitId={}, sessionId={}, userId={}, error={}",
+                    visitId, sessionId, userId, e.getMessage());
+        }
+    }
+
+    private boolean hasColumn(String tableName, String columnName) {
+        try {
+            Integer count = chatPersistenceMapper.countTableColumn(tableName, columnName);
+            return count != null && count > 0;
+        } catch (Exception e) {
+            log.warn("检查表字段失败，跳过聊天 visitId 兼容写入。table={}, column={}, error={}",
+                    tableName, columnName, e.getMessage());
+            return false;
+        }
+    }
+
+    private Long parseLongOrNull(String value) {
+        if (!hasText(value)) {
+            return null;
+        }
+        try {
+            return Long.parseLong(value.trim());
+        } catch (NumberFormatException e) {
+            return null;
         }
     }
 

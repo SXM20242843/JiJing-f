@@ -12,15 +12,15 @@ public class RouteRecommendRequest {
     public String session_id;
     public String sessionId;
 
-    public Long visit_id;
-    public Long visitId;
+    public Object visit_id;
+    public Object visitId;
 
     public String mode;
     public String guide_mode;
     public String guideMode;
 
-    public Long area_id;
-    public Long areaId;
+    public Object area_id;
+    public Object areaId;
 
     public String area_code;
     public String areaCode;
@@ -92,7 +92,7 @@ public class RouteRecommendRequest {
     }
 
     public Long getVisitIdValue() {
-        return visit_id != null ? visit_id : visitId;
+        return parseLongOrNull(visit_id != null ? visit_id : visitId);
     }
 
     public String getModeText() {
@@ -103,7 +103,7 @@ public class RouteRecommendRequest {
     }
 
     public Long getAreaIdValue() {
-        return area_id != null ? area_id : areaId;
+        return parseLongOrNull(area_id != null ? area_id : areaId);
     }
 
     public String getAreaCodeText() {
@@ -111,6 +111,8 @@ public class RouteRecommendRequest {
         if (areaCode != null && !areaCode.trim().isEmpty()) return areaCode.trim();
         if (park_code != null && !park_code.trim().isEmpty()) return park_code.trim();
         if (parkCode != null && !parkCode.trim().isEmpty()) return parkCode.trim();
+        String areaIdText = firstNotBlankObject(area_id, areaId);
+        if (!areaIdText.matches("\\d+")) return areaIdText;
         return "";
     }
 
@@ -241,5 +243,38 @@ public class RouteRecommendRequest {
         } catch (NumberFormatException e) {
             return null;
         }
+    }
+
+    private Long parseLongOrNull(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        String text = String.valueOf(value).trim();
+        if (text.isEmpty()) {
+            return null;
+        }
+        try {
+            return Long.parseLong(text);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private String firstNotBlankObject(Object... values) {
+        if (values == null) {
+            return "";
+        }
+        for (Object value : values) {
+            if (value != null) {
+                String text = String.valueOf(value).trim();
+                if (!text.isEmpty()) {
+                    return text;
+                }
+            }
+        }
+        return "";
     }
 }

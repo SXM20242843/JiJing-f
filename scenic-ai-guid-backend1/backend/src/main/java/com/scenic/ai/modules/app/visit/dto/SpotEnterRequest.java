@@ -4,8 +4,8 @@ import java.math.BigDecimal;
 
 public class SpotEnterRequest {
 
-    public Long visit_id;
-    public Long visitId;
+    public Object visit_id;
+    public Object visitId;
 
     public String user_id;
     public String userId;
@@ -15,8 +15,8 @@ public class SpotEnterRequest {
 
     public String park_id;
     public String parkId;
-    public Long area_id;
-    public Long areaId;
+    public Object area_id;
+    public Object areaId;
 
     public String park_name;
     public String parkName;
@@ -44,7 +44,7 @@ public class SpotEnterRequest {
     public BigDecimal longitude;
 
     public Long getVisitIdValue() {
-        return visit_id != null ? visit_id : visitId;
+        return parseLongOrNull(visit_id != null ? visit_id : visitId);
     }
 
     public String getUserIdText() {
@@ -66,7 +66,7 @@ public class SpotEnterRequest {
     }
 
     public Long getAreaIdValue() {
-        return area_id != null ? area_id : areaId;
+        return parseLongOrNull(area_id != null ? area_id : areaId);
     }
 
     public String getParkNameText() {
@@ -132,5 +132,23 @@ public class SpotEnterRequest {
 
     public Boolean getDemoModeValue() {
         return demo_mode != null ? demo_mode : demoMode;
+    }
+
+    private Long parseLongOrNull(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        String text = String.valueOf(value).trim();
+        if (text.isEmpty()) {
+            return null;
+        }
+        try {
+            return Long.parseLong(text);
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 }

@@ -17,17 +17,17 @@ public class BehaviorEventRequest {
     public String session_id;
     public String sessionId;
 
-    public Long visit_id;
-    public Long visitId;
+    public Object visit_id;
+    public Object visitId;
 
-    public Long area_id;
-    public Long areaId;
+    public Object area_id;
+    public Object areaId;
 
-    public Long spot_id;
-    public Long spotId;
+    public Object spot_id;
+    public Object spotId;
 
-    public Long facility_id;
-    public Long facilityId;
+    public Object facility_id;
+    public Object facilityId;
 
     public String area_code;
     public String areaCode;
@@ -124,30 +124,34 @@ public class BehaviorEventRequest {
     }
 
     public Long getVisitIdValue() {
-        return visit_id != null ? visit_id : visitId;
+        return parseLongOrNull(visit_id != null ? visit_id : visitId);
     }
 
     public Long getAreaIdValue() {
-        return area_id != null ? area_id : areaId;
+        return parseLongOrNull(area_id != null ? area_id : areaId);
     }
 
     public Long getSpotIdValue() {
-        return spot_id != null ? spot_id : spotId;
+        return parseLongOrNull(spot_id != null ? spot_id : spotId);
     }
 
     public Long getFacilityIdValue() {
-        return facility_id != null ? facility_id : facilityId;
+        return parseLongOrNull(facility_id != null ? facility_id : facilityId);
     }
 
     public String getAreaCodeText() {
         if (area_code != null && !area_code.trim().isEmpty()) return area_code.trim();
         if (areaCode != null && !areaCode.trim().isEmpty()) return areaCode.trim();
+        String areaIdText = firstNotBlankObject(area_id, areaId);
+        if (!areaIdText.matches("\\d+")) return areaIdText;
         return "";
     }
 
     public String getSceneCodeText() {
         if (scene_code != null && !scene_code.trim().isEmpty()) return scene_code.trim();
         if (sceneCode != null && !sceneCode.trim().isEmpty()) return sceneCode.trim();
+        String spotIdText = firstNotBlankObject(spot_id, spotId);
+        if (!spotIdText.matches("\\d+")) return spotIdText;
         return "";
     }
 
@@ -264,5 +268,38 @@ public class BehaviorEventRequest {
 
     public Boolean getDemoModeValue() {
         return demo_mode != null ? demo_mode : demoMode;
+    }
+
+    private Long parseLongOrNull(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        String text = String.valueOf(value).trim();
+        if (text.isEmpty()) {
+            return null;
+        }
+        try {
+            return Long.parseLong(text);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private String firstNotBlankObject(Object... values) {
+        if (values == null) {
+            return "";
+        }
+        for (Object value : values) {
+            if (value != null) {
+                String text = String.valueOf(value).trim();
+                if (!text.isEmpty()) {
+                    return text;
+                }
+            }
+        }
+        return "";
     }
 }
