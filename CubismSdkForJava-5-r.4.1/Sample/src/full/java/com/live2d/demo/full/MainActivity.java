@@ -3836,6 +3836,9 @@ public class MainActivity extends Activity {
             return;
         }
         trackRouteEvent("navigation_start", route, null);
+        if (!routeGuideActive) {
+            startSimulatedRouteGuide();
+        }
         enterNavigationMode(route);
     }
 
@@ -4503,20 +4506,63 @@ public class MainActivity extends Activity {
             showToast("路线导览正在处理，请稍候");
             return;
         }
+        if (!ensureOnsiteCoreWriteReady()) {
+            return;
+        }
         RouteNode next = getNextActiveRouteNode();
         if (next == null) {
             finishSimulatedRouteGuide();
             return;
         }
 
-        currentRouteNodeIndex++;
-        routeDemoNodeIndex = currentRouteNodeIndex;
-        currentDemoRouteNode = next;
-        applyDemoNodeToCurrentContext(next);
-        renderRouteCard(currentRoute);
+        final RouteInfo route = currentRoute;
+        final RouteNode previousNode = firstNotNull(getCurrentActiveRouteNode(), currentDemoRouteNode);
+        final RouteNode nextNode = next;
+        final int nextIndex = currentRouteNodeIndex + 1;
 
-        speakRouteGuideText("已到达" + getRouteNodeName(next) + "，下面为你讲解这里的特色。");
-        askGuideForCurrentNode(next);
+        routeDemoRequesting = true;
+        updateRouteDemoController(route);
+
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                boolean leaveOk = true;
+                if (previousNode != null && !isSameRouteNode(previousNode, nextNode)) {
+                    leaveOk = postDemoSpotLeave(previousNode);
+                    if (leaveOk) {
+                        writeRouteDemoBehaviorEvent("spot_leave", route, previousNode);
+                    }
+                }
+
+                final boolean previousLeaveOk = leaveOk;
+                final boolean enterOk = postDemoSpotEnter(nextNode);
+                if (enterOk) {
+                    writeRouteDemoBehaviorEvent("spot_enter", route, nextNode);
+                }
+
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        routeDemoRequesting = false;
+                        if (enterOk) {
+                            currentRouteNodeIndex = nextIndex;
+                            routeDemoNodeIndex = currentRouteNodeIndex;
+                            currentDemoRouteNode = nextNode;
+                            applyDemoNodeToCurrentContext(nextNode);
+                            renderRouteCard(route);
+                            speakRouteGuideText("已到达" + getRouteNodeName(nextNode) + "，下面为你讲解这里的特色。");
+                            if (!previousLeaveOk) {
+                                showToast("已到达新景点，但上一景点离开记录写入失败");
+                            }
+                            askGuideForCurrentNode(nextNode);
+                        } else {
+                            renderRouteCard(route);
+                            showToast("到达景点记录写入失败，请查看 Logcat");
+                        }
+                    }
+                });
+            }
+        }).start();
     }
 
     private void finishSimulatedRouteGuide() {
@@ -4599,9 +4645,7 @@ public class MainActivity extends Activity {
             showToast("请先获取路线推荐节点");
             return;
         }
-        if (guideContext.visitId.length() == 0) {
-            showToast("缺少 visitId，无法写入到达记录");
-            Log.e(TAG, "[RouteNodeDemo] 缺少 visitId，无法到达下一个景点");
+        if (!ensureOnsiteCoreWriteReady()) {
             return;
         }
 
@@ -4680,9 +4724,7 @@ public class MainActivity extends Activity {
             showToast("当前没有可离开的演示景点");
             return;
         }
-        if (guideContext.visitId.length() == 0) {
-            showToast("缺少 visitId，无法写入离开记录");
-            Log.e(TAG, "[RouteNodeDemo] 缺少 visitId，无法离开当前景点");
+        if (!ensureOnsiteCoreWriteReady()) {
             return;
         }
 
@@ -4730,9 +4772,7 @@ public class MainActivity extends Activity {
             showToast("请先获取路线推荐节点");
             return;
         }
-        if (guideContext.visitId.length() == 0) {
-            showToast("缺少 visitId，无法结束游览");
-            Log.e(TAG, "[RouteNodeDemo] 缺少 visitId，无法结束游览");
+        if (!ensureOnsiteCoreWriteReady()) {
             return;
         }
 
@@ -4804,6 +4844,11 @@ public class MainActivity extends Activity {
         spotName = firstNotEmpty(node.spotName, node.scenicName, spotName);
         scenicId = firstNotEmpty(node.scenicId, scenicId);
         scenicName = firstNotEmpty(node.scenicName, node.spotName, scenicName);
+        routeStartType = "current_spot";
+        routeStartCurrentSpotId = firstNotEmpty(node.spotId, node.scenicId, node.id, routeStartCurrentSpotId);
+        routeStartCurrentSpotName = firstNotEmpty(getRouteNodeName(node), routeStartCurrentSpotName, "当前景点");
+        routeStartLatitude = firstNotEmpty(node.latitude, routeStartLatitude);
+        routeStartLongitude = firstNotEmpty(node.longitude, routeStartLongitude);
         updateGuideContext();
 
         if (targetText != null) {
@@ -4814,6 +4859,10 @@ public class MainActivity extends Activity {
 
     private boolean postDemoSpotEnter(RouteNode node) {
         try {
+            if (!canWriteCoreVisitData("[RouteNodeDemo][enter]")) {
+                return false;
+            }
+
             String scenicCode = getRouteNodeScenicId(node);
             String nodeName = getRouteNodeName(node);
             if (scenicCode.length() == 0 && nodeName.length() == 0) {
@@ -4859,6 +4908,10 @@ public class MainActivity extends Activity {
 
     private boolean postDemoSpotLeave(RouteNode node) {
         try {
+            if (!canWriteCoreVisitData("[RouteNodeDemo][leave]")) {
+                return false;
+            }
+
             String scenicCode = getRouteNodeScenicId(node);
             String nodeName = getRouteNodeName(node);
             if (scenicCode.length() == 0 && nodeName.length() == 0) {
@@ -4869,6 +4922,8 @@ public class MainActivity extends Activity {
             JSONObject requestJson = new JSONObject();
             putLongOrString(requestJson, "visitId", guideContext.visitId);
             putLongOrString(requestJson, "visit_id", guideContext.visitId);
+            requestJson.put("userId", safeString(getEffectiveNativeUserId()));
+            requestJson.put("user_id", safeString(getEffectiveNativeUserId()));
             requestJson.put("scenicId", scenicCode);
             requestJson.put("scenic_id", scenicCode);
             requestJson.put("spotId", safeString(firstNotEmpty(node.spotId, node.id, node.scenicId)));
@@ -4896,9 +4951,15 @@ public class MainActivity extends Activity {
 
     private boolean postDemoVisitEnd(RouteNode node) {
         try {
+            if (!canWriteCoreVisitData("[RouteNodeDemo][end]")) {
+                return false;
+            }
+
             JSONObject requestJson = new JSONObject();
             putLongOrString(requestJson, "visitId", guideContext.visitId);
             putLongOrString(requestJson, "visit_id", guideContext.visitId);
+            requestJson.put("userId", safeString(getEffectiveNativeUserId()));
+            requestJson.put("user_id", safeString(getEffectiveNativeUserId()));
             requestJson.put("endSource", DEMO_LOCATION_SOURCE);
             requestJson.put("end_source", DEMO_LOCATION_SOURCE);
             requestJson.put("locationSource", DEMO_LOCATION_SOURCE);
@@ -5029,16 +5090,7 @@ public class MainActivity extends Activity {
             return;
         }
 
-        if (visitId == null || visitId.trim().length() == 0) {
-            guideEnded = true;
-            allowEndVisit = false;
-            isOnsiteGuide = false;
-            startVisitGuide = false;
-            mode = "ended";
-            stopNativeGuideAfterEnd();
-            updateGuideContext();
-            showToast("本次导览记录未创建");
-            finish();
+        if (!ensureOnsiteCoreWriteReady()) {
             return;
         }
 
@@ -5127,6 +5179,12 @@ public class MainActivity extends Activity {
 
     private VisitEndResult postNativeVisitEnd() {
         try {
+            if (!canWriteCoreVisitData("[NativeVisitEnd]")) {
+                VisitEndResult invalidResult = new VisitEndResult();
+                invalidResult.success = false;
+                return invalidResult;
+            }
+
             JSONObject requestJson = new JSONObject();
 
             putLongOrString(requestJson, "visitId", guideContext.visitId);
@@ -5662,6 +5720,9 @@ public class MainActivity extends Activity {
         }
         if (routeDemoRequesting || requesting) {
             showToast("数字人正在处理，请稍候");
+            return;
+        }
+        if (!ensureOnsiteCoreWriteReady()) {
             return;
         }
 
@@ -6259,8 +6320,8 @@ public class MainActivity extends Activity {
     }
 
     private void trackRouteEventOnce(String eventName, RouteInfo route, RouteNode node) {
-        if (!hasRouteEventVisitId()) {
-            Log.d(TAG, "[RouteCardEvent] visitId 为空，跳过一次性事件 event=" + eventName);
+        if (!hasRouteEventWriteContext()) {
+            Log.d(TAG, "[RouteCardEvent] 缺少 visitId/userId/token，跳过一次性事件 event=" + eventName);
             return;
         }
         String routeKey = getRoutePlanEventKey(route);
@@ -6274,8 +6335,8 @@ public class MainActivity extends Activity {
     }
 
     private void trackRouteEvent(String eventName, RouteInfo route, RouteNode node) {
-        if (!hasRouteEventVisitId()) {
-            Log.d(TAG, "[RouteCardEvent] visitId 为空，跳过事件上报 event=" + eventName);
+        if (!hasRouteEventWriteContext()) {
+            Log.d(TAG, "[RouteCardEvent] 缺少 visitId/userId/token，跳过事件上报 event=" + eventName);
             return;
         }
         String spotId = node == null ? "" : safeString(node.spotId);
@@ -6293,6 +6354,22 @@ public class MainActivity extends Activity {
 
     private boolean hasRouteEventVisitId() {
         return safeString(guideContext.visitId).trim().length() > 0 || safeString(visitId).trim().length() > 0;
+    }
+
+    private boolean hasRouteEventWriteContext() {
+        if (!hasRouteEventVisitId()) {
+            return false;
+        }
+        if (!hasAuthToken()) {
+            return false;
+        }
+        String realUserId = getEffectiveNativeUserId();
+        if (realUserId.length() == 0) {
+            return false;
+        }
+        guideContext.visitId = firstNotEmpty(guideContext.visitId, visitId);
+        guideContext.userId = realUserId;
+        return true;
     }
 
     private void trackRouteEvent(String eventName, JSONObject extra) {
@@ -7157,11 +7234,70 @@ public class MainActivity extends Activity {
         }
 
         if (isOnsiteMode() && safeString(visitId).trim().length() == 0) {
-            showGuideAuthError("本次导览记录未创建，请重新进入导览");
+            showGuideAuthError("缺少 visitId，请重新从首页开启导览");
             Log.e(TAG, "[Auth] 现场导览缺少 visitId");
             return false;
         }
 
+        return true;
+    }
+
+    private boolean ensureOnsiteCoreWriteReady() {
+        updateGuideContext();
+
+        if (safeString(visitId).trim().length() == 0
+                || safeString(guideContext.visitId).trim().length() == 0) {
+            showGuideAuthError("缺少 visitId，请重新从首页开启导览");
+            Log.e(TAG, "[Auth] 现场导览核心写入缺少 visitId");
+            return false;
+        }
+
+        if (!hasAuthToken()) {
+            showGuideAuthError("登录状态失效，请返回首页重新进入导览");
+            Log.e(TAG, "[Auth] token 为空，不能写入现场导览核心数据");
+            return false;
+        }
+
+        String realUserId = getEffectiveNativeUserId();
+        if (realUserId.length() == 0) {
+            showGuideAuthError("用户信息缺失，请返回首页重新进入导览");
+            Log.e(TAG, "[Auth] userId 无效，不能写入现场导览核心数据"
+                    + ", userId=" + userId
+                    + ", loginUserId=" + loginUserId
+                    + ", appUserId=" + appUserId
+                    + ", visitorId=" + visitorId);
+            return false;
+        }
+
+        return true;
+    }
+
+    private boolean canWriteCoreVisitData(String logPrefix) {
+        String prefix = firstNotEmpty(logPrefix, "[CoreVisitWrite]");
+        String finalVisitId = firstNotEmpty(guideContext.visitId, visitId);
+        String realUserId = getEffectiveNativeUserId();
+
+        if (safeString(finalVisitId).trim().length() == 0) {
+            Log.e(TAG, prefix + " 跳过写入：缺少 visitId");
+            return false;
+        }
+
+        if (!hasAuthToken()) {
+            Log.e(TAG, prefix + " 跳过写入：token 为空");
+            return false;
+        }
+
+        if (realUserId.length() == 0) {
+            Log.e(TAG, prefix + " 跳过写入：userId 无效"
+                    + ", userId=" + userId
+                    + ", loginUserId=" + loginUserId
+                    + ", appUserId=" + appUserId
+                    + ", visitorId=" + visitorId);
+            return false;
+        }
+
+        guideContext.visitId = safeString(finalVisitId);
+        guideContext.userId = realUserId;
         return true;
     }
 
