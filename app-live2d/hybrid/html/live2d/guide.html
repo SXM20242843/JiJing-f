@@ -1,0 +1,670 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+  />
+  <title>AI 导览</title>
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      min-height: 100%;
+      background: #f5f7fb;
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC",
+        "Microsoft YaHei", sans-serif;
+      color: #1f2937;
+      overflow-x: hidden;
+    }
+
+    body {
+      padding: 14px 14px 88px;
+    }
+
+    .page {
+      width: 100%;
+    }
+
+    .hero-card,
+    .quick-card,
+    .chat-card {
+      background: #ffffff;
+      border-radius: 18px;
+      box-shadow: 0 6px 14px rgba(15, 23, 42, 0.06);
+      margin-bottom: 14px;
+    }
+
+    .hero-card {
+      padding: 18px;
+    }
+
+    .hero-title {
+      font-size: 24px;
+      font-weight: 800;
+      color: #1f2937;
+      letter-spacing: 1px;
+    }
+
+    .hero-subtitle {
+      margin-top: 10px;
+      font-size: 14px;
+      line-height: 1.7;
+      color: #6b7280;
+    }
+
+    .hero-meta {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 14px;
+    }
+
+    .meta-pill {
+      padding: 7px 12px;
+      border-radius: 999px;
+      background: #eff6ff;
+      color: #2f80ed;
+      font-size: 13px;
+    }
+
+    .human-card {
+      position: relative;
+      overflow: hidden;
+      border-radius: 18px;
+      margin-bottom: 14px;
+      background:
+        radial-gradient(circle at 18% 20%, rgba(59, 130, 246, 0.25), transparent 34%),
+        radial-gradient(circle at 82% 28%, rgba(45, 212, 191, 0.18), transparent 30%),
+        linear-gradient(180deg, #26384a 0%, #101827 100%);
+    }
+
+    .scene-status {
+      position: absolute;
+      left: 14px;
+      top: 14px;
+      z-index: 20;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .scene-chip {
+      padding: 8px 12px;
+      border-radius: 999px;
+      font-size: 13px;
+      color: rgba(255, 255, 255, 0.96);
+      background: rgba(255, 255, 255, 0.14);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      backdrop-filter: blur(8px);
+    }
+
+    .scene-chip strong {
+      font-weight: 700;
+    }
+
+    .human-box {
+      position: relative;
+      height: 430px;
+      overflow: hidden;
+      border-radius: 18px;
+      background: #000000;
+    }
+
+    /*
+      关键：Live2D 不再 iframe 加载。
+      index-B3kMJ6LR.js 会创建 canvas，我们用 JS 把 canvas 移进这个容器。
+    */
+    #live2dMount {
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000000;
+    }
+
+    #live2dMount canvas {
+      position: absolute !important;
+      left: 0 !important;
+      top: 0 !important;
+      width: 100% !important;
+      height: 100% !important;
+      display: block !important;
+      background: transparent !important;
+      touch-action: none;
+    }
+
+    body > canvas {
+      position: fixed !important;
+      left: -99999px !important;
+      top: -99999px !important;
+      width: 1px !important;
+      height: 1px !important;
+      opacity: 0 !important;
+      pointer-events: none !important;
+    }
+
+    .human-tip {
+      position: absolute;
+      left: 50%;
+      bottom: 18px;
+      transform: translateX(-50%);
+      z-index: 30;
+      max-width: 86%;
+      text-align: center;
+      padding: 9px 16px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.92);
+      color: #1f2937;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .quick-card,
+    .chat-card {
+      padding: 16px;
+    }
+
+    .quick-head,
+    .chat-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+
+    .section-title {
+      font-size: 18px;
+      font-weight: 800;
+      color: #1f2937;
+    }
+
+    .quick-switch,
+    .chat-clear {
+      font-size: 13px;
+      color: #9ca3af;
+    }
+
+    .quick-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .quick-item {
+      padding: 9px 13px;
+      border-radius: 999px;
+      background: #eff6ff;
+      color: #2f80ed;
+      font-size: 14px;
+    }
+
+    .chat-scroll {
+      max-height: 320px;
+      overflow-y: auto;
+      padding-bottom: 8px;
+    }
+
+    .chat-item {
+      display: flex;
+      margin-bottom: 14px;
+      align-items: flex-start;
+    }
+
+    .chat-item.user {
+      justify-content: flex-end;
+    }
+
+    .avatar {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      font-weight: 800;
+      flex-shrink: 0;
+    }
+
+    .avatar.assistant {
+      background: linear-gradient(135deg, #18b368 0%, #4cd7a3 100%);
+      color: #ffffff;
+      margin-right: 8px;
+    }
+
+    .avatar.user {
+      background: #2f80ed;
+      color: #ffffff;
+      margin-left: 8px;
+      order: 2;
+    }
+
+    .bubble-wrap {
+      max-width: 76%;
+    }
+
+    .bubble-name {
+      font-size: 12px;
+      color: #9ca3af;
+      margin-bottom: 5px;
+    }
+
+    .chat-item.user .bubble-name {
+      text-align: right;
+    }
+
+    .bubble {
+      padding: 10px 13px;
+      border-radius: 14px;
+      font-size: 14px;
+      line-height: 1.7;
+      word-break: break-all;
+    }
+
+    .chat-item.assistant .bubble {
+      background: #f3f4f6;
+      color: #374151;
+      border-bottom-left-radius: 5px;
+    }
+
+    .chat-item.user .bubble {
+      background: #2f80ed;
+      color: #ffffff;
+      border-bottom-right-radius: 5px;
+    }
+
+    .bubble-time {
+      margin-top: 5px;
+      font-size: 11px;
+      color: #b0b7c3;
+    }
+
+    .chat-item.user .bubble-time {
+      text-align: right;
+    }
+
+    .input-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid #eef2f7;
+    }
+
+    .input {
+      flex: 1;
+      min-width: 0;
+      height: 42px;
+      border: none;
+      outline: none;
+      background: #f3f4f6;
+      border-radius: 12px;
+      padding: 0 12px;
+      font-size: 14px;
+      color: #1f2937;
+    }
+
+    .send-btn,
+    .clear-btn {
+      height: 42px;
+      border: none;
+      border-radius: 12px;
+      padding: 0 14px;
+      font-size: 14px;
+      flex-shrink: 0;
+    }
+
+    .send-btn {
+      background: #2f80ed;
+      color: #ffffff;
+    }
+
+    .clear-btn {
+      background: #eef2f7;
+      color: #6b7280;
+    }
+
+    .bottom-safe {
+      height: env(safe-area-inset-bottom);
+    }
+  </style>
+
+  <script>
+    /*
+      关键：直接告诉 Live2D 当前是嵌入模式。
+      不再通过 iframe 的 ?embed=1 传递。
+    */
+    window.__LIVE2D_EMBED__ = true
+    document.documentElement.classList.add('embed')
+  </script>
+</head>
+
+<body>
+  <div class="page">
+    <div class="hero-card">
+      <div class="hero-title">AI 数字人导览助手</div>
+      <div class="hero-subtitle">
+        支持景点讲解、语音问答、路线推荐与游客服务咨询
+      </div>
+
+      <div class="hero-meta">
+        <div class="meta-pill" id="messageCount">会话数：1</div>
+        <div class="meta-pill" id="currentScenicPill" style="display: none;"></div>
+      </div>
+    </div>
+
+    <div class="human-card">
+      <div class="scene-status">
+        <div class="scene-chip">
+          <strong>当前场景：</strong>
+          <span id="sceneText">通用导览</span>
+        </div>
+        <div class="scene-chip">
+          <strong>当前讲解：</strong>
+          <span id="scenicText">通用导览</span>
+        </div>
+      </div>
+
+      <div class="human-box">
+        <div id="live2dMount"></div>
+
+        <div class="human-tip" id="guideTip">
+          你好，我是你的专属景区导览助手
+        </div>
+      </div>
+    </div>
+
+    <div class="quick-card">
+      <div class="quick-head">
+        <div class="section-title">快捷问题</div>
+        <div class="quick-switch" onclick="resetQuickQuestions()">恢复默认</div>
+      </div>
+
+      <div class="quick-list" id="quickList"></div>
+    </div>
+
+    <div class="chat-card">
+      <div class="chat-header">
+        <div class="section-title">导览对话</div>
+        <div class="chat-clear" onclick="clearMessages()">清空对话</div>
+      </div>
+
+      <div class="chat-scroll" id="chatScroll"></div>
+
+      <div class="input-bar">
+        <input
+          id="questionInput"
+          class="input"
+          type="text"
+          placeholder="请输入问题，例如：祥符禅寺有什么亮点？"
+        />
+        <button class="clear-btn" onclick="clearInput()">清空</button>
+        <button class="send-btn" onclick="sendQuestion()">发送</button>
+      </div>
+    </div>
+
+    <div class="bottom-safe"></div>
+  </div>
+
+  <script>
+    const params = new URLSearchParams(window.location.search)
+    const API_BASE = params.get('api') || 'http://127.0.0.1:8080'
+    const CHAT_API = `${API_BASE.replace(/\/$/, '')}/api/guide/chat`
+
+    const defaultQuickQuestions = [
+      '今天有哪些推荐景点？',
+      '请推荐一条经典游览路线',
+      '附近哪里有餐饮服务？',
+      '景区今天开放到几点？',
+      '洗手间和游客中心在哪里？'
+    ]
+
+    let quickQuestions = [...defaultQuickQuestions]
+    let messages = [
+      {
+        role: 'assistant',
+        content: '你好，我是你的专属景区导览助手，请问需要景点讲解、路线推荐还是服务咨询？',
+        time: formatTime(new Date())
+      }
+    ]
+
+    let currentScenicName = ''
+
+    function formatTime(date) {
+      const h = `${date.getHours()}`.padStart(2, '0')
+      const m = `${date.getMinutes()}`.padStart(2, '0')
+      return `${h}:${m}`
+    }
+
+    function escapeHtml(text) {
+      return `${text || ''}`
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;')
+    }
+
+    function renderQuickQuestions() {
+      const quickList = document.getElementById('quickList')
+      quickList.innerHTML = ''
+
+      quickQuestions.forEach(question => {
+        const item = document.createElement('div')
+        item.className = 'quick-item'
+        item.innerText = question
+        item.onclick = () => {
+          useQuickQuestion(question)
+        }
+        quickList.appendChild(item)
+      })
+    }
+
+    function renderMessages() {
+      const chatScroll = document.getElementById('chatScroll')
+
+      chatScroll.innerHTML = messages.map(item => {
+        const isAssistant = item.role === 'assistant'
+        return `
+          <div class="chat-item ${item.role}">
+            <div class="avatar ${item.role}">${isAssistant ? 'AI' : '我'}</div>
+            <div class="bubble-wrap">
+              <div class="bubble-name">${isAssistant ? '数字人导览助手' : '游客'}</div>
+              <div class="bubble">${escapeHtml(item.content)}</div>
+              <div class="bubble-time">${item.time}</div>
+            </div>
+          </div>
+        `
+      }).join('')
+
+      document.getElementById('messageCount').innerText = `会话数：${messages.length}`
+      chatScroll.scrollTop = chatScroll.scrollHeight
+    }
+
+    function addMessage(role, content) {
+      messages.push({
+        role,
+        content,
+        time: formatTime(new Date())
+      })
+      renderMessages()
+    }
+
+    function clearInput() {
+      document.getElementById('questionInput').value = ''
+    }
+
+    function resetQuickQuestions() {
+      quickQuestions = [...defaultQuickQuestions]
+      renderQuickQuestions()
+    }
+
+    function clearMessages() {
+      messages = [
+        {
+          role: 'assistant',
+          content: currentScenicName
+            ? `对话已清空，当前仍处于“${currentScenicName}”讲解模式。`
+            : '对话已清空，你可以继续向我发起新的导览咨询。',
+          time: formatTime(new Date())
+        }
+      ]
+      renderMessages()
+    }
+
+    function useQuickQuestion(question) {
+      document.getElementById('questionInput').value = question
+      sendQuestion()
+    }
+
+    function buildPayload(question) {
+      return {
+        sessionId: 'visitor-demo-001',
+        scenicName: currentScenicName || '',
+        needVoice: false,
+        user_id: 'app_webview_guest',
+        question,
+        input_type: 'text',
+        enable_tts: false,
+        enable_context: true,
+        client_context: {
+          page: 'guide-html',
+          location_text: currentScenicName || ''
+        }
+      }
+    }
+
+    function buildMockReply(question) {
+      const replyMap = {
+        '今天有哪些推荐景点？': '今日推荐游览樱花观景台、古风文化长廊和民俗演艺广场，适合首次游览游客。',
+        '请推荐一条经典游览路线': '推荐从游客中心出发，先前往樱花观景台，再到古风文化长廊，最后前往民俗演艺广场观看特色活动。',
+        '附近哪里有餐饮服务？': '景区主服务区和文化长廊附近均设有餐饮服务点，可优先前往主服务区就餐。',
+        '景区今天开放到几点？': '当前演示数据中，景区建议游览时间可持续至傍晚，具体开放时间后续可接入后端实时配置。',
+        '洗手间和游客中心在哪里？': '游客中心位于景区入口附近，洗手间在主服务区、观景台附近和文化长廊入口均有设置。'
+      }
+
+      return replyMap[question] || `已收到你的问题：“${question}”。当前为演示版本，后续这里将接入真实大模型与景区知识库服务。`
+    }
+
+    async function sendQuestion() {
+      const input = document.getElementById('questionInput')
+      const question = input.value.trim()
+
+      if (!question) return
+
+      input.value = ''
+      addMessage('user', question)
+
+      document.getElementById('guideTip').innerText = '正在思考与组织回答…'
+
+      const loadingIndex = messages.length
+      addMessage('assistant', '正在为你整理讲解内容…')
+
+      try {
+        const response = await fetch(CHAT_API, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(buildPayload(question))
+        })
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`)
+        }
+
+        const res = await response.json()
+        const data = res && res.data ? res.data : res
+
+        const answer =
+          data.answer ||
+          data.content ||
+          '已收到你的问题，后续这里将展示后端返回的真实答案。'
+
+        messages[loadingIndex].content = answer
+
+        if (Array.isArray(data.suggestions) && data.suggestions.length) {
+          quickQuestions = data.suggestions.slice(0, 5)
+          renderQuickQuestions()
+        }
+      } catch (error) {
+        console.log('调用后端失败，使用本地演示回答：', error)
+        messages[loadingIndex].content = buildMockReply(question)
+      } finally {
+        document.getElementById('guideTip').innerText = '你好，我是你的专属景区导览助手'
+        renderMessages()
+      }
+    }
+
+    function mountLive2DCanvas() {
+      const mount = document.getElementById('live2dMount')
+      if (!mount) return
+
+      const canvases = Array.from(document.querySelectorAll('canvas'))
+
+      canvases.forEach(canvas => {
+        if (canvas.parentElement !== mount) {
+          mount.appendChild(canvas)
+        }
+
+        canvas.style.position = 'absolute'
+        canvas.style.left = '0'
+        canvas.style.top = '0'
+        canvas.style.width = '100%'
+        canvas.style.height = '100%'
+        canvas.style.display = 'block'
+        canvas.style.background = 'transparent'
+      })
+    }
+
+    function watchLive2DCanvas() {
+      const observer = new MutationObserver(() => {
+        mountLive2DCanvas()
+      })
+
+      observer.observe(document.body, {
+        childList: true,
+        subtree: true
+      })
+
+      setInterval(() => {
+        mountLive2DCanvas()
+      }, 500)
+    }
+
+    function init() {
+      document.title = 'AI 导览'
+      renderQuickQuestions()
+      renderMessages()
+      watchLive2DCanvas()
+
+      const input = document.getElementById('questionInput')
+      input.addEventListener('keydown', event => {
+        if (event.key === 'Enter') {
+          sendQuestion()
+        }
+      })
+    }
+
+    init()
+  </script>
+
+  <!-- Live2D Core -->
+  <script src="./live2dcubismcore.min.js"></script>
+
+  <!-- 这里必须和你 assets 里的真实文件名一致；你的 CMD 日志证明这个文件名是对的 -->
+  <script type="module" crossorigin src="./assets/index-B3kMJ6LR.js"></script>
+</body>
+</html>

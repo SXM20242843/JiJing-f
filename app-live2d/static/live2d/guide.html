@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>AI导览</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; width: 100%; min-height: 100%; background: #f5f7fb; color: #1f2937; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { padding: 12px 12px 16px; }
+    .page-title { height: 44px; display: flex; align-items: center; justify-content: center; font-size: 18px; font-weight: 600; color: #111827; }
+    .hero-card, .quick-card, .chat-card { background: #fff; border-radius: 14px; box-shadow: 0 6px 14px rgba(15, 23, 42, .06); margin-bottom: 12px; }
+    .hero-card { padding: 16px 14px; }
+    .hero-title { font-size: 22px; font-weight: 800; letter-spacing: .5px; }
+    .hero-subtitle { margin-top: 8px; color: #6b7280; font-size: 13px; line-height: 1.6; }
+    .hero-meta { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+    .pill { padding: 5px 10px; border-radius: 999px; background: #eff6ff; color: #2f80ed; font-size: 12px; }
+    .human-card { position: relative; overflow: hidden; height: 432px; border-radius: 15px; margin-bottom: 12px; background: #0b1220; }
+    .scene-bg { position: absolute; inset: 0; background: radial-gradient(circle at 18% 20%, rgba(59,130,246,.35), transparent 34%), radial-gradient(circle at 82% 28%, rgba(45,212,191,.24), transparent 30%), linear-gradient(180deg, rgba(15,23,42,.20), rgba(11,18,32,.36)); z-index: 1; pointer-events: none; }
+    .scene-grid { position: absolute; inset: 0; opacity: .14; background-image: linear-gradient(rgba(255,255,255,.12) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.12) 1px, transparent 1px); background-size: 24px 24px; z-index: 2; pointer-events: none; }
+    .scene-status { position: absolute; left: 12px; top: 10px; z-index: 5; display: flex; gap: 8px; flex-wrap: wrap; }
+    .scene-chip { padding: 6px 10px; border-radius: 999px; background: rgba(255,255,255,.14); border: 1px solid rgba(255,255,255,.18); color: rgba(255,255,255,.95); font-size: 13px; backdrop-filter: blur(8px); }
+    .scene-chip strong { font-weight: 700; }
+    .live2d-wrap { position: absolute; inset: 0; z-index: 3; overflow: hidden; }
+    .live2d-frame { width: 100%; height: 100%; border: 0; display: block; background: transparent; }
+    .human-tip { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 6; max-width: 86%; padding: 7px 14px; border-radius: 999px; background: rgba(255,255,255,.92); color: #1f2937; font-size: 13px; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .quick-card, .chat-card { padding: 14px; }
+    .head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+    .section-title { font-size: 17px; font-weight: 800; }
+    .link { color: #9ca3af; font-size: 13px; }
+    .quick-list { display: flex; flex-wrap: wrap; gap: 8px; }
+    .quick-item { border: 0; padding: 8px 11px; border-radius: 999px; background: #eff6ff; color: #2f80ed; font-size: 13px; }
+    .chat-scroll { max-height: 280px; overflow-y: auto; padding-right: 2px; }
+    .chat-item { display: flex; margin-bottom: 12px; }
+    .chat-item.user { justify-content: flex-end; }
+    .avatar { width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-shrink: 0; font-size: 12px; font-weight: 700; }
+    .assistant .avatar { background: linear-gradient(135deg, #18b368, #4cd7a3); color: #fff; margin-right: 7px; }
+    .user .avatar { order: 2; background: #2f80ed; color: #fff; margin-left: 7px; }
+    .bubble-wrap { max-width: 76%; }
+    .bubble-name { color: #9ca3af; font-size: 12px; margin-bottom: 4px; }
+    .user .bubble-name, .user .bubble-time { text-align: right; }
+    .bubble { padding: 9px 11px; border-radius: 11px; font-size: 14px; line-height: 1.65; word-break: break-all; }
+    .assistant .bubble { background: #f3f4f6; color: #374151; border-bottom-left-radius: 4px; }
+    .user .bubble { background: #2f80ed; color: #fff; border-bottom-right-radius: 4px; }
+    .bubble-time { color: #b0b7c3; font-size: 11px; margin-top: 4px; }
+    .input-bar { display: flex; gap: 7px; padding-top: 10px; border-top: 1px solid #eef2f7; margin-top: 8px; }
+    .input { flex: 1; min-width: 0; height: 39px; border: 0; outline: none; background: #f3f4f6; border-radius: 9px; padding: 0 11px; font-size: 14px; }
+    .btn { flex-shrink: 0; height: 39px; border: 0; border-radius: 9px; padding: 0 12px; font-size: 13px; }
+    .mic { background: #18b368; color: #fff; }
+    .send { background: #2f80ed; color: #fff; }
+    .clear { background: #eef2f7; color: #6b7280; }
+    @media (max-width: 380px) { .human-card { height: 400px; } .quick-item { font-size: 12px; } .input-bar { gap: 5px; } .btn { padding: 0 9px; } }
+  </style>
+</head>
+<body>
+  <div class="page-title">AI导览</div>
+
+  <section class="hero-card">
+    <div class="hero-title">AI 数字人导览助手</div>
+    <div class="hero-subtitle">支持景点讲解、语音问答、路线推荐与游客服务咨询</div>
+    <div class="hero-meta">
+      <span class="pill" id="sessionCount">会话数：1</span>
+      <span class="pill" id="scenicPill" style="display:none"></span>
+    </div>
+  </section>
+
+  <section class="human-card">
+    <div class="scene-bg"></div>
+    <div class="scene-grid"></div>
+    <div class="scene-status">
+      <span class="scene-chip"><strong>当前场景：</strong>通用导览</span>
+      <span class="scene-chip"><strong>当前讲解：</strong><span id="currentScenic">通用导览</span></span>
+    </div>
+    <div class="live2d-wrap">
+      <iframe class="live2d-frame" src="./index.html?embed=1"></iframe>
+    </div>
+    <div class="human-tip" id="humanTip">你好，我是你的专属景区导览助手</div>
+  </section>
+
+  <section class="quick-card">
+    <div class="head">
+      <div class="section-title">快捷问题</div>
+      <div class="link" id="resetQuick">恢复默认</div>
+    </div>
+    <div class="quick-list" id="quickList"></div>
+  </section>
+
+  <section class="chat-card">
+    <div class="head">
+      <div class="section-title">导览对话</div>
+      <div class="link" id="clearChat">清空对话</div>
+    </div>
+    <div class="chat-scroll" id="chatScroll"></div>
+    <div class="input-bar">
+      <button class="btn mic" id="voiceBtn">语音输入</button>
+      <input class="input" id="questionInput" placeholder="请输入问题，例如：祥符禅寺有什么亮点？" />
+      <button class="btn clear" id="clearInput">清空</button>
+      <button class="btn send" id="sendBtn">发送</button>
+    </div>
+  </section>
+
+  <script>
+    const params = new URLSearchParams(location.search);
+    const API_BASE = params.get('api') || 'http://127.0.0.1:8080';
+    const CHAT_API = `${API_BASE.replace(/\/$/, '')}/api/guide/chat`;
+
+    const defaultQuickQuestions = [
+      '今天有哪些推荐景点？',
+      '请推荐一条经典游览路线',
+      '附近哪里有餐饮服务？',
+      '景区今天开放到几点？',
+      '洗手间和游客中心在哪里？'
+    ];
+
+    let quickQuestions = [...defaultQuickQuestions];
+    let messages = [
+      { role: 'assistant', content: '你好，我是你的专属景区导览助手，请问需要景点讲解、路线推荐还是服务咨询？', time: formatTime(new Date()) }
+    ];
+    let sending = false;
+
+    const chatScroll = document.getElementById('chatScroll');
+    const input = document.getElementById('questionInput');
+    const sendBtn = document.getElementById('sendBtn');
+    const clearInput = document.getElementById('clearInput');
+    const clearChat = document.getElementById('clearChat');
+    const resetQuick = document.getElementById('resetQuick');
+    const quickList = document.getElementById('quickList');
+    const sessionCount = document.getElementById('sessionCount');
+    const humanTip = document.getElementById('humanTip');
+    const voiceBtn = document.getElementById('voiceBtn');
+
+    function formatTime(date) {
+      return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+    }
+
+    function renderMessages() {
+      chatScroll.innerHTML = messages.map(item => `
+        <div class="chat-item ${item.role}">
+          <div class="avatar">${item.role === 'assistant' ? 'AI' : '我'}</div>
+          <div class="bubble-wrap">
+            <div class="bubble-name">${item.role === 'assistant' ? '数字人导览助手' : '游客'}</div>
+            <div class="bubble">${escapeHtml(item.content)}</div>
+            <div class="bubble-time">${item.time}</div>
+          </div>
+        </div>
+      `).join('');
+      sessionCount.textContent = `会话数：${messages.length}`;
+      setTimeout(() => { chatScroll.scrollTop = chatScroll.scrollHeight; }, 0);
+    }
+
+    function renderQuick() {
+      quickList.innerHTML = quickQuestions.map(q => `<button class="quick-item">${escapeHtml(q)}</button>`).join('');
+      [...quickList.querySelectorAll('.quick-item')].forEach(btn => {
+        btn.addEventListener('click', () => {
+          input.value = btn.textContent;
+          sendQuestion();
+        });
+      });
+    }
+
+    function escapeHtml(text) {
+      return String(text || '').replace(/[&<>"]/g, s => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[s]));
+    }
+
+    function mockReply(question) {
+      const map = {
+        '今天有哪些推荐景点？': '今日推荐游览樱花观景台、古风文化长廊和民俗演艺广场，适合首次游览游客。',
+        '请推荐一条经典游览路线': '推荐从游客中心出发，先前往樱花观景台，再到古风文化长廊，最后前往民俗演艺广场观看特色活动。',
+        '附近哪里有餐饮服务？': '景区主服务区和文化长廊附近均设有餐饮服务点，可优先前往主服务区就餐。',
+        '景区今天开放到几点？': '当前演示数据中，景区建议游览时间可持续至傍晚，具体开放时间后续可接入后端实时配置。',
+        '洗手间和游客中心在哪里？': '游客中心位于景区入口附近，洗手间在主服务区、观景台附近和文化长廊入口均有设置。'
+      };
+      return map[question] || `已收到你的问题：“${question}”。当前为演示版本，后续这里将接入真实大模型与景区知识库服务。`;
+    }
+
+    async function sendQuestion() {
+      const text = input.value.trim();
+      if (!text || sending) return;
+
+      messages.push({ role: 'user', content: text, time: formatTime(new Date()) });
+      input.value = '';
+      messages.push({ role: 'assistant', content: '正在为你整理讲解内容…', time: formatTime(new Date()) });
+      sending = true;
+      sendBtn.textContent = '发送中';
+      humanTip.textContent = '正在思考与组织回答…';
+      renderMessages();
+
+      const assistantIndex = messages.length - 1;
+
+      try {
+        const payload = {
+          sessionId: 'visitor-demo-001',
+          scenicName: '',
+          needVoice: false,
+          user_id: getUserId(),
+          question: text,
+          input_type: 'text',
+          enable_tts: false,
+          enable_context: true,
+          client_context: { page: 'guide', location_text: '' }
+        };
+
+        const res = await fetch(CHAT_API, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+        const data = json.data || json || {};
+        const answer = data.answer || data.content || mockReply(text);
+        messages[assistantIndex].content = answer;
+
+        if (Array.isArray(data.suggestions) && data.suggestions.length) {
+          quickQuestions = data.suggestions.slice(0, 5);
+          renderQuick();
+        }
+      } catch (e) {
+        messages[assistantIndex].content = mockReply(text);
+      } finally {
+        sending = false;
+        sendBtn.textContent = '发送';
+        humanTip.textContent = '你好，我是你的专属景区导览助手';
+        renderMessages();
+      }
+    }
+
+    function getUserId() {
+      let id = localStorage.getItem('guideGuestUserId');
+      if (!id) {
+        id = `guest_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        localStorage.setItem('guideGuestUserId', id);
+      }
+      return id;
+    }
+
+    sendBtn.addEventListener('click', sendQuestion);
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') sendQuestion(); });
+    clearInput.addEventListener('click', () => { input.value = ''; });
+    clearChat.addEventListener('click', () => {
+      messages = [{ role: 'assistant', content: '对话已清空，你可以继续向我发起新的导览咨询。', time: formatTime(new Date()) }];
+      renderMessages();
+    });
+    resetQuick.addEventListener('click', () => { quickQuestions = [...defaultQuickQuestions]; renderQuick(); });
+    voiceBtn.addEventListener('click', () => { alert('语音输入在 App 原生页中接入，当前 HTML 演示页先支持文字问答。'); });
+
+    renderQuick();
+    renderMessages();
+  </script>
+</body>
+</html>

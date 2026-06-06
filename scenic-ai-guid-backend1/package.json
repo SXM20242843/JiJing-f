@@ -1,0 +1,16 @@
+{
+  "name": "scenic-ai-fullstack",
+  "version": "1.0.0",
+  "description": "这是一个可运行的基础版本，包含：",
+  "main": "mock-ai-server.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "cors": "^2.8.6",
+    "express": "^5.2.1"
+  }
+}

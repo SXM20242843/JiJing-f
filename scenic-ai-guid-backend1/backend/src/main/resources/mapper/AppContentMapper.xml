@@ -1,0 +1,275 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="com.scenic.ai.modules.app.mapper.AppContentMapper">
+
+    <!-- 1. 景区列表：普通列表，不按热度排序，类型按景点数量判断 -->
+    <select id="selectParks" resultType="com.scenic.ai.modules.app.dto.ParkDto">
+        SELECT
+            p.id,
+            p.name,
+            p.`desc`,
+            p.scenicCount,
+            '' AS heat,
+            CASE
+                WHEN p.scenicCount > 1 THEN '综合景区'
+                ELSE '单体景区'
+                END AS tag,
+            p.tagsRaw,
+            p.parkType,
+            CASE
+                WHEN p.scenicCount > 1 THEN 0
+                ELSE 1
+                END AS isSingleScenic,
+            p.imageUrl
+        FROM (
+                 SELECT
+                     a.area_code AS id,
+                     a.area_name AS name,
+                     a.intro AS `desc`,
+                     (
+                         SELECT COUNT(1)
+                         FROM scenic_spot s
+                         WHERE s.area_id = a.id
+                           AND s.status = 1
+                     ) AS scenicCount,
+                     a.tags AS tagsRaw,
+                     a.park_type AS parkType,
+                     a.image_url AS imageUrl,
+                     a.updated_at AS updatedAt
+                 FROM scenic_area a
+                 WHERE a.deleted = 0
+                   AND a.status = 1
+             ) p
+        ORDER BY p.updatedAt DESC
+    </select>
+
+    <!-- 1.1 热门景区列表：根据 tourist_behavior_record 统计热度，类型按景点数量判断 -->
+    <select id="selectHotParks" resultType="com.scenic.ai.modules.app.dto.ParkDto">
+        SELECT
+            p.id,
+            p.name,
+            p.`desc`,
+            p.scenicCount,
+            CASE
+                WHEN COALESCE(p.heatScore, 0) > 0 THEN CONCAT('热度 ', COALESCE(p.heatScore, 0))
+                ELSE ''
+                END AS heat,
+            CASE
+                WHEN COALESCE(p.heatScore, 0) > 0 THEN '热门'
+                WHEN p.scenicCount > 1 THEN '综合景区'
+                ELSE '单体景区'
+                END AS tag,
+            p.tagsRaw,
+            p.parkType,
+            CASE
+                WHEN p.scenicCount > 1 THEN 0
+                ELSE 1
+                END AS isSingleScenic,
+            p.imageUrl
+        FROM (
+                 SELECT
+                     a.id AS areaId,
+                     a.area_code AS id,
+                     a.area_name AS name,
+                     a.intro AS `desc`,
+                     (
+                         SELECT COUNT(1)
+                         FROM scenic_spot s
+                         WHERE s.area_id = a.id
+                           AND s.status = 1
+                     ) AS scenicCount,
+                     COALESCE(h.heatScore, 0) AS heatScore,
+                     a.tags AS tagsRaw,
+                     a.park_type AS parkType,
+                     a.image_url AS imageUrl,
+                     a.updated_at AS updatedAt
+                 FROM scenic_area a
+                          LEFT JOIN (
+                     SELECT
+                         matched_area_id,
+                         COUNT(1) AS heatScore
+                     FROM tourist_behavior_record
+                     WHERE matched_area_id IS NOT NULL
+                     GROUP BY matched_area_id
+                 ) h ON h.matched_area_id = a.id
+                 WHERE a.deleted = 0
+                   AND a.status = 1
+             ) p
+        ORDER BY COALESCE(p.heatScore, 0) DESC, p.updatedAt DESC
+            LIMIT #{limit}
+    </select>
+
+    <!-- 2. 景区详情：类型按景点数量判断 -->
+    <select id="selectParkDetail" resultType="com.scenic.ai.modules.app.dto.ParkDetailDto">
+        SELECT
+            p.id,
+            p.name,
+            p.`desc`,
+            p.scenicCount,
+            '' AS heat,
+            CASE
+                WHEN p.scenicCount > 1 THEN '综合景区'
+                ELSE '单体景区'
+                END AS tag,
+            p.tagsRaw,
+            p.parkType,
+            CASE
+                WHEN p.scenicCount > 1 THEN 0
+                ELSE 1
+                END AS isSingleScenic,
+            p.introduction,
+            p.openInfo,
+            p.location,
+            p.imageUrl
+        FROM (
+                 SELECT
+                     a.area_code AS id,
+                     a.area_name AS name,
+                     a.intro AS `desc`,
+                     (
+                         SELECT COUNT(1)
+                         FROM scenic_spot s
+                         WHERE s.area_id = a.id
+                           AND s.status = 1
+                     ) AS scenicCount,
+                     a.tags AS tagsRaw,
+                     a.park_type AS parkType,
+                     a.history_intro AS introduction,
+                     a.open_info AS openInfo,
+                     a.location AS location,
+                     a.image_url AS imageUrl
+                 FROM scenic_area a
+                 WHERE a.area_code = #{id}
+                   AND a.deleted = 0
+                   AND a.status = 1
+             ) p
+    </select>
+
+    <!-- 3. 景区下景点列表 -->
+    <select id="selectParkScenics" resultType="com.scenic.ai.modules.app.dto.ScenicDto">
+        SELECT
+            s.scene_code AS id,
+            a.area_code AS parkId,
+            s.name AS name,
+            s.intro AS `desc`,
+            s.open_time AS time,
+            '' AS duration,
+            '景点' AS badge,
+            s.tags AS tagsRaw,
+            s.image_url AS imageUrl,
+            '' AS heat
+        FROM scenic_spot s
+            INNER JOIN scenic_area a ON s.area_id = a.id
+        WHERE a.area_code = #{parkId}
+          AND a.deleted = 0
+          AND a.status = 1
+          AND s.status = 1
+        ORDER BY s.updated_at DESC
+    </select>
+
+    <!-- 3.1 景区下路线起点/候选景点列表：只返回带坐标的可用景点 -->
+    <select id="selectParkSpots" resultType="com.scenic.ai.modules.app.dto.ParkSpotDto">
+        SELECT
+            CAST(s.id AS CHAR) AS spotId,
+            s.scene_code AS scenicId,
+            s.name AS spotName,
+            s.name AS scenicName,
+            s.latitude,
+            s.longitude,
+            COALESCE(NULLIF(s.audio_text, ''), NULLIF(s.intro, ''), s.name) AS guideText,
+            s.intro,
+            COALESCE(s.recommended_duration_min, 15) AS recommendedStayMin,
+            COALESCE(s.sort_order, 0) AS sortOrder
+        FROM scenic_spot s
+            INNER JOIN scenic_area a ON s.area_id = a.id
+            LEFT JOIN (
+                SELECT spot_id, COUNT(1) AS heat_score
+                FROM tourist_behavior_event
+                WHERE spot_id IS NOT NULL
+                GROUP BY spot_id
+            ) h ON h.spot_id = s.id
+        WHERE a.deleted = 0
+          AND a.status = 1
+          AND s.status = 1
+          AND COALESCE(s.deleted, 0) = 0
+          AND s.latitude IS NOT NULL
+          AND s.longitude IS NOT NULL
+          AND (
+              (#{areaId} IS NOT NULL AND #{areaId} != ''
+                AND (a.area_code = #{areaId} OR CAST(a.id AS CHAR) = #{areaId}))
+              OR
+              ((#{areaId} IS NULL OR #{areaId} = '')
+                AND #{parkId} IS NOT NULL AND #{parkId} != ''
+                AND (a.area_code = #{parkId} OR CAST(a.id AS CHAR) = #{parkId}))
+          )
+        ORDER BY COALESCE(s.sort_order, 0) ASC, COALESCE(h.heat_score, 0) DESC, s.id ASC
+    </select>
+
+    <!-- 4. 景点详情 -->
+    <select id="selectScenicDetail" resultType="com.scenic.ai.modules.app.dto.ScenicDetailDto">
+        SELECT
+            s.scene_code AS id,
+            a.area_code AS parkId,
+            s.name AS name,
+            s.intro AS `desc`,
+            s.open_time AS time,
+            '' AS duration,
+            '景点' AS badge,
+            s.tags AS tagsRaw,
+            s.intro AS introduction,
+            s.highlight AS highlightsRaw,
+            s.remark AS tipsRaw,
+            s.image_url AS imageUrl,
+            '' AS heat
+        FROM scenic_spot s
+            INNER JOIN scenic_area a ON s.area_id = a.id
+        WHERE s.scene_code = #{id}
+          AND a.deleted = 0
+          AND a.status = 1
+          AND s.status = 1
+    </select>
+
+    <!-- 5. 公告列表 -->
+    <select id="selectNotices" resultType="com.scenic.ai.modules.app.dto.NoticeDto">
+        SELECT
+            n.id AS id,
+            n.title AS title,
+            n.description AS `desc`
+        FROM notice n
+        ORDER BY n.id DESC
+    </select>
+
+    <!-- 6. 景区数字人配置：正式读取管理员配置表 -->
+    <select id="selectParkDigitalHumanConfig"
+            parameterType="string"
+            resultType="com.scenic.ai.modules.app.dto.DigitalHumanConfigDto">
+        SELECT
+            c.avatar_id AS avatarId,
+            COALESCE(r.avatar_name, c.avatar_id) AS avatarName,
+            '' AS clothesMode,
+            c.voice_id AS voiceId,
+            c.voice_name AS voiceName,
+            c.welcome_text AS welcomeText,
+            r.gender AS gender,
+            r.clothing_name AS clothingName,
+            COALESCE(r.model_path, c.avatar_id) AS modelPath,
+            r.preview_image AS previewImage,
+            r.remark AS remark
+        FROM scenic_digital_human_config c
+                 LEFT JOIN digital_human_resource r
+                           ON c.avatar_id = r.avatar_id
+                               AND (r.is_enabled = 1 OR r.is_enabled IS NULL)
+                 LEFT JOIN scenic_area a
+                           ON a.id = c.park_id
+        WHERE c.is_enabled = 1
+          AND (
+                    CAST(c.park_id AS CHAR) = #{parkId}
+                OR a.area_code = #{parkId}
+            )
+            LIMIT 1
+    </select>
+
+</mapper>
