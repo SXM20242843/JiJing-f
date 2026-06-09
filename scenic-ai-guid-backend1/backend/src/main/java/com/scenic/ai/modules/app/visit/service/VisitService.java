@@ -313,8 +313,23 @@ public class VisitService {
             throw new IllegalArgumentException("未找到对应游玩会话");
         }
 
-        validateVisitOwner(userId, response.userId);
-        return normalizeVisitStatusResponse(response);
+        VisitStatusResponse normalized = normalizeVisitStatusResponse(response);
+        String requestUserId = firstNotBlank(userId);
+        String sessionUserId = firstNotBlank(normalized.userId);
+
+        if (!requestUserId.isEmpty() && !sessionUserId.isEmpty() && !requestUserId.equals(sessionUserId)) {
+            // 结束导览后，uni-app 会立刻按 visitId 查询状态来清理首页缓存和打开报告。
+            // 历史进行中 visit 可能存在数字主键 / tourist_user.user_id 混用；如果这条 visit 已完成，
+            // 允许返回 COMPLETED 状态，避免首页继续显示“现场导览进行中”。
+            if (isEndedStatus(normalized.status) || normalized.rawEndTime != null) {
+                log.warn("查询已结束导览状态时 userId 口径不一致，已允许返回完成状态。visitId={}, requestUserId={}, sessionUserId={}",
+                        visitId, requestUserId, sessionUserId);
+                return normalized;
+            }
+        }
+
+        validateVisitOwner(userId, normalized.userId);
+        return normalized;
     }
 
     public VisitStatusResponse getCurrentVisitStatus(String userId, String areaIdText) {

@@ -94,6 +94,15 @@ public class GuideChatRequest {
     @JsonAlias({"route", "is_route", "isRoute"})
     private Boolean route;
 
+    @JsonAlias({"route_intent", "routeIntent"})
+    private Boolean routeIntent;
+
+    @JsonAlias({"suppress_route", "suppressRoute"})
+    private Boolean suppressRoute;
+
+    @JsonAlias({"request_type", "requestType"})
+    private String requestType;
+
     @JsonAlias({"route_start_type", "routeStartType"})
     private String routeStartType;
 

@@ -314,8 +314,10 @@ import {
   getCurrentVisitId,
   queryVisitStatus,
   getLastEndedVisit,
+  getRecentNativeGuideEndedReturn,
   markVisitEndedLocal,
   clearCurrentVisitInfo,
+  clearNativeGuideEndedReturn,
   checkPendingGuideReturn,
   goVisitReport,
   isLoginRequiredVisitError,
@@ -326,7 +328,8 @@ import {
 } from '@/utils/visit'
 import {
   getCurrentOnsiteStatus,
-  checkOnsiteGuideByLocation
+  checkOnsiteGuideByLocation,
+  clearOnsiteGuideStorage
 } from '@/common/onsite-guide.js'
 import {
   getCurrentUserId,
@@ -889,6 +892,7 @@ async function syncVisitState() {
     const returnResult = await checkPendingGuideReturn()
 
     if (returnResult?.ended && returnResult.visitId) {
+      clearOnsiteGuideStorage()
       clearRunningVisitState()
       setReportState({
         visitId: returnResult.visitId,
@@ -929,6 +933,7 @@ async function syncVisitState() {
     }
 
     const activeVisit = uni.getStorageSync('activeVisit') || {}
+    const nativeEndedReturn = getRecentNativeGuideEndedReturn()
     const localVisitId =
       currentVisitId.value ||
       getCurrentVisitId() ||
@@ -936,6 +941,30 @@ async function syncVisitState() {
       activeVisit.visitId ||
       activeVisit.currentVisitId ||
       ''
+
+    if (nativeEndedReturn.recent) {
+      if (!localVisitId || localVisitId === nativeEndedReturn.visitId) {
+        markVisitEndedLocal({
+          visitId: nativeEndedReturn.visitId,
+          areaName: nativeEndedReturn.areaName || resolveGuideAreaName()
+        })
+        clearOnsiteGuideStorage()
+        clearCurrentVisitInfo()
+        clearRunningVisitState()
+        setReportState({
+          visitId: nativeEndedReturn.visitId,
+          areaName: nativeEndedReturn.areaName || resolveGuideAreaName()
+        })
+        promptState.value = {
+          ...promptState.value,
+          suppressAutoPromptUntilExit: true
+        }
+        refreshGuideStateFromLocal()
+        return
+      }
+
+      clearNativeGuideEndedReturn()
+    }
 
     if (localVisitId) {
       try {
@@ -955,6 +984,7 @@ async function syncVisitState() {
             visitId: status.visitId || localVisitId,
             areaName: status.parkName || activeVisit.parkName || activeVisit.currentParkName || resolveGuideAreaName()
           })
+          clearOnsiteGuideStorage()
           clearRunningVisitState()
           setReportState({
             visitId: status.visitId || localVisitId,
@@ -988,6 +1018,27 @@ async function syncVisitState() {
         }
 
         console.warn('首页查询导览状态失败，暂用本地状态：', error)
+        const recentNativeEnd = getRecentNativeGuideEndedReturn()
+        if (recentNativeEnd.recent && (!localVisitId || localVisitId === recentNativeEnd.visitId)) {
+          markVisitEndedLocal({
+            visitId: recentNativeEnd.visitId,
+            areaName: recentNativeEnd.areaName || resolveGuideAreaName()
+          })
+          clearOnsiteGuideStorage()
+          clearCurrentVisitInfo()
+          clearRunningVisitState()
+          setReportState({
+            visitId: recentNativeEnd.visitId,
+            areaName: recentNativeEnd.areaName || resolveGuideAreaName()
+          })
+          promptState.value = {
+            ...promptState.value,
+            suppressAutoPromptUntilExit: true
+          }
+          refreshGuideStateFromLocal()
+          return
+        }
+
         setRunningVisit({
           visitId: localVisitId,
           areaId: activeVisit.parkId || activeVisit.currentParkId || uni.getStorageSync('currentParkId') || '',
@@ -1261,6 +1312,7 @@ async function submitTripInfoForm() {
     const opened = await openNativeLive2DGuide({
       entry: 'home-start-onsite-guide',
       source: NATIVE_LIVE2D_SOURCE,
+      userId,
       mode: 'onsite',
       isOnsiteGuide: true,
       startVisitGuide: false,
@@ -1438,6 +1490,20 @@ function handleCheckLocationAgain() {
 }
 
 async function handleContinueCurrentVisit() {
+  if (!requireLogin()) {
+    return
+  }
+
+  const userId = getCurrentUserId()
+
+  if (!isRealLoginUserId(userId)) {
+    uni.showToast({
+      title: '登录用户信息异常，请重新登录后继续导览',
+      icon: 'none'
+    })
+    return
+  }
+
   const visitId = visitState.value.visitId || currentVisitId.value || uni.getStorageSync('currentVisitId') || getCurrentVisitId()
   const parkId =
     visitState.value.areaId ||
@@ -1462,6 +1528,7 @@ async function handleContinueCurrentVisit() {
 
   await openNativeLive2DGuide({
     entry: 'home-continue-onsite-guide',
+    userId,
     mode: 'onsite',
     trigger: 'continue-onsite',
     source: NATIVE_LIVE2D_SOURCE,
@@ -1795,6 +1862,7 @@ function isRealLoginUserId(userId) {
   if (text.startsWith('visitor_')) return false
   if (text.startsWith('android-live2d-')) return false
 
+  // 后端 AppUserService.register() 生成的登录业务 user_id 就是 tourist_xxx，不能拦截。
   return true
 }
 

@@ -98,10 +98,10 @@ public class MainActivity extends Activity {
     private static final String GUIDE_SOURCE = "native-live2d-guide";
 
     // 改成你当前小后端电脑的真实 IPv4 地址
-    private static final String GUIDE_CHAT_URL = "http://10.68.141.131:8080/api/guide/chat";
-    private static final String GUIDE_VOICE_CHAT_URL = "http://10.68.141.131:8080/api/guide/voice/chat";
+    private static final String GUIDE_CHAT_URL = "http://10.120.215.131:8080/api/guide/chat";
+    private static final String GUIDE_VOICE_CHAT_URL = "http://10.120.215.131:8080/api/guide/voice/chat";
     // 旧路线推荐接口保留常量但不再主动调用；路线问题统一走 Chat 接口。
-    private static final String GUIDE_ROUTE_RECOMMEND_URL = "http://10.68.141.131:8080/api/guide/route/recommend";
+    private static final String GUIDE_ROUTE_RECOMMEND_URL = "http://10.120.215.131:8080/api/guide/route/recommend";
     private static final String DEFAULT_BEHAVIOR_EVENT_PATH = "/api/app/behavior/event";
     private static final String DEFAULT_SPOT_ENTER_PATH = "/api/visit/spot/enter";
     private static final String DEFAULT_SPOT_LEAVE_PATH = "/api/visit/spot/leave";
@@ -496,7 +496,7 @@ public class MainActivity extends Activity {
         panel.addView(routeStartRow);
         updateRouteStartRow();
 
-        simulateLingshanButton = createMiniActionButton("模拟到达灵山大佛");
+        simulateLingshanButton = createMiniActionButton("模拟到达当前景点");
         LinearLayout.LayoutParams simulateParams = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 dp(32)
@@ -812,7 +812,7 @@ public class MainActivity extends Activity {
 
         routeDemoNextButton = createMiniActionButton("模拟到达下一站");
         routeDemoLeaveButton = createMiniActionButton("讲解当前景点");
-        routeDemoEndButton = createMiniActionButton("结束路线导览");
+        routeDemoEndButton = createMiniActionButton("结束本条路线");
 
         LinearLayout.LayoutParams demoNextParams = new LinearLayout.LayoutParams(0, dp(32), 1.35f);
         demoNextParams.rightMargin = dp(5);
@@ -1070,7 +1070,12 @@ public class MainActivity extends Activity {
     }
 
     private void askGuideInternal(final String rawQuestion, final boolean appendUserToChat) {
+        askGuideInternal(rawQuestion, appendUserToChat, false);
+    }
+
+    private void askGuideInternal(final String rawQuestion, final boolean appendUserToChat, final boolean suppressRoute) {
         final String question = rawQuestion == null ? "" : rawQuestion.trim();
+        final boolean allowRouteResponse = shouldAllowRouteResponse(question, suppressRoute);
 
         if (question.length() == 0) {
             showToast("请先输入你想咨询的问题");
@@ -1125,7 +1130,7 @@ public class MainActivity extends Activity {
                     connection.setRequestProperty("Accept", "application/json");
                     applyAuthorizationHeader(connection);
 
-                    JSONObject requestJson = buildRequestJson(question);
+                    JSONObject requestJson = buildRequestJson(question, suppressRoute);
 
                     OutputStream outputStream = connection.getOutputStream();
                     BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(outputStream, StandardCharsets.UTF_8));
@@ -1158,7 +1163,7 @@ public class MainActivity extends Activity {
 
                                 updateQuickButtons(guideResponse.suggestions);
                                 showGuideAnswer(guideResponse.answer);
-                                showRouteCardIfNeeded(guideResponse.route);
+                                handleGuideRouteResponse(guideResponse.route, allowRouteResponse, "text");
 
                                 if (guideResponse.conversationId != null && guideResponse.conversationId.trim().length() > 0) {
                                     conversationId = guideResponse.conversationId.trim();
@@ -1218,6 +1223,23 @@ public class MainActivity extends Activity {
         return GUIDE_CHAT_URL;
     }
 
+    private boolean shouldAllowRouteResponse(String question, boolean suppressRoute) {
+        return !suppressRoute && isRouteIntentQuestion(question);
+    }
+
+    private void handleGuideRouteResponse(RouteInfo route, boolean allowRouteResponse, String source) {
+        if (route == null) {
+            return;
+        }
+        if (!allowRouteResponse) {
+            Log.d(TAG, "忽略非路线意图返回的 route，不刷新当前路线卡片 source=" + source
+                    + ", routeName=" + safeString(route.routeName)
+                    + ", nodes=" + (route.nodes == null ? 0 : route.nodes.size()));
+            return;
+        }
+        showRouteCardIfNeeded(route);
+    }
+
     private boolean isRouteIntentQuestion(String question) {
         String text = question == null ? "" : question.trim();
         if (!isOnsiteMode() && ("route".equals(contextType) || "route_planning".equals(mode))) {
@@ -1227,8 +1249,10 @@ public class MainActivity extends Activity {
                 || text.contains("帮我规划路线")
                 || text.contains("规划路线")
                 || text.contains("路线规划")
+                || text.contains("游览路线")
                 || text.contains("游览顺序")
                 || text.contains("怎么走")
+                || text.contains("导航")
                 || text.contains("怎么逛")
                 || text.contains("如何逛")
                 || text.contains("推荐游览")
@@ -1237,12 +1261,16 @@ public class MainActivity extends Activity {
     }
 
     private JSONObject buildRequestJson(String question) throws Exception {
+        return buildRequestJson(question, false);
+    }
+
+    private JSONObject buildRequestJson(String question, boolean suppressRoute) throws Exception {
         JSONObject requestJson = new JSONObject();
 
         String realUserId = getEffectiveNativeUserId();
         String realSessionId = firstNotEmpty(sessionId, conversationId);
         String realConversationId = firstNotEmpty(conversationId, sessionId);
-        boolean routeIntent = isRouteIntentQuestion(question);
+        boolean routeIntent = shouldAllowRouteResponse(question, suppressRoute);
 
         requestJson.put("sessionId", safeString(realSessionId));
         requestJson.put("session_id", safeString(realSessionId));
@@ -1324,7 +1352,16 @@ public class MainActivity extends Activity {
         requestJson.put("distance", safeString(distance));
         requestJson.put("sourcePage", GUIDE_SOURCE);
         requestJson.put("source_page", GUIDE_SOURCE);
-        appendRouteStartParams(requestJson, routeIntent);
+        requestJson.put("routeIntent", routeIntent);
+        requestJson.put("route_intent", routeIntent);
+        if (!routeIntent) {
+            requestJson.put("route", false);
+            requestJson.put("suppressRoute", true);
+            requestJson.put("suppress_route", true);
+            requestJson.put("requestType", "spot_explain");
+            requestJson.put("request_type", "spot_explain");
+        }
+        appendRouteStartParams(requestJson, routeIntent, !routeIntent);
 
         // 路线推荐时只传 routeStart*；不把手机 GPS 当作景区内路线起点。
         if (!routeIntent) {
@@ -1349,6 +1386,10 @@ public class MainActivity extends Activity {
     }
 
     private void appendRouteStartParams(JSONObject requestJson, boolean routeIntent) throws Exception {
+        appendRouteStartParams(requestJson, routeIntent, !routeIntent);
+    }
+
+    private void appendRouteStartParams(JSONObject requestJson, boolean routeIntent, boolean suppressRoute) throws Exception {
         String startType = firstNotEmpty(routeStartType, "park_entrance");
         String startSpotId = "current_spot".equals(startType) ? routeStartCurrentSpotId : "";
         String startSpotName = "current_spot".equals(startType)
@@ -1393,6 +1434,13 @@ public class MainActivity extends Activity {
         clientContext.put("currentSpotName", safeString(startSpotName));
         clientContext.put("routeStartLatitude", safeString(routeStartLatitude));
         clientContext.put("routeStartLongitude", safeString(routeStartLongitude));
+        clientContext.put("routeIntent", routeIntent);
+        clientContext.put("suppressRoute", suppressRoute);
+        if (routeIntent) {
+            clientContext.put("routeTrigger", "manual");
+        } else {
+            clientContext.put("requestType", "spot_explain");
+        }
         requestJson.put("clientContext", clientContext);
         requestJson.put("client_context", clientContext);
 
@@ -1756,7 +1804,11 @@ public class MainActivity extends Activity {
 
                                 showGuideAnswer(guideResponse.answer);
                                 updateQuickButtons(guideResponse.suggestions);
-                                showRouteCardIfNeeded(guideResponse.route);
+                                handleGuideRouteResponse(
+                                        guideResponse.route,
+                                        isRouteIntentQuestion(guideResponse.questionText),
+                                        "voice"
+                                );
 
                                 if (guideResponse.conversationId != null && guideResponse.conversationId.trim().length() > 0) {
                                     conversationId = guideResponse.conversationId.trim();
@@ -2111,7 +2163,7 @@ public class MainActivity extends Activity {
             return result;
         }
         Object polylineObject = null;
-        String[] keys = new String[]{"polyline", "polylinePoints", "polyline_points", "path", "paths"};
+        String[] keys = new String[]{"routePolyline", "route_polyline", "mapPolyline", "map_polyline", "roadPolyline", "road_polyline", "polyline", "polylinePoints", "polyline_points", "path", "paths"};
         for (String key : keys) {
             if (routeJson.has(key) && !routeJson.isNull(key)) {
                 polylineObject = routeJson.opt(key);
@@ -2393,6 +2445,23 @@ public class MainActivity extends Activity {
             currentRoutePreview = preview;
         }
 
+        if (route.rawPolylinePoints != null && route.rawPolylinePoints.size() >= 2) {
+            preview.calculating = false;
+            preview.amapRouteReady = true;
+            preview.partialFallback = false;
+            preview.message = "已生成高德步行路线";
+            preview.polylinePoints.clear();
+            preview.polylinePoints.addAll(route.rawPolylinePoints);
+            Log.d(TAG, "[BackendRoute] 使用后端高德WebService路线: ready=true, points="
+                    + route.rawPolylinePoints.size());
+            updateRouteCard(preview);
+            drawRouteOnMap(preview);
+            if (routeExpandedOverlay != null) {
+                showRouteExpandedPanel(false);
+            }
+            return;
+        }
+
         final int requestSeq = ++routePreviewRequestSeq;
         final List<RouteNode> planningNodes = buildRoutePlanningNodes(preview.routePreviewStartPoint, route);
         final List<RouteNode> locatedNodes = filterLocatedNodes(planningNodes);
@@ -2670,13 +2739,15 @@ public class MainActivity extends Activity {
         drawRouteMarkers(preview.nodes);
 
         RouteNode startPoint = preview.routePreviewStartPoint;
-        if (startPoint != null && startPoint.hasLocation) {
+        // 只有当“游客当前位置/手动模拟起点”和路线第一个景点不是同一个点时，才额外画一个“我”。
+        // 否则地图上会同时出现“我”和路线节点“起”，看起来像两个起点。
+        if (shouldDrawSeparateRouteStartMarker(startPoint, preview.nodes)) {
             LatLng latLng = toLatLng(startPoint);
             if (latLng != null) {
                 Marker marker = routeAMap.addMarker(new MarkerOptions()
                         .position(latLng)
-                        .title("当前起点：" + getRouteNodeName(startPoint))
-                        .icon(createRouteMarkerIcon("起", Color.rgb(34, 197, 94), BitmapDescriptorFactory.HUE_GREEN)));
+                        .title("当前位置：" + getRouteNodeName(startPoint))
+                        .icon(createRouteMarkerIcon("我", Color.rgb(245, 158, 11), BitmapDescriptorFactory.HUE_YELLOW)));
                 marker.setObject(startPoint);
                 routePreviewMarkers.add(marker);
                 boundsPoints.add(latLng);
@@ -2685,6 +2756,38 @@ public class MainActivity extends Activity {
 
         updateRouteMapPlaceholder(preview, boundsPoints.size() > 0);
         fitRouteBounds(boundsPoints);
+    }
+
+    private boolean shouldDrawSeparateRouteStartMarker(RouteNode startPoint, List<RouteNode> routeNodes) {
+        if (startPoint == null || !startPoint.hasLocation) {
+            return false;
+        }
+
+        // 导航中 drawRouteMarkers 已经会用“我”标记当前模拟位置，这里不再重复画起点。
+        if (routeGuideActive && isSameRouteNodeOrLocation(startPoint, getCurrentActiveRouteNode())) {
+            return false;
+        }
+
+        if (routeNodes == null || routeNodes.size() == 0) {
+            return true;
+        }
+
+        RouteNode firstNode = routeNodes.get(0);
+        return !isSameRouteNodeOrLocation(startPoint, firstNode);
+    }
+
+    private boolean isSameRouteNodeOrLocation(RouteNode left, RouteNode right) {
+        if (left == null || right == null) {
+            return false;
+        }
+        if (isSameRouteNode(left, right)) {
+            return true;
+        }
+        LatLng leftLatLng = toLatLng(left);
+        LatLng rightLatLng = toLatLng(right);
+        return leftLatLng != null
+                && rightLatLng != null
+                && calculateDistanceMeters(leftLatLng, rightLatLng) < 3f;
     }
 
     private void drawRouteMarkers(List<RouteNode> nodes) {
@@ -2704,7 +2807,11 @@ public class MainActivity extends Activity {
             float hue;
             int markerColor;
             String markerLabel;
-            if (i == 0) {
+            boolean hasSeparateStart = shouldDrawSeparateRouteStartMarker(
+                    currentRoutePreview == null ? null : currentRoutePreview.routePreviewStartPoint,
+                    safeNodes
+            );
+            if (i == 0 && !hasSeparateStart) {
                 hue = BitmapDescriptorFactory.HUE_GREEN;
                 markerColor = Color.rgb(34, 197, 94);
                 markerLabel = "起";
@@ -4074,7 +4181,10 @@ public class MainActivity extends Activity {
             return null;
         }
         int index = currentRouteNodeIndex < 0 ? resolveNavigationNodeIndex(route) : currentRouteNodeIndex;
-        int nextIndex = Math.min(route.nodes.size() - 1, Math.max(0, index) + 1);
+        int nextIndex = Math.max(0, index) + 1;
+        if (nextIndex >= route.nodes.size()) {
+            return null;
+        }
         return route.nodes.get(nextIndex);
     }
 
@@ -4437,8 +4547,8 @@ public class MainActivity extends Activity {
 
         if (routeDemoNextButton != null) {
             routeDemoNextButton.setVisibility(View.VISIBLE);
-            routeDemoNextButton.setText(hasNext ? "模拟到达下一站" : "完成路线导览");
-            routeDemoNextButton.setEnabled(canUseButtons);
+            routeDemoNextButton.setText(hasNext ? "模拟到达下一站" : "已到达终点");
+            routeDemoNextButton.setEnabled(canUseButtons && hasNext);
         }
         if (routeDemoLeaveButton != null) {
             routeDemoLeaveButton.setVisibility(View.VISIBLE);
@@ -4447,7 +4557,7 @@ public class MainActivity extends Activity {
         }
         if (routeDemoEndButton != null) {
             routeDemoEndButton.setVisibility(View.VISIBLE);
-            routeDemoEndButton.setText("结束路线导览");
+            routeDemoEndButton.setText("结束本条路线");
             routeDemoEndButton.setEnabled(canUseButtons);
         }
     }
@@ -4511,7 +4621,8 @@ public class MainActivity extends Activity {
         }
         RouteNode next = getNextActiveRouteNode();
         if (next == null) {
-            finishSimulatedRouteGuide();
+            showToast("已完成本条路线");
+            updateRouteDemoController(currentRoute);
             return;
         }
 
@@ -4570,19 +4681,40 @@ public class MainActivity extends Activity {
         if (!routeGuideActive) {
             resetRouteDemoState();
             renderRouteCard(currentRoute);
+            showRouteGuideEndedState(false);
             return;
         }
+        exitNavigationMode();
         routeGuideActive = false;
+        routeNavigationModeActive = false;
         routeDemoRequesting = false;
         currentRouteNodeIndex = -1;
         routeDemoNodeIndex = currentRoute == null || currentRoute.nodes == null ? -1 : currentRoute.nodes.size();
         currentDemoRouteNode = null;
         activeRouteNodes.clear();
         renderRouteCard(currentRoute);
+        showRouteGuideEndedState(completed);
         if (completed) {
             speakRouteGuideText("本次推荐路线已完成，你可以继续提问或结束导览。");
         } else {
-            speakRouteGuideText("已结束路线导览，你可以继续提问或重新开始路线导览。");
+            speakRouteGuideText("已结束本条路线，你可以继续提问或重新开始路线导航。");
+        }
+    }
+
+    private void showRouteGuideEndedState(boolean completed) {
+        if (routeCardStartNextText != null) {
+            routeCardStartNextText.setText(completed ? "路线导览已结束" : "已退出路线导航");
+            routeCardStartNextText.setVisibility(View.VISIBLE);
+        }
+        if (routeStartButton != null) {
+            boolean hasNodes = currentRoute != null && currentRoute.nodes != null && currentRoute.nodes.size() > 0;
+            routeStartButton.setText("重新开始导航");
+            routeStartButton.setEnabled(!guideEnded
+                    && hasNodes
+                    && (currentRoutePreview == null || !currentRoutePreview.calculating));
+        }
+        if (routeDemoController != null) {
+            routeDemoController.setVisibility(View.GONE);
         }
     }
 
@@ -4611,7 +4743,7 @@ public class MainActivity extends Activity {
             showToast("数字人正在处理，请稍候");
             return;
         }
-        askGuide("请讲解一下【" + nodeName + "】");
+        askGuideInternal("请讲解一下【" + nodeName + "】", true, true);
     }
 
     private RouteNode getCurrentActiveRouteNode() {
@@ -5169,7 +5301,7 @@ public class MainActivity extends Activity {
                                 endVisitButton.setEnabled(true);
                                 endVisitButton.setText("结束导览");
                             }
-                            showToast("结束导览失败，请稍后再试");
+                            showToast("结束导览失败，请重试");
                         }
                     }
                 });
@@ -5209,7 +5341,7 @@ public class MainActivity extends Activity {
             requestJson.put("end_source", "native-live2d-manual");
             requestJson.put("locationSource", "native-live2d-manual");
             requestJson.put("location_source", "native-live2d-manual");
-            requestJson.put("trigger", firstNotEmpty(trigger, "native-end-visit"));
+            requestJson.put("trigger", "native-end-visit");
             requestJson.put("source", GUIDE_SOURCE);
 
             putCoordinateIfPresent(requestJson, "latitude", latitude);
@@ -5218,9 +5350,23 @@ public class MainActivity extends Activity {
             Log.d(TAG, "[NativeVisitEnd] visitId=" + guideContext.visitId
                     + ", userId=" + getEffectiveNativeUserId()
                     + ", areaId=" + firstNotEmpty(areaId, scenicId, guideContext.scenicId, parkId, areaCode)
-                    + ", trigger=" + firstNotEmpty(trigger, "native-end-visit"));
+                    + ", trigger=native-end-visit");
 
-            return postJsonForVisitEndResult(buildVisitApiUrl(getNativeVisitEndPath()), requestJson, "[NativeVisitEnd]");
+            VisitEndResult appResult = postJsonForVisitEndResult(
+                    buildVisitApiUrl(DEFAULT_APP_VISIT_END_PATH),
+                    requestJson,
+                    "[NativeVisitEnd][app]"
+            );
+            if (appResult != null && appResult.success) {
+                return appResult;
+            }
+
+            Log.e(TAG, "[NativeVisitEnd] /api/app/visit/end 未确认成功，fallback 到 /api/visit/end");
+            return postJsonForVisitEndResult(
+                    buildVisitApiUrl(DEFAULT_VISIT_END_PATH),
+                    requestJson,
+                    "[NativeVisitEnd][fallback]"
+            );
         } catch (Exception e) {
             Log.e(TAG, "[NativeVisitEnd] 构建结束导览请求失败", e);
             VisitEndResult result = new VisitEndResult();
@@ -5251,6 +5397,10 @@ public class MainActivity extends Activity {
             connection.setRequestProperty("Accept", "application/json");
             applyAuthorizationHeader(connection);
 
+            Log.d(TAG, logPrefix + " request url=" + urlText
+                    + ", requestJson=" + requestJson
+                    + ", hasAuthorization=" + (buildAuthorizationHeader().length() > 0));
+
             OutputStream outputStream = connection.getOutputStream();
             BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(outputStream, StandardCharsets.UTF_8));
             writer.write(requestJson.toString());
@@ -5263,10 +5413,15 @@ public class MainActivity extends Activity {
                     ? connection.getInputStream()
                     : connection.getErrorStream());
 
+            Log.d(TAG, logPrefix + " response httpStatus=" + responseCode
+                    + ", url=" + urlText
+                    + ", responseBody=" + responseText);
+
             if (responseCode >= 200 && responseCode < 300) {
-                result.success = true;
                 fillVisitEndResultIds(result, responseText);
-                Log.d(TAG, logPrefix + " POST 成功 url=" + urlText
+                result.success = isVisitEndBusinessSuccess(responseText, firstNotEmpty(guideContext.visitId, visitId));
+                Log.d(TAG, logPrefix + " POST 返回 url=" + urlText
+                        + ", success=" + result.success
                         + ", reportVisitId=" + result.reportVisitId
                         + ", response=" + responseText);
                 return result;
@@ -5285,6 +5440,67 @@ public class MainActivity extends Activity {
                 connection.disconnect();
             }
         }
+    }
+
+    private boolean isVisitEndBusinessSuccess(String responseText, String expectedVisitId) {
+        try {
+            JSONObject root = new JSONObject(safeString(responseText));
+            JSONObject data = root.optJSONObject("data");
+            JSONObject source = data == null ? root : data;
+            if (isZeroCode(root) || root.optBoolean("success", false) || source.optBoolean("success", false)) {
+                return true;
+            }
+            String status = firstNotEmpty(
+                    getJsonText(source, "status", "visitStatus", "visit_status", "state"),
+                    getJsonText(root, "status", "visitStatus", "visit_status", "state")
+            ).trim().toUpperCase(Locale.CHINA);
+            if ("COMPLETED".equals(status)
+                    || "ENDED".equals(status)
+                    || "FINISHED".equals(status)
+                    || "DONE".equals(status)) {
+                return true;
+            }
+
+            if (firstNotEmpty(
+                    getJsonText(source, "endTime", "end_time", "endedAt", "ended_at"),
+                    getJsonText(root, "endTime", "end_time", "endedAt", "ended_at")
+            ).length() > 0) {
+                return true;
+            }
+
+            String responseVisitId = firstNotEmpty(
+                    getJsonText(source, "visitId", "visit_id", "id"),
+                    getJsonText(root, "visitId", "visit_id", "id")
+            );
+            String message = firstNotEmpty(
+                    getJsonText(root, "message", "msg"),
+                    getJsonText(source, "message", "msg")
+            );
+            return isSameVisitIdText(responseVisitId, expectedVisitId) && isSuccessMessage(message);
+        } catch (Exception e) {
+            Log.e(TAG, "[NativeVisitEnd] 解析结束导览业务结果失败 response=" + responseText, e);
+            return false;
+        }
+    }
+
+    private boolean isZeroCode(JSONObject object) {
+        if (object == null || !object.has("code") || object.isNull("code")) {
+            return false;
+        }
+        return "0".equals(getJsonText(object, "code"));
+    }
+
+    private boolean isSuccessMessage(String message) {
+        String text = safeString(message).trim().toLowerCase(Locale.ROOT);
+        return "success".equals(text)
+                || "ok".equals(text)
+                || text.contains("成功");
+    }
+
+    private boolean isSameVisitIdText(String left, String right) {
+        String leftText = safeString(left).trim();
+        String rightText = safeString(right).trim();
+        return leftText.length() > 0 && rightText.length() > 0 && leftText.equals(rightText);
     }
 
     private void fillVisitEndResultIds(VisitEndResult result, String responseText) {
@@ -5323,49 +5539,31 @@ public class MainActivity extends Activity {
         Intent resultIntent = new Intent();
         resultIntent.putExtra("guideEnded", true);
         resultIntent.putExtra("visitId", finalVisitId);
+        resultIntent.putExtra("visit_id", finalVisitId);
         resultIntent.putExtra("reportVisitId", finalReportVisitId);
+        resultIntent.putExtra("report_visit_id", finalReportVisitId);
         resultIntent.putExtra("openReport", true);
+        resultIntent.putExtra("open_report", true);
         resultIntent.putExtra("openPage", reportPage);
+        resultIntent.putExtra("open_page", reportPage);
         resultIntent.putExtra("targetPage", reportPage);
+        resultIntent.putExtra("target_page", reportPage);
+        resultIntent.putExtra("source", "native-live2d");
         setResult(Activity.RESULT_OK, resultIntent);
-        openUniAppVisitReport(finalVisitId, finalReportVisitId, reportPage);
+
+        // 不再硬编码启动 uni-app Activity。
+        // 调试基座 / 正式包名不同，强行 setClassName 容易 ActivityNotFound。
+        // 这里只通过 setResult + finish 交给 uni-app 的 onShow/onActivityResult 处理报告跳转。
+        Log.d(TAG, "[NativeVisitEnd] setResult return to uni-app, reportPage=" + reportPage
+                + ", reportVisitId=" + finalReportVisitId);
     }
 
     private void openUniAppVisitReport(String visitIdForReportPage, String reportVisitId, String reportPage) {
-        try {
-            String dataUrl =
-                    "digitalhuman://visit/report"
-                            + "?visitId=" + urlEncode(visitIdForReportPage)
-                            + "&reportVisitId=" + urlEncode(reportVisitId)
-                            + "&openReport=true"
-                            + "&guideEnded=true"
-                            + "&openPage=" + urlEncode(reportPage)
-                            + "&targetPage=" + urlEncode(reportPage)
-                            + "&source=native-live2d";
-
-            Intent intent = new Intent(Intent.ACTION_VIEW);
-            intent.setClassName("com.rjb.digitalhuman", "io.dcloud.PandoraEntry");
-            intent.setData(Uri.parse(dataUrl));
-            intent.putExtra("guideEnded", true);
-            intent.putExtra("visitId", visitIdForReportPage);
-            intent.putExtra("reportVisitId", reportVisitId);
-            intent.putExtra("openReport", true);
-            intent.putExtra("openPage", reportPage);
-            intent.putExtra("targetPage", reportPage);
-            intent.addFlags(
-                    Intent.FLAG_ACTIVITY_NEW_TASK
-                            | Intent.FLAG_ACTIVITY_CLEAR_TOP
-                            | Intent.FLAG_ACTIVITY_SINGLE_TOP
-                            | Intent.FLAG_ACTIVITY_NO_ANIMATION
-            );
-
-            Log.d(TAG, "[NativeVisitEnd] open report page=" + reportPage
-                    + ", reportVisitId=" + reportVisitId);
-            startActivity(intent);
-            overridePendingTransition(0, 0);
-        } catch (Exception e) {
-            Log.e(TAG, "[NativeVisitEnd] 打开游玩报告页失败，已通过 setResult 返回参数", e);
-        }
+        // 保留方法签名用于兼容旧调用，但不再主动拉起 uni-app Activity。
+        // uni-app 调试基座和正式包名不同，硬编码 setClassName 会导致 ActivityNotFoundException。
+        // 结束导览成功后统一依赖 notifyUniAppOpenVisitReport() 的 setResult + finish 返回。
+        Log.d(TAG, "[NativeVisitEnd] skip explicit uni-app startActivity, reportPage=" + reportPage
+                + ", reportVisitId=" + reportVisitId);
     }
 
     private void stopNativeGuideAfterEnd() {
@@ -5681,9 +5879,12 @@ public class MainActivity extends Activity {
             return;
         }
         boolean visible = isOnsiteMode() && !guideEnded;
+        if (routeGuideActive) {
+            visible = false;
+        }
         simulateLingshanButton.setVisibility(visible ? View.VISIBLE : View.GONE);
         simulateLingshanButton.setEnabled(visible && !routeDemoRequesting && !requesting);
-        simulateLingshanButton.setText(routeDemoRequesting ? "模拟到达中..." : "模拟到达灵山大佛");
+        simulateLingshanButton.setText(routeDemoRequesting ? "模拟到达中..." : "模拟到达当前景点");
     }
 
     private void handleRouteStartSwitchClick() {
@@ -5828,7 +6029,7 @@ public class MainActivity extends Activity {
         if (questionInput != null) {
             questionInput.setText(question);
         }
-        askGuideInternal(question, false);
+        askGuideInternal(question, false, true);
     }
 
     private String getRouteStartParkKey() {
@@ -6592,7 +6793,7 @@ public class MainActivity extends Activity {
         String visualText;
 
         if (isOnsiteMode()) {
-            visualText = "欢迎来到" + getTargetName() + "，我是你的 AI 数字人导游。接下来我可以为你讲解景点、推荐路线，也会记录本次游玩过程。你可以点击“模拟到达灵山大佛”，也可以直接向我提问。";
+            visualText = "欢迎来到" + getTargetName() + "，我是你的 AI 数字人导游。接下来我可以为你讲解景点、推荐路线，也会记录本次游玩过程。你可以点击“模拟到达当前景点”，也可以直接向我提问。";
         } else if ("scenic_explain".equals(mode)) {
             visualText = "正在为你讲解" + getTargetName() + "。\n\n你可以继续询问景区特色、游览顺序、开放服务和拍照打卡点。";
         } else if ("spot_explain".equals(mode)) {
@@ -6626,7 +6827,7 @@ public class MainActivity extends Activity {
         String welcomeText;
 
         if (isOnsiteMode()) {
-            welcomeText = "欢迎来到" + target + "，我是你的 AI 数字人导游。接下来我可以为你讲解景点、推荐路线，也会记录本次游玩过程。你可以点击模拟到达灵山大佛，也可以直接向我提问。";
+            welcomeText = "欢迎来到" + target + "，我是你的 AI 数字人导游。接下来我可以为你讲解景点、推荐路线，也会记录本次游玩过程。你可以点击模拟到达当前景点，也可以直接向我提问。";
         } else if ("scenic_explain".equals(mode)) {
             welcomeText = "您好，我是您的AI景区讲解助手。现在将为您讲解" + target + "。";
         } else if ("spot_explain".equals(mode)) {

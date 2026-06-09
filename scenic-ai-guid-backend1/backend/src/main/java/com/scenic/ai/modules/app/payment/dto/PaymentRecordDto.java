@@ -15,4 +15,6 @@ public class PaymentRecordDto {
     public String status;
     public LocalDateTime pay_time;
     public Long merchant_id;
+    public Long area_id;
+    public Long visit_id;
 }

@@ -16,4 +16,6 @@ public class PaymentRecord {
     public String status;
     public LocalDateTime payTime;
     public Long merchantId;
+    public Long areaId;
+    public Long visitId;
 }

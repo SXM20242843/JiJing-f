@@ -182,9 +182,10 @@ public class AppUserService {
         }
 
         String value = userId.trim().toLowerCase();
+        // 注意：tourist_xxx 是 tourist_user.user_id 的真实登录业务 ID，
+        // 注册时就是由 generateUserId() 生成，不能当成临时游客 ID 拒绝。
         return value.isEmpty()
                 || "anonymous".equals(value)
-                || value.startsWith("tourist_")
                 || value.startsWith("visitor_")
                 || value.startsWith("android-live2d-");
     }

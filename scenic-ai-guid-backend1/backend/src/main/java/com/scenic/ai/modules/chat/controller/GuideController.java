@@ -38,6 +38,17 @@ public class GuideController {
         }
     }
 
+    @GetMapping("/tts/status")
+    public ApiResponse<GuideChatResponse> ttsStatus(
+            @RequestParam("taskId") String taskId
+    ) {
+        if (taskId == null || taskId.trim().isEmpty()) {
+            return new ApiResponse<>(400, "taskId不能为空", null);
+        }
+        GuideChatResponse response = guideChatService.queryTtsStatus(taskId.trim());
+        return ApiResponse.success(response);
+    }
+
     private boolean isAuthError(String message) {
         if (message == null) {
             return false;

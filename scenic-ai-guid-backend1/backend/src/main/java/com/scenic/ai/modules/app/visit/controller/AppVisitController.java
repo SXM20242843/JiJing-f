@@ -164,6 +164,8 @@ public class AppVisitController {
             }
             String userId = appUserService.resolveRequiredUserId(authorization, request.getUserIdText());
             request.userId = userId;
+
+            request.user_id = userId;
             return ok(visitService.enterScenic(request));
         } catch (IllegalArgumentException e) {
             return fail(e);
@@ -184,6 +186,8 @@ public class AppVisitController {
             }
             String userId = appUserService.resolveRequiredUserId(authorization, request.getUserIdText());
             request.userId = userId;
+
+            request.user_id = userId;
             return ok(visitService.leaveScenic(request));
         } catch (IllegalArgumentException e) {
             return fail(e);
@@ -204,6 +208,8 @@ public class AppVisitController {
             }
             String userId = appUserService.resolveRequiredUserId(authorization, request.getUserIdText());
             request.userId = userId;
+
+            request.user_id = userId;
             return ok(visitService.endVisit(request));
         } catch (IllegalArgumentException e) {
             return fail(e);

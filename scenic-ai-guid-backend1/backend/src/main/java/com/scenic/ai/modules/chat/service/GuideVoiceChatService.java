@@ -4,7 +4,6 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.scenic.ai.common.config.AiProperties;
 import com.scenic.ai.modules.app.route.service.RouteRecommendService;
-import com.scenic.ai.modules.app.visit.dto.VisitStartResponse;
 import com.scenic.ai.modules.app.visit.service.VisitService;
 import com.scenic.ai.modules.chat.dto.GuideChatRequest;
 import com.scenic.ai.modules.chat.dto.GuideVoiceChatResponse;
@@ -18,6 +17,8 @@ import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.net.URI;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -183,13 +184,23 @@ public class GuideVoiceChatService {
                     avatarId,
                     mode
             );
-            RouteRecommendService.ChatRouteContext routeContext = null;
-            try {
-                routeContext = routeRecommendService.enrichChatRouteRequest(routeRequest, finalUserId, routeBody);
-            } catch (Exception e) {
-                log.warn("语音Chat路线请求增强失败，继续普通语音问答。userId={}, sessionId={}",
-                        finalUserId, finalSessionId, e);
+            boolean allowRoute = isExplicitRouteRequest(route, routeStartType, finalQuestion);
+            if (allowRoute && !Boolean.TRUE.equals(route)) {
+                routeBody.put("route", true);
+                routeRequest.setRoute(true);
             }
+
+            RouteRecommendService.ChatRouteContext routeContext = null;
+            if (allowRoute) {
+                try {
+                    routeContext = routeRecommendService.enrichChatRouteRequest(routeRequest, finalUserId, routeBody);
+                } catch (Exception e) {
+                    log.warn("语音Chat路线请求增强失败，继续普通语音问答。userId={}, sessionId={}",
+                            finalUserId, finalSessionId, e);
+                }
+            }
+            applyDigitalHumanOptions(routeBody);
+            applyRoutePayload(routeBody, routeRequest, allowRoute);
             addMultipartFields(body, routeBody);
 
             log.info("语音问答请求字段: user_id={}, visit_id={}, groupSize={}, travelType={}, visitPreference={}",
@@ -200,7 +211,8 @@ public class GuideVoiceChatService {
 
             if (response.getStatusCode() == HttpStatus.OK && response.getBody() != null) {
                 Map<String, Object> responseBody = response.getBody();
-                log.info("语音问答服务响应: {}", responseBody);
+                log.info("语音问答服务响应成功: status={}, responseKeys={}",
+                        response.getStatusCode(), responseBody.keySet());
                 GuideVoiceChatResponse parsedResponse = parseVoiceAiResponse(responseBody);
                 if (!hasText(parsedResponse.getQuestionText()) && hasText(finalQuestion)) {
                     parsedResponse.setQuestionText(finalQuestion);
@@ -209,35 +221,56 @@ public class GuideVoiceChatService {
                     parsedResponse.setRecognizedText(parsedResponse.getQuestionText());
                 }
                 parsedResponse.setVisitId(finalVisitId);
-                if (containsRoutePayload(responseBody) && !Boolean.TRUE.equals(routeRequest.getRoute())) {
+
+                String responseQuestion = firstNotBlank(
+                        parsedResponse.getQuestionText(),
+                        parsedResponse.getRecognizedText(),
+                        finalQuestion
+                );
+                boolean responseAllowRoute = allowRoute || hasRouteIntentText(responseQuestion);
+
+                if (responseAllowRoute) {
                     routeRequest.setRoute(true);
-                    routeRequest.setQuestion(firstNotBlank(parsedResponse.getQuestionText(), finalQuestion, "请为我推荐一条合理的游览路线。"));
-                    routeContext = routeRecommendService.enrichChatRouteRequest(
-                            routeRequest,
-                            finalUserId,
-                            new LinkedHashMap<>(routeBody)
-                    );
-                }
-                try {
-                    parsedResponse.setRoute(routeRecommendService.standardizeAndSaveChatRoute(
-                            routeRequest,
-                            finalUserId,
-                            finalSessionId,
-                            responseBody,
-                            parsedResponse.getAnswer(),
-                            routeContext
-                    ));
-                } catch (Exception e) {
-                    log.warn("语音Chat路线结构标准化失败，不影响问答返回。userId={}, sessionId={}",
-                            finalUserId, finalSessionId, e);
-                }
-                if (parsedResponse.getRoute() == null) {
-                    routeRecommendService.recordChatRouteRequestWithoutPlan(
-                            routeRequest,
-                            finalUserId,
-                            finalSessionId,
-                            routeContext
-                    );
+                    routeRequest.setQuestion(firstNotBlank(responseQuestion, "请为我推荐一条合理的游览路线。"));
+
+                    if (routeContext == null || containsRoutePayload(responseBody)) {
+                        try {
+                            routeContext = routeRecommendService.enrichChatRouteRequest(
+                                    routeRequest,
+                                    finalUserId,
+                                    new LinkedHashMap<>(routeBody)
+                            );
+                        } catch (Exception e) {
+                            log.warn("语音Chat路线响应后增强失败，继续普通语音问答。userId={}, sessionId={}",
+                                    finalUserId, finalSessionId, e);
+                        }
+                    }
+
+                    try {
+                        parsedResponse.setRoute(routeRecommendService.standardizeAndSaveChatRoute(
+                                routeRequest,
+                                finalUserId,
+                                finalSessionId,
+                                responseBody,
+                                parsedResponse.getAnswer(),
+                                routeContext
+                        ));
+                    } catch (Exception e) {
+                        log.warn("语音Chat路线结构标准化失败，不影响问答返回。userId={}, sessionId={}",
+                                finalUserId, finalSessionId, e);
+                    }
+
+                    if (parsedResponse.getRoute() == null) {
+                        routeRecommendService.recordChatRouteRequestWithoutPlan(
+                                routeRequest,
+                                finalUserId,
+                                finalSessionId,
+                                routeContext
+                        );
+                    }
+                } else if (containsRoutePayload(responseBody)) {
+                    log.info("非路线语音意图忽略 AI 返回 route，不保存路线。userId={}, sessionId={}",
+                            finalUserId, finalSessionId);
                 }
                 chatPersistenceService.saveVoiceExchangeSafely(
                         finalSessionId,
@@ -297,31 +330,20 @@ public class GuideVoiceChatService {
     }
 
     /**
-     * 确保游览会话存在，如果已经有 visitId 且有效则复用，否则创建新会话。
+     * 仅复用请求中已有的 visitId。
+     * /api/guide/voice/chat 不负责创建 tourist_visit_session，缺少 visitId 时继续普通语音问答。
      */
     private String ensureVisitSession(String userId, String parkId, String parkName,
                                       String groupSize, String travelType, String visitPreference,
                                       String existingVisitId,
                                       String mode) {
         if (hasText(existingVisitId)) {
-            return existingVisitId;
+            return existingVisitId.trim();
         }
-        if (!isOnsiteMode(mode)) {
-            return null;
-        }
-        if (!hasText(userId) || !hasText(parkId)) {
-            return null;
-        }
-        try {
-            VisitStartResponse resp = visitService.getOrCreateVisit(
-                    userId, parkId, parkName, groupSize, travelType, visitPreference,
-                    null, null
-            );
-            return resp != null && resp.visitId != null ? String.valueOf(resp.visitId) : null;
-        } catch (Exception e) {
-            log.warn("自动创建语音游览会话失败，继续进行AI问答。userId={}, parkId={}", userId, parkId, e);
-            return null;
-        }
+
+        log.info("GuideVoiceChat 未携带 visitId，不自动创建游览会话。userId={}, mode={}, parkId={}",
+                userId, mode, parkId);
+        return null;
     }
 
     private GuideChatRequest buildRouteGuideChatRequest(
@@ -375,8 +397,74 @@ public class GuideVoiceChatService {
         return request;
     }
 
-    private boolean isOnsiteMode(String mode) {
-        return "onsite".equalsIgnoreCase(firstNotBlank(mode));
+    private void applyDigitalHumanOptions(Map<String, Object> body) {
+        Map<String, Object> options = new LinkedHashMap<>();
+        options.put("responseMode", "digital_human");
+        options.put("enableTts", true);
+        options.put("ttsMode", "async");
+        options.put("includeMouthFrames", true);
+        options.put("includeSources", false);
+        options.put("includeDebug", false);
+        body.put("options", options);
+    }
+
+    private void applyRoutePayload(Map<String, Object> body, GuideChatRequest request, boolean allowRoute) {
+        Map<String, Object> routePayload = new LinkedHashMap<>();
+        routePayload.put("enabled", allowRoute);
+
+        if (allowRoute) {
+            Integer availableMinutes = request.getAvailableMinutes();
+            if (availableMinutes == null) {
+                availableMinutes = readInteger(readObject(body, "available_minutes", "availableMinutes"));
+            }
+            if (availableMinutes != null) {
+                routePayload.put("availableMinutes", availableMinutes);
+            }
+            routePayload.put("preferenceTags",
+                    request.getPreferenceTags() == null ? new ArrayList<String>() : request.getPreferenceTags());
+            routePayload.put("avoidTags", new ArrayList<String>());
+            body.put("route", routePayload);
+            body.put("route_enabled", true);
+            return;
+        }
+
+        body.put("route", routePayload);
+        body.put("route_enabled", false);
+        body.put("suppress_route", true);
+    }
+
+    private boolean isExplicitRouteRequest(Boolean route, String routeStartType, String question) {
+        if (Boolean.TRUE.equals(route)) {
+            return true;
+        }
+
+        String startType = firstNotBlank(routeStartType);
+        if ("manual".equalsIgnoreCase(startType)
+                || "recommend".equalsIgnoreCase(startType)
+                || "nearby".equalsIgnoreCase(startType)) {
+            return true;
+        }
+
+        return hasRouteIntentText(question);
+    }
+
+    private boolean hasRouteIntentText(String question) {
+        String text = firstNotBlank(question);
+        if (text.isEmpty()) {
+            return false;
+        }
+
+        return text.contains("推荐路线")
+                || text.contains("规划路线")
+                || text.contains("游览路线")
+                || text.contains("路线规划")
+                || text.contains("怎么走")
+                || text.contains("导航")
+                || text.contains("怎么逛")
+                || text.contains("如何逛")
+                || text.contains("游览顺序")
+                || text.contains("接下来去哪")
+                || text.contains("下一站去哪");
     }
 
     private void putIfHasText(Map<String, Object> body, String key, String value) {
@@ -458,54 +546,202 @@ public class GuideVoiceChatService {
 
     @SuppressWarnings("unchecked")
     private GuideVoiceChatResponse parseVoiceAiResponse(Map<String, Object> responseBody) {
-        Map<String, Object> dataMap = responseBody;
-        Object dataObj = responseBody.get("data");
+        Map<String, Object> rootMap = responseBody == null ? new LinkedHashMap<>() : responseBody;
+        Map<String, Object> dataMap = rootMap;
+        Object dataObj = rootMap.get("data");
         if (dataObj instanceof Map<?, ?> dataMapRaw) {
             dataMap = (Map<String, Object>) dataMapRaw;
         }
 
+        Map<String, Object> audioMap = readMapCascade(dataMap, rootMap,
+                "audio", "tts", "voice", "speech", "audioData", "audio_data");
+        Map<String, Object> mouthMap = readMapCascade(dataMap, rootMap,
+                "mouth", "mouthSync", "mouth_sync", "lipSync", "lip_sync", "mouthData", "mouth_data");
+        Map<String, Object> asrMap = readMapCascade(dataMap, rootMap,
+                "asr", "speechRecognition", "speech_recognition", "recognition", "recognized", "transcription");
+        Map<String, Object> digitalHumanMap = readMapCascade(dataMap, rootMap,
+                "digitalHuman", "digital_human");
+
         GuideVoiceChatResponse result = new GuideVoiceChatResponse();
-        String rawRecognizedText = readString(
-                dataMap,
-                "recognized_text",
-                "recognizedText",
-                "asr_text",
-                "asrText",
-                "questionText",
-                "question_text",
-                "question"
+
+        String rawRecognizedText = firstNotBlank(
+                readStringCascade(dataMap, rootMap,
+                        "recognized_text",
+                        "recognizedText",
+                        "asr_text",
+                        "asrText",
+                        "questionText",
+                        "question_text",
+                        "question"),
+                readString(asrMap,
+                        "text",
+                        "result",
+                        "recognized_text",
+                        "recognizedText",
+                        "asr_text",
+                        "asrText",
+                        "questionText",
+                        "question_text",
+                        "question")
         );
         String recognizedText = correctQuestionText(rawRecognizedText);
         result.setRecognizedText(recognizedText);
         result.setQuestionText(recognizedText);
-        result.setConversationId(readString(dataMap, "conversation_id", "conversationId"));
-        result.setMessageId(readString(dataMap, "message_id", "messageId"));
-        result.setAnswer(readString(dataMap, "answer", "content"));
-        result.setRewrittenQuestion(readString(dataMap, "rewritten_question", "rewrittenQuestion"));
-        result.setIntent(readString(dataMap, "intent"));
-        result.setAudioUrl(readString(dataMap, "audioUrl", "audio_url"));
-        result.setAudioFormat(readString(dataMap, "audioFormat", "audio_format"));
-        result.setTtsError(readString(dataMap, "ttsError", "tts_error"));
 
-        Object currentEntity = readObject(dataMap, "current_entity", "currentEntity");
+        result.setConversationId(readStringCascade(dataMap, rootMap, "conversation_id", "conversationId"));
+        result.setMessageId(readStringCascade(dataMap, rootMap, "message_id", "messageId"));
+        result.setAnswer(readStringCascade(dataMap, rootMap, "answer", "content", "text"));
+        result.setRewrittenQuestion(readStringCascade(dataMap, rootMap, "rewritten_question", "rewrittenQuestion"));
+        result.setIntent(readStringCascade(dataMap, rootMap, "intent"));
+
+        String audioUrl = firstNotBlank(
+                readStringCascade(dataMap, rootMap,
+                        "audioUrl",
+                        "audio_url",
+                        "audioURL",
+                        "ttsUrl",
+                        "tts_url",
+                        "voiceUrl",
+                        "voice_url",
+                        "speechUrl",
+                        "speech_url"),
+                readString(audioMap,
+                        "url",
+                        "audioUrl",
+                        "audio_url",
+                        "audioURL",
+                        "ttsUrl",
+                        "tts_url",
+                        "voiceUrl",
+                        "voice_url",
+                        "speechUrl",
+                        "speech_url",
+                        "fileUrl",
+                        "file_url")
+        );
+        result.setAudioUrl(normalizeAudioUrl(audioUrl));
+        result.setAudioFormat(firstNotBlank(
+                readStringCascade(dataMap, rootMap, "audioFormat", "audio_format", "format"),
+                readString(audioMap, "format", "audioFormat", "audio_format", "mime", "mimeType", "mime_type")
+        ));
+        result.setAudioStatus(firstNotBlank(
+                readStringCascade(dataMap, rootMap, "audioStatus", "audio_status", "ttsStatus", "tts_status"),
+                readString(audioMap, "status", "audioStatus", "audio_status", "ttsStatus", "tts_status")
+        ));
+        result.setTtsTaskId(firstNotBlank(
+                readStringCascade(dataMap, rootMap, "ttsTaskId", "tts_task_id", "taskId", "task_id"),
+                readString(audioMap, "taskId", "task_id")
+        ));
+        result.setTaskId(firstNotBlank(result.getTtsTaskId()));
+        result.setAudioDurationMs(firstNonNullLong(
+                readLong(dataMap, "audioDurationMs", "audio_duration_ms", "durationMs", "duration_ms"),
+                readLong(rootMap, "audioDurationMs", "audio_duration_ms", "durationMs", "duration_ms"),
+                readLong(audioMap, "durationMs", "duration_ms")
+        ));
+        result.setTtsError(firstNotBlank(
+                readStringCascade(dataMap, rootMap, "ttsError", "tts_error", "error", "errorMessage", "error_message"),
+                readString(audioMap, "ttsError", "tts_error", "error", "errorMessage", "error_message")
+        ));
+
+        Object currentEntity = firstNonNull(
+                readObject(dataMap, "current_entity", "currentEntity"),
+                readObject(rootMap, "current_entity", "currentEntity")
+        );
         if (currentEntity instanceof Map<?, ?>) {
             result.setCurrentEntity(objectMapper.convertValue(currentEntity, new TypeReference<>() {}));
         }
-        Object mouthFrames = readObject(dataMap, "mouthFrames", "mouth_frames");
+
+        Object mouthFrames = firstNonNull(
+                readObject(dataMap,
+                        "mouthFrames",
+                        "mouth_frames",
+                        "mouthFrameList",
+                        "mouth_frame_list",
+                        "lipFrames",
+                        "lip_frames"),
+                readObject(rootMap,
+                        "mouthFrames",
+                        "mouth_frames",
+                        "mouthFrameList",
+                        "mouth_frame_list",
+                        "lipFrames",
+                        "lip_frames"),
+                readObject(mouthMap,
+                        "frames",
+                        "mouthFrames",
+                        "mouth_frames",
+                        "mouthFrameList",
+                        "mouth_frame_list",
+                        "lipFrames",
+                        "lip_frames"),
+                readObject(audioMap,
+                        "mouthFrames",
+                        "mouth_frames",
+                        "mouthFrameList",
+                        "mouth_frame_list",
+                        "lipFrames",
+                        "lip_frames")
+        );
         if (mouthFrames instanceof List<?>) {
-            result.setMouthFrames(objectMapper.convertValue(mouthFrames, new TypeReference<>() {}));
+            result.setMouthFrames(normalizeMouthFrames((List<?>) mouthFrames));
         }
-        Object suggestions = readObject(dataMap, "suggestions");
+        result.setMouthStatus(firstNotBlank(
+                readStringCascade(dataMap, rootMap, "mouthStatus", "mouth_status"),
+                readString(mouthMap, "status", "mouthStatus", "mouth_status")
+        ));
+        result.setEmotion(firstNotBlank(
+                readStringCascade(dataMap, rootMap, "emotion", "emotion_code", "emotionCode"),
+                readString(digitalHumanMap, "emotion")
+        ));
+        result.setEmotionCode(firstNotBlank(
+                readStringCascade(dataMap, rootMap, "emotion_code", "emotionCode"),
+                readString(digitalHumanMap, "emotionCode", "emotion_code")
+        ));
+        result.setAction(firstNotBlank(
+                readStringCascade(dataMap, rootMap, "action", "action_code", "actionCode"),
+                readString(digitalHumanMap, "action")
+        ));
+        result.setActionCode(firstNotBlank(
+                readStringCascade(dataMap, rootMap, "action_code", "actionCode"),
+                readString(digitalHumanMap, "actionCode", "action_code")
+        ));
+        result.setAvatarId(firstNotBlank(
+                readStringCascade(dataMap, rootMap, "avatar_id", "avatarId"),
+                readString(digitalHumanMap, "avatarId", "avatar_id")
+        ));
+
+        result.setAudio(buildAudioPayload(result));
+        result.setMouth(buildMouthPayload(result));
+        result.setDigitalHuman(buildDigitalHumanPayload(result));
+        hydrateDigitalHumanPayloads(result);
+
+        Object suggestions = firstNonNull(
+                readObject(dataMap, "suggestions"),
+                readObject(rootMap, "suggestions")
+        );
         if (suggestions instanceof List<?>) {
             result.setSuggestions(objectMapper.convertValue(suggestions, new TypeReference<>() {}));
         }
-        Object sources = readObject(dataMap, "sources");
+
+        Object sources = firstNonNull(
+                readObject(dataMap, "sources"),
+                readObject(rootMap, "sources")
+        );
         if (sources instanceof List<?>) {
             result.setSources(objectMapper.convertValue(sources, new TypeReference<>() {}));
         }
+
         if (!hasText(result.getAnswer())) {
-            result.setAnswer("已收到你的语音问题，后续这里将展示后端返回的真实答案。");
+            String fallbackMsg = readStringCascade(rootMap, dataMap, "msg", "message");
+            result.setAnswer(hasText(fallbackMsg) ? fallbackMsg : "已收到你的语音问题，后续这里将展示后端返回的真实答案。");
         }
+
+        log.info("语音AI响应解析结果: questionText={}, answerLen={}, audioUrl={}, mouthFrames={}",
+                result.getQuestionText(),
+                result.getAnswer() == null ? 0 : result.getAnswer().length(),
+                result.getAudioUrl(),
+                result.getMouthFrames() == null ? 0 : result.getMouthFrames().size());
+        logDigitalHumanDebug(audioMap, mouthMap, digitalHumanMap, rootMap, result);
         return result;
     }
 
@@ -524,16 +760,294 @@ public class GuideVoiceChatService {
         return result.trim();
     }
 
-    private Object readObject(Map<String, Object> map, String... keys) {
-        if (map == null || keys == null) return null;
-        for (String key : keys) {
-            if (map.containsKey(key)) return map.get(key);
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> readMapCascade(Map<String, Object> primary,
+                                               Map<String, Object> fallback,
+                                               String... keys) {
+        Object object = firstNonNull(readObject(primary, keys), readObject(fallback, keys));
+        if (object instanceof Map<?, ?> rawMap) {
+            return (Map<String, Object>) rawMap;
         }
         return null;
     }
 
+    private Object readObject(Map<String, Object> map, String... keys) {
+        if (map == null || keys == null) return null;
+        for (String key : keys) {
+            if (key == null || !map.containsKey(key)) {
+                continue;
+            }
+            Object value = map.get(key);
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private String readStringCascade(Map<String, Object> primary,
+                                     Map<String, Object> fallback,
+                                     String... keys) {
+        return firstNotBlank(readString(primary, keys), readString(fallback, keys));
+    }
+
     private String readString(Map<String, Object> map, String... keys) {
         Object value = readObject(map, keys);
-        return value == null ? null : String.valueOf(value);
+        return scalarToText(value);
+    }
+
+    private Long readLong(Map<String, Object> map, String... keys) {
+        return readLongValue(readObject(map, keys));
+    }
+
+    private Long readLongValue(Object value) {
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        String text = scalarToText(value);
+        if (!hasText(text)) {
+            return null;
+        }
+        try {
+            return Long.parseLong(text);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private Integer readInteger(Object value) {
+        Long longValue = readLongValue(value);
+        return longValue == null ? null : longValue.intValue();
+    }
+
+    private Double readDouble(Map<String, Object> map, String... keys) {
+        Object value = readObject(map, keys);
+        if (value instanceof Number number) {
+            return number.doubleValue();
+        }
+        String text = scalarToText(value);
+        if (!hasText(text)) {
+            return null;
+        }
+        try {
+            return Double.parseDouble(text);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private String scalarToText(Object value) {
+        if (value == null) {
+            return "";
+        }
+        if (value instanceof Map<?, ?> || value instanceof List<?>) {
+            return "";
+        }
+        String text = String.valueOf(value).trim();
+        if (text.isEmpty()
+                || "null".equalsIgnoreCase(text)
+                || "undefined".equalsIgnoreCase(text)
+                || "none".equalsIgnoreCase(text)) {
+            return "";
+        }
+        return text;
+    }
+
+    private Object firstNonNull(Object... values) {
+        if (values == null) {
+            return null;
+        }
+        for (Object value : values) {
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private Long firstNonNullLong(Long... values) {
+        if (values == null) {
+            return null;
+        }
+        for (Long value : values) {
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private List<MouthFrameDto> normalizeMouthFrames(List<?> frames) {
+        List<MouthFrameDto> normalized = new ArrayList<>();
+        if (frames == null || frames.isEmpty()) {
+            return normalized;
+        }
+        for (Object frame : frames) {
+            if (!(frame instanceof Map<?, ?> frameMapRaw)) {
+                continue;
+            }
+            @SuppressWarnings("unchecked")
+            Map<String, Object> frameMap = (Map<String, Object>) frameMapRaw;
+            MouthFrameDto dto = new MouthFrameDto();
+            dto.setTimeMs(firstNonNullLong(
+                    readLong(frameMap, "timeMs", "time_ms"),
+                    readLong(frameMap, "t", "time"),
+                    0L
+            ));
+            dto.setOpen(readDouble(frameMap, "open", "mouthOpen", "mouth_open"));
+            dto.setForm(readDouble(frameMap, "form", "mouthForm", "mouth_form"));
+            if (dto.getOpen() == null) {
+                dto.setOpen(0D);
+            }
+            if (dto.getForm() == null) {
+                dto.setForm(0D);
+            }
+            normalized.add(dto);
+        }
+        return normalized;
+    }
+
+    private Map<String, Object> buildAudioPayload(GuideVoiceChatResponse result) {
+        if (!hasText(result.getAudioStatus())
+                && !hasText(result.getAudioUrl())
+                && !hasText(result.getAudioFormat())
+                && !hasText(result.getTtsTaskId())
+                && result.getAudioDurationMs() == null) {
+            return null;
+        }
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("status", firstNotBlank(result.getAudioStatus()));
+        payload.put("taskId", firstNotBlank(result.getTtsTaskId()));
+        payload.put("url", firstNotBlank(result.getAudioUrl()));
+        payload.put("format", firstNotBlank(result.getAudioFormat()));
+        payload.put("durationMs", result.getAudioDurationMs());
+        return payload;
+    }
+
+    private void hydrateDigitalHumanPayloads(GuideVoiceChatResponse result) {
+        if (result == null) {
+            return;
+        }
+        if (!hasText(result.getTaskId())) {
+            result.setTaskId(firstNotBlank(result.getTtsTaskId()));
+        }
+        result.setAudio(buildAudioPayload(result));
+        result.setMouth(buildMouthPayload(result));
+        result.setDigitalHuman(buildDigitalHumanPayload(result));
+    }
+
+    private Map<String, Object> buildMouthPayload(GuideVoiceChatResponse result) {
+        if (!hasText(result.getMouthStatus())
+                && (result.getMouthFrames() == null || result.getMouthFrames().isEmpty())) {
+            return null;
+        }
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("status", firstNotBlank(result.getMouthStatus()));
+        payload.put("frames", result.getMouthFrames() == null ? new ArrayList<MouthFrameDto>() : result.getMouthFrames());
+        return payload;
+    }
+
+    private Map<String, Object> buildDigitalHumanPayload(GuideVoiceChatResponse result) {
+        if (!hasText(result.getEmotion())
+                && !hasText(result.getEmotionCode())
+                && !hasText(result.getAction())
+                && !hasText(result.getActionCode())
+                && !hasText(result.getAvatarId())) {
+            return null;
+        }
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("emotion", firstNotBlank(result.getEmotion(), result.getEmotionCode()));
+        payload.put("action", firstNotBlank(result.getAction(), result.getActionCode()));
+        if (hasText(result.getAvatarId())) {
+            payload.put("avatarId", result.getAvatarId());
+        }
+        return payload;
+    }
+
+    private void logDigitalHumanDebug(Map<String, Object> audioMap,
+                                      Map<String, Object> mouthMap,
+                                      Map<String, Object> digitalHumanMap,
+                                      Map<String, Object> responseBody,
+                                      GuideVoiceChatResponse result) {
+        Object rawMouthFrames = firstNonNull(
+                readObject(responseBody, "mouthFrames", "mouth_frames"),
+                readObject(mouthMap, "frames", "mouthFrames", "mouth_frames")
+        );
+        int rawFrameSize = rawMouthFrames instanceof List<?> list ? list.size() : 0;
+        log.info("[DigitalHumanDebug] ai.audio=status={}, taskId={}, url={}, format={}, durationMs={}",
+                readString(audioMap, "status", "audioStatus", "audio_status", "ttsStatus", "tts_status"),
+                readString(audioMap, "taskId", "task_id"),
+                readString(audioMap, "url", "audioUrl", "audio_url"),
+                readString(audioMap, "format", "audioFormat", "audio_format"),
+                readLong(audioMap, "durationMs", "duration_ms"));
+        log.info("[DigitalHumanDebug] ai.mouth=status={}, frames.size={}",
+                readString(mouthMap, "status", "mouthStatus", "mouth_status"),
+                rawFrameSize);
+        log.info("[DigitalHumanDebug] ai.digitalHuman=emotion={}, action={}",
+                readString(digitalHumanMap, "emotion", "emotionCode", "emotion_code"),
+                readString(digitalHumanMap, "action", "actionCode", "action_code"));
+        log.info("[DigitalHumanDebug] ai.audio_url/audioUrl={}",
+                firstNotBlank(
+                        readString(responseBody, "audio_url", "audioUrl"),
+                        readString(audioMap, "url", "audioUrl", "audio_url")
+                ));
+        log.info("[DigitalHumanDebug] ai.mouth_frames/mouthFrames size={}", rawFrameSize);
+        log.info("[DigitalHumanDebug] app.audioStatus={}, app.audioUrl={}, app.ttsTaskId={}",
+                result.getAudioStatus(), result.getAudioUrl(), result.getTtsTaskId());
+        log.info("[DigitalHumanDebug] app.mouthStatus={}, app.mouthFrames.size={}",
+                result.getMouthStatus(),
+                result.getMouthFrames() == null ? 0 : result.getMouthFrames().size());
+        log.info("[DigitalHumanDebug] app.emotion={}, app.action={}",
+                firstNotBlank(result.getEmotion(), result.getEmotionCode()),
+                firstNotBlank(result.getAction(), result.getActionCode()));
+    }
+
+    private String normalizeAudioUrl(String audioUrl) {
+        String text = scalarToText(audioUrl);
+        if (!hasText(text)) {
+            return "";
+        }
+
+        if (text.startsWith("//")) {
+            return "http:" + text;
+        }
+
+        if (text.startsWith("/")) {
+            return trimTrailingSlash(aiProperties.getBaseUrl()) + text;
+        }
+
+        String lower = text.toLowerCase();
+        if (lower.startsWith("http://127.0.0.1")
+                || lower.startsWith("https://127.0.0.1")
+                || lower.startsWith("http://localhost")
+                || lower.startsWith("https://localhost")) {
+            try {
+                URI sourceUri = URI.create(text);
+                URI baseUri = URI.create(trimTrailingSlash(aiProperties.getBaseUrl()));
+                URI fixedUri = new URI(
+                        baseUri.getScheme(),
+                        baseUri.getUserInfo(),
+                        baseUri.getHost(),
+                        baseUri.getPort(),
+                        sourceUri.getRawPath(),
+                        sourceUri.getRawQuery(),
+                        sourceUri.getRawFragment()
+                );
+                return fixedUri.toString();
+            } catch (Exception e) {
+                log.warn("语音音频地址本地回环改写失败，保留原地址: {}", text, e);
+                return text;
+            }
+        }
+
+        return text;
+    }
+
+    private String trimTrailingSlash(String value) {
+        String text = scalarToText(value);
+        while (text.endsWith("/")) {
+            text = text.substring(0, text.length() - 1);
+        }
+        return text;
     }
 }

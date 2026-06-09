@@ -130,6 +130,7 @@ public class ChatPersistenceService {
 
             Long resolvedAreaId = resolveAreaId(areaId, areaCode);
             Long sceneId = resolveSceneId(currentSpotId);
+            Long visitId = parseLongOrNull(response == null ? null : response.getVisitId());
 
             String questionText = response == null ? "" : firstNotBlank(response.getQuestionText(), "语音输入");
             String answer = response == null ? "AI 暂无回复" : firstNotBlank(response.getAnswer(), "AI 暂无回复");
@@ -181,6 +182,8 @@ public class ChatPersistenceService {
                         writeJson(response.getSources())
                 );
             }
+
+            bindVisitIdSafely(finalSessionId, userId, visitId);
         } catch (Exception e) {
             log.warn("保存语音聊天记录失败，不影响AI响应。userId={}", userId, e);
         }

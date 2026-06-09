@@ -16,6 +16,13 @@
       <view class="retry-btn" @click="loadReport">重新加载</view>
     </view>
 
+    <view v-else-if="unfinished" class="status-card card">
+      <text class="status-title">导览尚未结束</text>
+      <text class="status-desc">当前 visit 仍在进行中，结束现场导览后再查看完整报告。</text>
+      <view class="retry-btn" @click="loadReport">重新加载</view>
+      <view class="home-btn" @click="goHome">返回首页</view>
+    </view>
+
     <template v-else>
       <view class="report-hero card">
         <view class="hero-tag">游玩报告</view>
@@ -212,6 +219,7 @@ import request from '@/utils/request'
 const loading = ref(true)
 const error = ref(false)
 const empty = ref(false)
+const unfinished = ref(false)
 const errorMessage = ref('')
 const visitId = ref('')
 const fromNativeEnd = ref(false)
@@ -311,6 +319,30 @@ function unwrapReportResponse(response) {
   return response
 }
 
+function normalizeReportStatus(value) {
+  const text = String(value || '').trim().toUpperCase()
+  if (['ACTIVE', 'IN_PROGRESS', 'ONGOING', 'RUNNING', 'STARTED', 'VISITING'].includes(text)) {
+    return 'ACTIVE'
+  }
+  if (['ENDED', 'COMPLETED', 'FINISHED', 'DONE'].includes(text)) {
+    return 'ENDED'
+  }
+  return ''
+}
+
+function isUnfinishedReport(data = {}) {
+  const endTime = pickFirst(data.endTime, data.end_time)
+  const status = normalizeReportStatus(pickFirst(
+    data.status,
+    data.visitStatus,
+    data.visit_status,
+    data.state,
+    data.sessionStatus,
+    data.session_status
+  ))
+  return !endTime && status === 'ACTIVE'
+}
+
 function normalizeDuration(value) {
   if (value === undefined || value === null || value === '') return ''
 
@@ -395,7 +427,7 @@ function normalizeSpot(raw = {}) {
 }
 
 function normalizeReport(source = {}) {
-  const consume = source.consume || source.consumption || source.cost || source.costs || {}
+  const consume = source.consume || source.consumption || source.consumptionSummary || source.consumption_summary || source.cost || source.costs || {}
   const feedback = source.feedback && typeof source.feedback === 'object' ? source.feedback : {}
   const feedbackText = typeof source.feedback === 'string' ? source.feedback : ''
   const spots = pickFirst(source.spots, source.scenicStays, source.scenic_stays, source.spotDetails, source.spot_details)
@@ -421,12 +453,13 @@ function normalizeReport(source = {}) {
     visitPreference: pickFirst(source.visitPreference, source.visit_preference),
     startTime: pickFirst(source.startTime, source.start_time),
     endTime: pickFirst(source.endTime, source.end_time),
+    status: pickFirst(source.status, source.visitStatus, source.visit_status),
     stayDurationText: stayDurationText || '暂无',
     spotCount: pickFirst(source.spotCount, source.spot_count, normalizedSpots.length) || 0,
     aiQuestionCount: pickFirst(source.aiQuestionCount, source.ai_question_count, source.questionCount, source.question_count, 0),
     favoriteCount: pickFirst(source.favoriteCount, source.favorite_count, 0),
     spots: normalizedSpots,
-    consumeStatus: String(pickFirst(source.consumeStatus, source.consume_status, consume.status, 'pending')).toLowerCase(),
+    consumeStatus: String(pickFirst(source.consumeStatus, source.consume_status, consume.consumeStatus, consume.consume_status, consume.status, 'pending')).toLowerCase(),
     ticketCost,
     foodCost,
     shoppingCost,
@@ -452,6 +485,7 @@ async function loadReport() {
   loading.value = true
   error.value = false
   empty.value = false
+  unfinished.value = false
   errorMessage.value = ''
 
   try {
@@ -483,12 +517,19 @@ async function loadReport() {
       return
     }
 
+    if (isUnfinishedReport(data)) {
+      report.value = data
+      unfinished.value = true
+      return
+    }
+
     report.value = data
   } catch (err) {
     console.warn('游玩报告加载失败：', err)
     error.value = true
     errorMessage.value = err?.message || '报告加载失败，请稍后重试'
     report.value = null
+    unfinished.value = false
   } finally {
     loading.value = false
   }
@@ -672,6 +713,20 @@ function goHome() {
   border-radius: 999rpx;
   background: #2f80ed;
   color: #ffffff;
+  font-size: 24rpx;
+}
+
+.home-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 20rpx;
+  min-width: 180rpx;
+  height: 64rpx;
+  padding: 0 28rpx;
+  border-radius: 999rpx;
+  background: #eef2ff;
+  color: #2f80ed;
   font-size: 24rpx;
 }
 

@@ -1,11 +1,16 @@
 <script>
-import { checkOnsiteGuideByLocation } from '@/common/onsite-guide.js'
+import {
+  checkOnsiteGuideByLocation,
+  clearOnsiteGuideStorage
+} from '@/common/onsite-guide.js'
 import {
   checkPendingGuideReturn,
   clearCurrentVisitInfo,
   clearPendingGuideReturnCheck,
   goVisitReport,
-  markVisitEndedLocal
+  markNativeGuideEndedReturn,
+  markVisitEndedLocal,
+  queryVisitStatus
 } from '@/utils/visit'
 
 let lastHandledExternalUrl = ''
@@ -101,7 +106,7 @@ function delayCheckOnsiteGuide(source = '') {
 
 async function handleGuideReturnThenCheck(source = '') {
   try {
-    if (openStoredGuideEndReport(source)) {
+    if (await openStoredGuideEndReport(source)) {
       return
     }
 
@@ -109,9 +114,11 @@ async function handleGuideReturnThenCheck(source = '') {
 
     if (result?.ended && result.visitId) {
       console.log('原生现场导览已结束，打开游玩报告：', result.visitId)
-      openEndedGuideReport({
+      await openEndedGuideReport({
         visitId: result.visitId,
-        areaName: result.areaName
+        areaName: result.areaName,
+        guideEnded: true,
+        openReport: true
       }, source)
       return
     }
@@ -136,14 +143,14 @@ async function handleGuideReturnThenCheck(source = '') {
   delayCheckOnsiteGuide(source)
 }
 
-function openStoredGuideEndReport(source = '') {
+async function openStoredGuideEndReport(source = '') {
   const query = readStoredGuideEndQuery()
 
   if (!query) {
     return false
   }
 
-  return openEndedGuideReport(query, source)
+  return await openEndedGuideReport(query, source)
 }
 
 function readStoredGuideEndQuery() {
@@ -199,7 +206,7 @@ function clearStoredGuideEndMarkers() {
   })
 }
 
-function openEndedGuideReport(query = {}, source = '') {
+async function openEndedGuideReport(query = {}, source = '') {
   const visitId = resolveReportVisitId(query)
 
   if (!visitId) {
@@ -208,29 +215,125 @@ function openEndedGuideReport(query = {}, source = '') {
   }
 
   const areaName = resolveReportAreaName(query)
-  markVisitEndedLocal({
-    visitId,
-    areaName
+  const explicitNativeEnd = isExplicitNativeGuideEnd(query)
+  const confirmResult = await confirmVisitEndedBeforeReport(visitId, areaName, {
+    allowNativeEndFallback: explicitNativeEnd
   })
-  clearCurrentVisitInfo()
-  clearPendingGuideReturnCheck()
 
-  if (isReportOpenLocked(visitId)) {
-    console.log('报告页已在短时间内打开，跳过重复跳转：', visitId)
+  if (!confirmResult.ended) {
+    if (!explicitNativeEnd || !confirmResult.error) {
+      return false
+    }
+
+    console.log('原生已明确返回 guideEnded/openReport，状态确认失败也清理本地导览状态：', {
+      visitId,
+      areaName,
+      error: confirmResult.error
+    })
+  }
+
+  const finalVisitId = confirmResult.visitId || visitId
+  const finalAreaName = confirmResult.areaName || areaName
+
+  markGuideEndedLocal({
+    visitId: finalVisitId,
+    areaName: finalAreaName,
+    source,
+    statusFailed: !!confirmResult.error
+  })
+
+  if (isReportOpenLocked(finalVisitId)) {
+    console.log('报告页已在短时间内打开，跳过重复跳转：', finalVisitId)
     return true
   }
 
-  if (isCurrentReportPage(visitId)) {
-    console.log('当前已经在对应游玩报告页：', visitId)
+  if (isCurrentReportPage(finalVisitId)) {
+    console.log('当前已经在对应游玩报告页：', finalVisitId)
     return true
   }
 
-  markReportOpenLocked(visitId)
-  goVisitReport(visitId, 'navigateTo', {
+  markReportOpenLocked(finalVisitId)
+  goVisitReport(finalVisitId, 'navigateTo', {
     fromNativeEnd: '1',
     source
   })
   return true
+}
+
+function markGuideEndedLocal(data = {}) {
+  const ended = markVisitEndedLocal({
+    visitId: data.visitId,
+    areaName: data.areaName
+  })
+  markNativeGuideEndedReturn({
+    visitId: ended.visitId || data.visitId,
+    areaName: ended.areaName || data.areaName,
+    source: data.source,
+    statusFailed: data.statusFailed === true
+  })
+  clearOnsiteGuideStorage()
+  clearCurrentVisitInfo()
+  clearPendingGuideReturnCheck()
+  return ended
+}
+
+async function confirmVisitEndedBeforeReport(visitId, areaName = '', options = {}) {
+  try {
+    const status = await queryVisitStatus(visitId)
+
+    if (status.state === 'ENDED') {
+      return {
+        ended: true,
+        visitId: status.visitId || visitId,
+        areaName: status.parkName || areaName
+      }
+    }
+
+    if (status.state === 'ACTIVE') {
+      uni.showToast({
+        title: '导览尚未结束，请稍后重试',
+        icon: 'none'
+      })
+      console.log('报告跳转前确认仍为进行中，阻止打开报告：', status)
+      return {
+        ended: false,
+        status
+      }
+    }
+
+    uni.showToast({
+      title: '暂未生成完整报告',
+      icon: 'none'
+    })
+    console.log('报告跳转前确认未完成，阻止打开报告：', status)
+    return {
+      ended: false,
+      status
+    }
+  } catch (error) {
+    if (options.allowNativeEndFallback !== true) {
+      uni.showToast({
+        title: '正在确认导览结束，请稍后重试',
+        icon: 'none'
+      })
+    }
+    console.log('报告跳转前确认导览结束失败：', error)
+    return {
+      ended: false,
+      error
+    }
+  }
+}
+
+function isExplicitNativeGuideEnd(query = {}) {
+  return !!resolveReportVisitId(query) && (
+    isTruthy(query.guideEnded) ||
+    isTruthy(query.guide_ended) ||
+    isTruthy(query.openReport) ||
+    isTruthy(query.open_report) ||
+    isTruthy(query.NATIVE_GUIDE_ENDED) ||
+    isTruthy(query.NATIVE_OPEN_REPORT)
+  )
 }
 
 /**
@@ -279,7 +382,9 @@ function handleExternalOpen(options = {}, source = '') {
   }
 
   if (isReportOpenQuery(parsed.query, parsed.action)) {
-    openEndedGuideReport(parsed.query, source)
+    openEndedGuideReport(parsed.query, source).catch(error => {
+      console.log('处理报告外部打开失败：', error)
+    })
     tryClearRuntimeArguments()
     return true
   }

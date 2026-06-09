@@ -350,8 +350,23 @@ export async function openNativeLive2DGuide(options = {}) {
     )
 
     // 注意：这里不能再用 visitorId 兜底。
-    // visitor_ 只能作为游客标识，不能作为后端登录用户 ID。
+    // visitor_ / android-live2d-* 只能作为游客或演示标识，不能作为后端登录用户 ID。
+    // tourist_xxx 是当前后端 tourist_user.user_id 的真实业务登录 ID，允许传入。
     const realUserId = userId || ''
+
+    if (isOnsiteGuide && !realUserId) {
+      console.warn('[openNativeLive2DGuide] 现场导览缺少真实登录用户ID，已拦截打开：', {
+        entry,
+        mode,
+        rawUserId: options.userId || options.user_id || authPayload.user_id || '',
+        visitorId
+      })
+      uni.showToast({
+        title: '登录用户信息异常，请重新登录后再进入导览',
+        icon: 'none'
+      })
+      return false
+    }
 
     const visitId = explicitVisitId
 
@@ -973,12 +988,12 @@ function normalizeRealUserId(value) {
   if (
     text === 'anonymous' ||
     text.startsWith('visitor_') ||
-    text.startsWith('tourist_') ||
     text.startsWith('android-live2d-')
   ) {
     return ''
   }
 
+  // 后端 tourist_user.user_id 的真实业务 ID 本来就是 tourist_xxx，不能过滤。
   return text
 }
 

@@ -3,7 +3,7 @@ server:
 
 spring:
   datasource:
-    url: jdbc:mysql://10.68.141.51:3306/scenic_ai_db?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    url: jdbc:mysql://10.120.215.51:3306/scenic_ai_db?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
     username: visitor_app
     password: 'VisitorApp_2026!'
     driver-class-name: com.mysql.cj.jdbc.Driver
@@ -37,10 +37,15 @@ mybatis-plus:
       id-type: auto
 
 ai:
-  base-url: http://10.68.141.198:8080
+  base-url: http://10.120.215.198:8080
   text-chat-endpoint: /api/chat
   voice-chat-endpoint: /api/chat
+  tts-status-endpoint: /api/chat/tts/status
   route-recommend-endpoint: /api/recommend/route
+  # 高德 WebService 步行路径规划 Key。不要写 Android Key，建议配置系统环境变量 AMAP_WEB_KEY。
+  amap-web-key: 20013882385ead9e85cf086c6db4f6a9
+  amap-walk-direction-url: https://restapi.amap.com/v3/direction/walking
+  amap-route-enabled: true
 scenic:
   backend:
     base-url: http://127.0.0.1:8080

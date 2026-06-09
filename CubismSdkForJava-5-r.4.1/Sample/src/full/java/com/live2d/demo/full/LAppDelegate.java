@@ -60,6 +60,7 @@ public class LAppDelegate {
 
         LAppLive2DManager.releaseInstance();
         CubismFramework.dispose();
+        cubismInitialized = false;
     }
 
     public void onDestroy() {
@@ -77,6 +78,7 @@ public class LAppDelegate {
 
         // Initialize Cubism SDK framework
         CubismFramework.initialize();
+        cubismInitialized = true;
     }
 
     public void onSurfaceChanged(int width, int height) {
@@ -96,8 +98,13 @@ public class LAppDelegate {
         // 例如 guide_male_01 / haruto 又强行切回第 0 个默认模型。
         //
         // 现在只触发 LAppLive2DManager 初始化，让它自己根据 Intent 里的 avatarId 加载模型。
-        LAppLive2DManager.getInstance();
-        currentModel = LAppLive2DManager.getInstance().getCurrentModel();
+        try {
+            LAppLive2DManager manager = LAppLive2DManager.getInstance();
+            manager.ensureInitialSceneLoaded();
+            currentModel = manager.getCurrentModel();
+        } catch (Throwable e) {
+            LAppPal.printLog("Live2D 模型初始化失败，等待下一帧重试: " + e.getMessage());
+        }
 
         isActive = true;
     }
@@ -164,6 +171,15 @@ public class LAppDelegate {
         return view;
     }
 
+    public boolean isCubismReadyForModelLoad() {
+        return cubismInitialized
+                && activity != null
+                && view != null
+                && windowWidth > 0
+                && windowHeight > 0
+                && CubismFramework.getIdManager() != null;
+    }
+
     public int getWindowWidth() {
         return windowWidth;
     }
@@ -194,6 +210,7 @@ public class LAppDelegate {
     private int windowWidth;
     private int windowHeight;
     private boolean isActive = true;
+    private boolean cubismInitialized = false;
 
     /**
      * モデルシーンインデックス

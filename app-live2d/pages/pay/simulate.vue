@@ -80,6 +80,9 @@ import {
   getPaymentShopInfo,
   submitSimulatePayment
 } from '@/utils/payment'
+import {
+  getCurrentVisitId
+} from '@/utils/visit'
 
 const typeOptions = [
   { label: '门票消费', value: 'ticket' },
@@ -137,6 +140,36 @@ const locationText = computed(() => {
 
 function pickFirst(...values) {
   return values.find(value => value !== undefined && value !== null && value !== '') || ''
+}
+
+function safeGetStorage(key) {
+  try {
+    return uni.getStorageSync(key)
+  } catch (error) {
+    console.warn(`读取本地缓存失败：${key}`, error)
+    return ''
+  }
+}
+
+function getPaymentVisitContext() {
+  const currentVisitInfo = safeGetStorage('currentVisitInfo') || {}
+  const visitId = pickFirst(
+    getCurrentVisitId(),
+    currentVisitInfo.currentVisitId,
+    currentVisitInfo.visitId,
+    safeGetStorage('currentVisitId')
+  )
+  const areaId = pickFirst(
+    currentVisitInfo.currentParkId,
+    currentVisitInfo.parkId,
+    currentVisitInfo.areaId,
+    safeGetStorage('currentParkId')
+  )
+
+  return {
+    visitId,
+    areaId
+  }
 }
 
 function parseQuery(queryString = '') {
@@ -345,9 +378,24 @@ async function handleSubmit() {
 
   submitting.value = true
 
+  const visitContext = getPaymentVisitContext()
+
   const payload = {
     shopCode: form.value.shopCode,
+    shop_code: form.value.shopCode,
     amount,
+    merchantId: form.value.merchantId || undefined,
+    merchant_id: form.value.merchantId || undefined,
+    merchantName: form.value.merchantName || undefined,
+    merchant_name: form.value.merchantName || undefined,
+    locationId: form.value.locationId || undefined,
+    location_id: form.value.locationId || undefined,
+    consumptionType: form.value.consumptionType || form.value.shopType || undefined,
+    consumption_type: form.value.consumptionType || form.value.shopType || undefined,
+    visitId: visitContext.visitId || undefined,
+    visit_id: visitContext.visitId || undefined,
+    areaId: visitContext.areaId || undefined,
+    area_id: visitContext.areaId || undefined,
     source: 'app-scan-pay'
   }
 

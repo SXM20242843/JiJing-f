@@ -13,6 +13,12 @@ public class PaymentSimulateRequest {
     public String shop_code;
     public String shopCode;
 
+    public Long visit_id;
+    public Long visitId;
+
+    public Long area_id;
+    public Long areaId;
+
     public Long merchant_id;
     public Long merchantId;
 
@@ -42,6 +48,14 @@ public class PaymentSimulateRequest {
 
     public String getShopCodeText() {
         return firstNotBlank(shop_code, shopCode);
+    }
+
+    public Long getVisitIdValue() {
+        return visit_id != null ? visit_id : visitId;
+    }
+
+    public Long getAreaIdValue() {
+        return area_id != null ? area_id : areaId;
     }
 
     public Long getMerchantIdValue() {

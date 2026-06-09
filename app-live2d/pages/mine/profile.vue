@@ -127,7 +127,7 @@
 import { reactive, ref } from 'vue'
 import { onLoad, onShow } from '@dcloudio/uni-app'
 import request from '@/utils/request'
-import { getCurrentUserId, isLogin } from '@/utils/auth'
+import { getCurrentUserId, isLogin, getUserInfo, setUserInfo } from '@/utils/auth'
 import { markProfileCompleted } from '@/utils/profileOnboarding'
 
 const interestTagOptions = [
@@ -464,11 +464,9 @@ async function loadProfile() {
 
   try {
     const response = await request({
-      url: '/api/user/profile',
+      url: `/api/user/profile?userId=${encodeURIComponent(userId)}`,
       method: 'GET',
-      data: {
-        userId
-      },
+      needAuth: true,
       showErrorToast: false
     })
     const data = unwrapResponse(response) || {}
@@ -503,16 +501,18 @@ async function saveProfile() {
       url: '/api/user/profile/save',
       method: 'POST',
       data: payload,
+      needAuth: true,
       showErrorToast: false
     })
 
-    unwrapResponse(response)
-    applyProfile(payload)
+    const savedProfile = unwrapResponse(response) || payload
+    applyProfile(savedProfile)
     saveCachedProfile({
-      ...payload,
+      ...savedProfile,
       profileCompleted: true
     })
     markProfileCompleted(payload.userId)
+    patchLocalUserProfileCompleted()
 
     uni.showToast({
       title: '偏好已保存',
@@ -538,6 +538,20 @@ async function saveProfile() {
   }
 }
 
+
+function patchLocalUserProfileCompleted() {
+  const userInfo = getUserInfo() || {}
+  setUserInfo({
+    ...userInfo,
+    profileCompleted: true,
+    profile_completed: true,
+    hasProfile: true,
+    has_profile: true,
+    profile_status: 'completed',
+    profileStatus: 'completed'
+  })
+}
+
 function goLogin() {
   uni.navigateTo({
     url: '/pages/login/login'
@@ -553,7 +567,7 @@ onShow(() => {
   const wasLoggedIn = loggedIn.value
   loggedIn.value = isLogin()
 
-  if (!wasLoggedIn && loggedIn.value) {
+  if (loggedIn.value && (!wasLoggedIn || !saving.value)) {
     loadProfile()
   }
 })

@@ -19,6 +19,8 @@ const LAST_ENDED_VISIT_ID_KEY = 'lastEndedVisitId'
 const LAST_ENDED_AREA_NAME_KEY = 'lastEndedAreaName'
 const PENDING_GUIDE_RETURN_CHECK_KEY = 'pendingGuideReturnCheck'
 const CURRENT_GUIDE_AREA_NAME_KEY = 'currentGuideAreaName'
+const NATIVE_GUIDE_ENDED_RETURN_KEY = 'nativeGuideEndedReturn'
+const NATIVE_GUIDE_ENDED_RETURN_TTL = 5 * 60 * 1000
 
 let pendingTripInfoSelection = null
 
@@ -327,6 +329,30 @@ function normalizeVisitStatusResponse(response, fallbackVisitId = '') {
   }
 }
 
+function isVisitEndSuccessResponse(response) {
+  if (!response) return false
+
+  if (Object.prototype.hasOwnProperty.call(response, 'code') && Number(response.code) === 0) {
+    return true
+  }
+
+  const data = unwrapApiData(response)
+  if (!data || typeof data !== 'object') {
+    return false
+  }
+
+  const status = normalizeVisitStatus(pickFirst(
+    data.status,
+    data.visitStatus,
+    data.visit_status,
+    data.state,
+    data.sessionStatus,
+    data.session_status
+  ))
+
+  return status === 'ENDED'
+}
+
 export function saveCurrentVisitInfo(data = {}) {
   const visitId = normalizeVisitId(data.visitId)
   const currentParkId = data.currentParkId || data.parkId || ''
@@ -503,6 +529,59 @@ export function markVisitEndedLocal(data = {}) {
   clearCurrentVisitInfo()
 
   return saved
+}
+
+export function markNativeGuideEndedReturn(data = {}) {
+  const visitId = normalizeVisitId(data.visitId || data.reportVisitId || getCurrentVisitId())
+  const areaName = data.areaName || data.parkName || safeGetStorage(LAST_ENDED_AREA_NAME_KEY) || safeGetStorage(CURRENT_PARK_NAME_KEY) || ''
+
+  if (!visitId) {
+    return null
+  }
+
+  const payload = {
+    guideEnded: true,
+    visitId,
+    areaName,
+    source: data.source || 'native-live2d',
+    statusFailed: data.statusFailed === true,
+    time: Date.now()
+  }
+
+  safeSetStorage(NATIVE_GUIDE_ENDED_RETURN_KEY, payload)
+  return payload
+}
+
+export function getRecentNativeGuideEndedReturn() {
+  const value = safeGetStorage(NATIVE_GUIDE_ENDED_RETURN_KEY)
+
+  if (!value || typeof value !== 'object') {
+    return {
+      recent: false
+    }
+  }
+
+  const visitId = normalizeVisitId(value.visitId)
+  const time = Number(value.time || 0)
+
+  if (!value.guideEnded || !visitId || !time || Date.now() - time > NATIVE_GUIDE_ENDED_RETURN_TTL) {
+    clearNativeGuideEndedReturn()
+    return {
+      recent: false
+    }
+  }
+
+  return {
+    recent: true,
+    visitId,
+    areaName: value.areaName || '',
+    statusFailed: value.statusFailed === true,
+    source: value.source || ''
+  }
+}
+
+export function clearNativeGuideEndedReturn() {
+  safeRemoveStorage(NATIVE_GUIDE_ENDED_RETURN_KEY)
 }
 
 export async function queryVisitStatus(visitId) {
@@ -964,6 +1043,16 @@ export async function endCurrentVisit(options = {}) {
   })
 
   console.log('[visit/end] response:', JSON.stringify(response, null, 2))
+
+  if (!isVisitEndSuccessResponse(response)) {
+    console.warn('[visit/end] backend did not confirm completed status, keep local visit state:', response)
+    return {
+      success: false,
+      visitId: payload.visitId,
+      payload,
+      response
+    }
+  }
 
   clearActiveScenicVisit()
   saveLastVisitId(payload.visitId)

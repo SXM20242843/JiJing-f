@@ -8,9 +8,11 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Options;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Result;
+import org.apache.ibatis.annotations.ResultMap;
 import org.apache.ibatis.annotations.Results;
 import org.apache.ibatis.annotations.Select;
 
+import java.time.LocalDateTime;
 import java.util.List;
 
 @Mapper
@@ -20,6 +22,7 @@ public interface PaymentMapper {
         SELECT
           #{shopCode} AS shop_code,
           id AS merchant_id,
+          area_id,
           facility_name AS merchant_name,
           facility_code AS location_id,
           CASE
@@ -60,6 +63,7 @@ public interface PaymentMapper {
     @Results(id = "paymentShopInfoMap", value = {
             @Result(column = "shop_code", property = "shopCode"),
             @Result(column = "merchant_id", property = "merchantId"),
+            @Result(column = "area_id", property = "areaId"),
             @Result(column = "merchant_name", property = "merchantName"),
             @Result(column = "location_id", property = "locationId"),
             @Result(column = "consumption_type", property = "consumptionType")
@@ -77,7 +81,9 @@ public interface PaymentMapper {
           location_id,
           status,
           pay_time,
-          merchant_id
+          merchant_id,
+          area_id,
+          visit_id
         ) VALUES (
           #{userId},
           #{wechatOpenid},
@@ -88,7 +94,9 @@ public interface PaymentMapper {
           #{locationId},
           #{status},
           #{payTime},
-          #{merchantId}
+          #{merchantId},
+          #{areaId},
+          #{visitId}
         )
     """)
     @Options(useGeneratedKeys = true, keyProperty = "id")
@@ -105,7 +113,9 @@ public interface PaymentMapper {
           location_id,
           status,
           pay_time,
-          merchant_id
+          merchant_id,
+          area_id,
+          visit_id
         FROM payment_record
         WHERE user_id = #{userId}
         ORDER BY pay_time DESC, id DESC
@@ -120,7 +130,108 @@ public interface PaymentMapper {
             @Result(column = "location_id", property = "location_id"),
             @Result(column = "status", property = "status"),
             @Result(column = "pay_time", property = "pay_time"),
-            @Result(column = "merchant_id", property = "merchant_id")
+            @Result(column = "merchant_id", property = "merchant_id"),
+            @Result(column = "area_id", property = "area_id"),
+            @Result(column = "visit_id", property = "visit_id")
     })
     List<PaymentRecordDto> selectRecordsByUserId(@Param("userId") String userId);
+
+    @Select("""
+        SELECT
+          id,
+          user_id,
+          consumption_type,
+          amount,
+          payment_id,
+          merchant_name,
+          location_id,
+          status,
+          pay_time,
+          merchant_id,
+          area_id,
+          visit_id
+        FROM payment_record
+        WHERE visit_id = #{visitId}
+          AND LOWER(COALESCE(status, 'completed')) = 'completed'
+        ORDER BY pay_time DESC, id DESC
+    """)
+    @ResultMap("paymentRecordDtoMap")
+    List<PaymentRecordDto> selectRecordsByVisitId(@Param("visitId") Long visitId);
+
+    @Select("""
+        <script>
+        SELECT
+          id,
+          user_id,
+          consumption_type,
+          amount,
+          payment_id,
+          merchant_name,
+          location_id,
+          status,
+          pay_time,
+          merchant_id,
+          area_id,
+          visit_id
+        FROM payment_record
+        WHERE user_id = #{userId}
+          AND area_id = #{areaId}
+          AND LOWER(COALESCE(status, 'completed')) = 'completed'
+          AND pay_time &gt;= #{startTime}
+        <choose>
+          <when test="endTime != null">
+            AND pay_time &lt;= #{endTime}
+          </when>
+          <otherwise>
+            AND pay_time &lt;= NOW()
+          </otherwise>
+        </choose>
+        ORDER BY pay_time DESC, id DESC
+        </script>
+    """)
+    @ResultMap("paymentRecordDtoMap")
+    List<PaymentRecordDto> selectRecordsByVisitScope(
+            @Param("userId") String userId,
+            @Param("areaId") Long areaId,
+            @Param("startTime") LocalDateTime startTime,
+            @Param("endTime") LocalDateTime endTime
+    );
+
+    @Select("""
+        SELECT area_id
+        FROM tourist_visit_session
+        WHERE id = #{visitId}
+          AND user_id = #{userId}
+        LIMIT 1
+    """)
+    Long selectAreaIdByVisitId(
+            @Param("visitId") Long visitId,
+            @Param("userId") String userId
+    );
+
+    @Select("""
+        SELECT id
+        FROM tourist_visit_session
+        WHERE user_id = #{userId}
+          AND area_id = #{areaId}
+          AND UPPER(visit_status) IN ('VISITING', 'ACTIVE', 'IN_PROGRESS', 'ONGOING')
+          AND end_time IS NULL
+        ORDER BY start_time DESC, id DESC
+        LIMIT 1
+    """)
+    Long selectActiveVisitIdByUserAndAreaId(
+            @Param("userId") String userId,
+            @Param("areaId") Long areaId
+    );
+
+    @Select("""
+        SELECT id
+        FROM tourist_visit_session
+        WHERE user_id = #{userId}
+          AND UPPER(visit_status) IN ('VISITING', 'ACTIVE', 'IN_PROGRESS', 'ONGOING')
+          AND end_time IS NULL
+        ORDER BY start_time DESC, id DESC
+        LIMIT 1
+    """)
+    Long selectActiveVisitIdByUserId(@Param("userId") String userId);
 }

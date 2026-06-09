@@ -110,6 +110,22 @@ public class PaymentService {
         String paymentId = firstNotBlank(request.getPaymentIdText(), generatePaymentId());
         String status = firstNotBlank(request.getStatusText(), "completed");
 
+        Long areaId = firstLong(
+                request.getAreaIdValue(),
+                shopInfo == null ? null : shopInfo.areaId
+        );
+        Long visitId = request.getVisitIdValue();
+
+        if (visitId != null && areaId == null) {
+            areaId = paymentMapper.selectAreaIdByVisitId(visitId, userId);
+        }
+
+        if (visitId == null) {
+            visitId = areaId == null
+                    ? paymentMapper.selectActiveVisitIdByUserId(userId)
+                    : paymentMapper.selectActiveVisitIdByUserAndAreaId(userId, areaId);
+        }
+
         PaymentRecord record = new PaymentRecord();
         record.userId = userId;
         record.wechatOpenid = emptyToNull(request.getWechatOpenidText());
@@ -121,6 +137,8 @@ public class PaymentService {
         record.status = status;
         record.payTime = LocalDateTime.now();
         record.merchantId = merchantId;
+        record.areaId = areaId;
+        record.visitId = visitId;
 
         int rows = paymentMapper.insertPaymentRecord(record);
         if (rows <= 0 || record.id == null) {
@@ -160,6 +178,8 @@ public class PaymentService {
         extra.put("consumption_type", record.consumptionType);
         extra.put("shop_code", shopCode);
         extra.put("location_id", record.locationId);
+        extra.put("area_id", record.areaId);
+        extra.put("visit_id", record.visitId);
         event.extra = extra;
 
         behaviorEventService.addBehaviorEvent(event, userId);
@@ -177,6 +197,8 @@ public class PaymentService {
         dto.status = record.status;
         dto.pay_time = record.payTime;
         dto.merchant_id = record.merchantId;
+        dto.area_id = record.areaId;
+        dto.visit_id = record.visitId;
         return dto;
     }
 

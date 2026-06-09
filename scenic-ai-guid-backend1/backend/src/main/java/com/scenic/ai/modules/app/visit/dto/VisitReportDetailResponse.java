@@ -37,6 +37,13 @@ public class VisitReportDetailResponse {
     public List<Object> routePlans = new ArrayList<>();
     public Map<String, Object> behaviorSummary = new LinkedHashMap<>();
     public Map<String, Object> consumptionSummary = new LinkedHashMap<>();
+    public String consumeStatus;
+    public BigDecimal ticketCost;
+    public BigDecimal foodCost;
+    public BigDecimal shoppingCost;
+    public BigDecimal transportCost;
+    public BigDecimal entertainmentCost;
+    public BigDecimal totalCost;
     public List<ConsumeItem> consumeList = new ArrayList<>();
     public List<RecommendParkDto> recommendationSimilarScenic = new ArrayList<>();
     public Boolean profileUpdated = false;
@@ -64,6 +71,7 @@ public class VisitReportDetailResponse {
         public BigDecimal amount;
         public String paymentId;
         public String merchantName;
+        public String locationId;
         public String payTime;
     }
 }

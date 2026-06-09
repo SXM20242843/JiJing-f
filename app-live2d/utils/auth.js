@@ -160,19 +160,74 @@ function normalizeUserId(value) {
 
   if (!text) return ''
 
-  // visitor_ 只能作为游客 ID，不能作为真实登录 userId 传给后端鉴权接口
+  // visitor_ 只能作为未登录游客 ID，不能作为登录用户 ID
   if (text.startsWith('visitor_')) return ''
 
-  // tourist_ 是游客端临时身份，不等同于后端登录用户 ID
-  if (text.startsWith('tourist_')) return ''
-
-  // android-live2d-* 只能作为原生本地兜底 ID，不能作为真实用户 ID
+  // android-live2d-* 只能作为原生本地兜底 ID，不能作为登录用户 ID
   if (text.startsWith('android-live2d-')) return ''
 
   // anonymous 也不能作为真实登录用户
   if (text === 'anonymous') return ''
 
+  /**
+   * 注意：
+   * 后端 AppUserService.register() 生成的真实业务 user_id 本来就是 tourist_xxx。
+   * tourist_ 不是一定等于“临时游客”，不能在这里过滤掉。
+   */
   return text
+}
+
+function normalizeNumericUserId(value) {
+  const text = value === undefined || value === null ? '' : String(value).trim()
+  if (!text) return ''
+  return /^\d+$/.test(text) ? text : ''
+}
+
+function pickNumericUserId(...values) {
+  for (const value of values) {
+    const id = normalizeNumericUserId(value)
+    if (id) return id
+  }
+  return ''
+}
+
+function pickBusinessUserId(...values) {
+  for (const value of values) {
+    const id = normalizeUserId(value)
+    if (id) return id
+  }
+  return ''
+}
+
+function getUserInfoCandidates(userInfo = {}) {
+  const nestedUserInfo = userInfo.userInfo || userInfo.user || userInfo.touristUser || {}
+  const data = userInfo.data || {}
+  const dataUserInfo = data.userInfo || data.user || data.touristUser || {}
+
+  return {
+    nestedUserInfo,
+    data,
+    dataUserInfo
+  }
+}
+
+function getCurrentNumericUserId() {
+  const userInfo = getUserInfo()
+
+  if (!userInfo) return ''
+
+  const { nestedUserInfo, data, dataUserInfo } = getUserInfoCandidates(userInfo)
+
+  return pickNumericUserId(
+    userInfo.id,
+    userInfo.uid,
+    nestedUserInfo.id,
+    nestedUserInfo.uid,
+    data.id,
+    data.uid,
+    dataUserInfo.id,
+    dataUserInfo.uid
+  )
 }
 
 function getCurrentUserId() {
@@ -180,45 +235,30 @@ function getCurrentUserId() {
 
   if (!userInfo) return ''
 
+  const { nestedUserInfo, data, dataUserInfo } = getUserInfoCandidates(userInfo)
+
   /**
-   * 优先取业务用户 ID：
-   * 1. user_id / userId
-   * 2. tourist_user_id / touristUserId
-   * 3. 嵌套 userInfo / user / data
-   * 4. 最后才兜底 id / uid
+   * 当前后端 tourist_user.user_id 是核心业务用户 ID。
+   * AppUserService.register() 生成的就是 tourist_xxx，JWT 里也是这个 userId。
+   * 用户画像、收藏、聊天、路线等表主要按 user_id 串联，所以这里必须优先返回业务 userId。
    */
-  const directBusinessId = pickFirstFilledValue(
+  const businessId = pickBusinessUserId(
     userInfo.user_id,
     userInfo.userId,
     userInfo.user_id_str,
     userInfo.tourist_user_id,
     userInfo.touristUserId,
     userInfo.touristUserCode,
-    userInfo.userCode
-  )
+    userInfo.userCode,
 
-  if (normalizeUserId(directBusinessId)) {
-    return normalizeUserId(directBusinessId)
-  }
-
-  const nestedUserInfo = userInfo.userInfo || userInfo.user || userInfo.touristUser || {}
-  const nestedBusinessId = pickFirstFilledValue(
     nestedUserInfo.user_id,
     nestedUserInfo.userId,
     nestedUserInfo.user_id_str,
     nestedUserInfo.tourist_user_id,
     nestedUserInfo.touristUserId,
     nestedUserInfo.touristUserCode,
-    nestedUserInfo.userCode
-  )
+    nestedUserInfo.userCode,
 
-  if (normalizeUserId(nestedBusinessId)) {
-    return normalizeUserId(nestedBusinessId)
-  }
-
-  const data = userInfo.data || {}
-  const dataUserInfo = data.userInfo || data.user || data.touristUser || {}
-  const dataBusinessId = pickFirstFilledValue(
     data.user_id,
     data.userId,
     data.user_id_str,
@@ -226,6 +266,7 @@ function getCurrentUserId() {
     data.touristUserId,
     data.touristUserCode,
     data.userCode,
+
     dataUserInfo.user_id,
     dataUserInfo.userId,
     dataUserInfo.user_id_str,
@@ -235,8 +276,17 @@ function getCurrentUserId() {
     dataUserInfo.userCode
   )
 
-  if (normalizeUserId(dataBusinessId)) {
-    return normalizeUserId(dataBusinessId)
+  if (businessId) {
+    return businessId
+  }
+
+  /**
+   * 部分接口会额外返回数据库自增 id，例如 5。
+   * 只有在没有业务 userId 时，才用数字 id 兜底。
+   */
+  const numericId = getCurrentNumericUserId()
+  if (numericId) {
+    return numericId
   }
 
   const fallbackId = pickFirstFilledValue(
@@ -301,6 +351,7 @@ export {
   clearLogin,
   isLogin,
   getCurrentUserId,
+  getCurrentNumericUserId,
   getAuthPayload,
   requireLogin
 }

@@ -1,5 +1,7 @@
 package com.scenic.ai.modules.app.visit.service;
 
+import com.scenic.ai.modules.app.payment.dto.PaymentRecordDto;
+import com.scenic.ai.modules.app.payment.mapper.PaymentMapper;
 import com.scenic.ai.modules.app.visit.dto.BehaviorStatsDto;
 import com.scenic.ai.modules.app.visit.dto.RecommendParkDto;
 import com.scenic.ai.modules.app.visit.dto.SatisfactionInfoDto;
@@ -13,8 +15,10 @@ import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 
 @Service
 public class VisitReportService {
@@ -23,9 +27,14 @@ public class VisitReportService {
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     private final VisitReportMapper visitReportMapper;
+    private final PaymentMapper paymentMapper;
 
-    public VisitReportService(VisitReportMapper visitReportMapper) {
+    public VisitReportService(
+            VisitReportMapper visitReportMapper,
+            PaymentMapper paymentMapper
+    ) {
         this.visitReportMapper = visitReportMapper;
+        this.paymentMapper = paymentMapper;
     }
 
     public VisitReportResponse getVisitReport(Long visitId) {
@@ -47,6 +56,7 @@ public class VisitReportService {
         report.areaName = report.parkName;
         fillTravelSnapshot(report, visitId);
         fillCostDefaults(report);
+        fillPaymentCostsFromRecords(report, visitId);
 
         List<VisitReportSpotDto> spots = safeList(visitReportMapper.selectVisitReportSpots(visitId));
         for (VisitReportSpotDto spot : spots) {
@@ -157,6 +167,14 @@ public class VisitReportService {
         detail.visitedSpots = detail.spotStayList;
         detail.behaviorSummary.putAll(report.behaviorSummary);
         detail.consumptionSummary.putAll(report.consumptionSummary);
+        detail.consumeStatus = firstNotBlank(report.consumeStatus, "pending");
+        detail.ticketCost = defaultMoney(report.ticketCost);
+        detail.foodCost = defaultMoney(report.foodCost);
+        detail.shoppingCost = defaultMoney(report.shoppingCost);
+        detail.transportCost = defaultMoney(report.transportCost);
+        detail.entertainmentCost = defaultMoney(report.entertainmentCost);
+        detail.totalCost = defaultMoney(report.totalCost);
+        detail.consumeList = buildConsumeList(loadPaymentRecordsForReport(report, visitId));
         detail.recommendationSimilarScenic = report.recommendParks;
         detail.summary = buildSummary(detail);
         return detail;
@@ -183,8 +201,135 @@ public class VisitReportService {
         report.consumptionSummary.put("transportCost", report.transportCost);
         report.consumptionSummary.put("entertainmentCost", report.entertainmentCost);
         report.consumptionSummary.put("totalCost", report.totalCost);
-        report.consumptionSummary.put("consumeStatus", firstNotBlank(report.consumeStatus, "pending"));
-        report.consumptionSummary.put("confirmText", "消费记录待景区管理员确认");
+        String consumeStatus = firstNotBlank(report.consumeStatus, "pending").toLowerCase(Locale.ROOT);
+        report.consumptionSummary.put("consumeStatus", consumeStatus);
+        report.consumptionSummary.put("confirmText", "confirmed".equals(consumeStatus)
+                ? "已同步本次消费记录"
+                : "消费记录待景区管理员确认");
+    }
+
+
+    private void fillPaymentCostsFromRecords(VisitReportResponse report, Long visitId) {
+        List<PaymentRecordDto> records = loadPaymentRecordsForReport(report, visitId);
+        if (records.isEmpty()) {
+            report.consumeStatus = firstNotBlank(report.consumeStatus, "pending");
+            return;
+        }
+
+        BigDecimal ticketCost = BigDecimal.ZERO;
+        BigDecimal foodCost = BigDecimal.ZERO;
+        BigDecimal shoppingCost = BigDecimal.ZERO;
+        BigDecimal transportCost = BigDecimal.ZERO;
+        BigDecimal entertainmentCost = BigDecimal.ZERO;
+        BigDecimal totalCost = BigDecimal.ZERO;
+
+        for (PaymentRecordDto record : records) {
+            if (record == null || !isCompletedPayment(record.status)) {
+                continue;
+            }
+
+            BigDecimal amount = defaultMoney(record.amount);
+            totalCost = totalCost.add(amount);
+
+            String type = normalizeConsumptionType(record.consumption_type);
+            switch (type) {
+                case "ticket" -> ticketCost = ticketCost.add(amount);
+                case "food" -> foodCost = foodCost.add(amount);
+                case "shopping" -> shoppingCost = shoppingCost.add(amount);
+                case "transport" -> transportCost = transportCost.add(amount);
+                case "accommodation", "entertainment" -> entertainmentCost = entertainmentCost.add(amount);
+                default -> entertainmentCost = entertainmentCost.add(amount);
+            }
+        }
+
+        report.ticketCost = ticketCost;
+        report.foodCost = foodCost;
+        report.shoppingCost = shoppingCost;
+        report.transportCost = transportCost;
+        report.entertainmentCost = entertainmentCost;
+        report.totalCost = totalCost;
+        report.consumeStatus = totalCost.compareTo(BigDecimal.ZERO) > 0 ? "confirmed" : "pending";
+    }
+
+    private List<PaymentRecordDto> loadPaymentRecordsForReport(VisitReportResponse report, Long visitId) {
+        if (visitId == null) {
+            return Collections.emptyList();
+        }
+
+        try {
+            List<PaymentRecordDto> records = safeList(paymentMapper.selectRecordsByVisitId(visitId));
+            if (!records.isEmpty()) {
+                return records;
+            }
+
+            if (report != null
+                    && report.userId != null
+                    && !report.userId.isBlank()
+                    && report.areaId != null
+                    && report.rawStartTime != null) {
+                return safeList(paymentMapper.selectRecordsByVisitScope(
+                        report.userId,
+                        report.areaId,
+                        report.rawStartTime,
+                        report.rawEndTime
+                ));
+            }
+        } catch (Exception ignored) {
+            return Collections.emptyList();
+        }
+
+        return Collections.emptyList();
+    }
+
+    private List<VisitReportDetailResponse.ConsumeItem> buildConsumeList(List<PaymentRecordDto> records) {
+        List<VisitReportDetailResponse.ConsumeItem> items = new ArrayList<>();
+
+        for (PaymentRecordDto record : safeList(records)) {
+            if (record == null || !isCompletedPayment(record.status)) {
+                continue;
+            }
+
+            VisitReportDetailResponse.ConsumeItem item = new VisitReportDetailResponse.ConsumeItem();
+            item.consumptionType = normalizeConsumptionType(record.consumption_type);
+            item.amount = defaultMoney(record.amount);
+            item.paymentId = record.payment_id;
+            item.merchantName = record.merchant_name;
+            item.locationId = record.location_id;
+            item.payTime = formatDateTime(record.pay_time);
+            items.add(item);
+        }
+
+        return items;
+    }
+
+    private boolean isCompletedPayment(String status) {
+        String normalized = firstNotBlank(status, "completed").toLowerCase(Locale.ROOT);
+        return "completed".equals(normalized) || "success".equals(normalized) || "paid".equals(normalized);
+    }
+
+    private String normalizeConsumptionType(String value) {
+        String normalized = firstNotBlank(value).toLowerCase(Locale.ROOT);
+        if (normalized.isEmpty()) {
+            return "entertainment";
+        }
+
+        if ("restaurant".equals(normalized) || "dining".equals(normalized)) {
+            return "food";
+        }
+
+        if ("shop".equals(normalized) || "store".equals(normalized) || "retail".equals(normalized)) {
+            return "shopping";
+        }
+
+        if ("parking".equals(normalized) || "bus".equals(normalized)) {
+            return "transport";
+        }
+
+        if ("hotel".equals(normalized)) {
+            return "accommodation";
+        }
+
+        return normalized;
     }
 
     private void fillTravelSnapshot(VisitReportResponse report, Long visitId) {
@@ -329,7 +474,9 @@ public class VisitReportService {
         String summary = "本次你完成了" + areaName + "的现场导览，浏览了 "
                 + spotCount + " 个景点，向 AI 数字人提问 "
                 + questionCount + " 次。";
-        if (detail.consumeList == null || detail.consumeList.isEmpty()) {
+        if (detail.totalCost != null && detail.totalCost.compareTo(BigDecimal.ZERO) > 0) {
+            summary += " 本次消费合计 " + detail.totalCost.stripTrailingZeros().toPlainString() + " 元。";
+        } else if (detail.consumeList == null || detail.consumeList.isEmpty()) {
             summary += " 消费记录待景区管理员确认。";
         }
         return summary;

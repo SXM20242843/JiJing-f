@@ -1,3 +1,4 @@
 <resources>
-  <string name="app_name">Demo</string>
+  <string name="app_name">即境数字人导览</string>
+  <string name="amap_android_key">a256da9bf620dfb7c0477c05350c9a24</string>
 </resources>

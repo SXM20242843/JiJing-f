@@ -7,6 +7,7 @@
 
 package com.live2d.demo.full;
 
+import com.live2d.sdk.cubism.framework.CubismFramework;
 import com.live2d.sdk.cubism.framework.math.CubismMatrix44;
 import com.live2d.sdk.cubism.framework.motion.ACubismMotion;
 import com.live2d.sdk.cubism.framework.motion.IBeganMotionCallback;
@@ -62,7 +63,13 @@ public class LAppLive2DManager {
 
     public void releaseAllModel() {
         for (LAppModel model : models) {
-            model.deleteModel();
+            if (model != null) {
+                try {
+                    model.deleteModel();
+                } catch (Throwable e) {
+                    LAppPal.printLog("释放 Live2D 模型失败: " + e.getMessage());
+                }
+            }
         }
         models.clear();
     }
@@ -273,6 +280,17 @@ public class LAppLive2DManager {
 
     public void changeSceneByAvatarId(String avatarId, String requestedClothesMode) {
         String normalizedAvatarId = normalizeAvatarId(avatarId);
+        String normalizedClothesMode = normalizeClothesMode(requestedClothesMode);
+
+        pendingAvatarId = normalizedAvatarId;
+        pendingClothesMode = normalizedClothesMode;
+
+        if (!isReadyToLoadModel()) {
+            LAppPal.printLog("Live2D Framework 未就绪，延后切换数字人: avatarId="
+                    + normalizedAvatarId + ", clothesMode=" + normalizedClothesMode);
+            return;
+        }
+
         int index = findModelIndexByAvatarId(normalizedAvatarId);
 
         if (index < 0) {
@@ -284,7 +302,7 @@ public class LAppLive2DManager {
             index = 0;
         }
 
-        changeScene(index, requestedClothesMode);
+        changeScene(index, normalizedClothesMode);
     }
 
     private int findModelIndexByAvatarId(String avatarId) {
@@ -364,41 +382,70 @@ public class LAppLive2DManager {
             LAppPal.printLog("当前 clothesMode: " + finalClothesMode);
         }
 
+        if (!isReadyToLoadModel()) {
+            LAppPal.printLog("Live2D Framework 未就绪，取消本次 changeScene，等待 Surface 初始化后重试。");
+            pendingAvatarId = entry.avatarId;
+            pendingClothesMode = finalClothesMode;
+            return;
+        }
+
         String modelPath = ResourcePath.ROOT.getPath() + entry.modelDirName + "/";
         String modelJsonName = entry.modelJsonName;
 
-        releaseAllModel();
+        try {
+            releaseAllModel();
 
-        LAppModel mainModel = new LAppModel();
-        mainModel.loadAssets(modelPath, modelJsonName);
-        mainModel.setClothesMode(finalClothesMode);
-        models.add(mainModel);
+            LAppModel mainModel = new LAppModel();
+            mainModel.loadAssets(modelPath, modelJsonName);
+            mainModel.setClothesMode(finalClothesMode);
+            MouthSyncController.getInstance().bindModel(mainModel, entry.avatarId);
+            DigitalHumanActionController.getInstance().bindModel(mainModel, entry.avatarId);
+            models.add(mainModel);
 
-        LAppView.RenderingTarget useRenderingTarget;
-        if (USE_RENDER_TARGET) {
-            useRenderingTarget = LAppView.RenderingTarget.VIEW_FRAME_BUFFER;
-        } else if (USE_MODEL_RENDER_TARGET) {
-            useRenderingTarget = LAppView.RenderingTarget.MODEL_FRAME_BUFFER;
-        } else {
-            useRenderingTarget = LAppView.RenderingTarget.NONE;
+            LAppView.RenderingTarget useRenderingTarget;
+            if (USE_RENDER_TARGET) {
+                useRenderingTarget = LAppView.RenderingTarget.VIEW_FRAME_BUFFER;
+            } else if (USE_MODEL_RENDER_TARGET) {
+                useRenderingTarget = LAppView.RenderingTarget.MODEL_FRAME_BUFFER;
+            } else {
+                useRenderingTarget = LAppView.RenderingTarget.NONE;
+            }
+
+            if (USE_RENDER_TARGET || USE_MODEL_RENDER_TARGET) {
+                LAppModel secondModel = new LAppModel();
+                secondModel.loadAssets(modelPath, modelJsonName);
+                secondModel.setClothesMode(finalClothesMode);
+                secondModel.getModelMatrix().translateX(0.2f);
+                models.add(secondModel);
+            }
+
+            LAppDelegate.getInstance().getView().switchRenderingTarget(useRenderingTarget);
+
+            float[] clearColor = {0.0f, 0.0f, 0.0f};
+            LAppDelegate.getInstance().getView().setRenderingTargetClearColor(
+                    clearColor[0],
+                    clearColor[1],
+                    clearColor[2]
+            );
+
+            initialSceneLoaded = true;
+            pendingAvatarId = entry.avatarId;
+            pendingClothesMode = finalClothesMode;
+        } catch (Throwable e) {
+            LAppPal.printLog("切换 Live2D 模型失败: avatarId=" + entry.avatarId
+                    + ", dir=" + entry.modelDirName
+                    + ", json=" + entry.modelJsonName
+                    + ", reason=" + e.getMessage());
+            releaseAllModel();
+
+            if (!AVATAR_DEFAULT.equals(entry.avatarId)) {
+                int fallbackIndex = findModelIndexByAvatarId(AVATAR_DEFAULT);
+                if (fallbackIndex >= 0 && fallbackIndex != index) {
+                    LAppPal.printLog("切换失败，自动回退默认数字人: " + AVATAR_DEFAULT);
+                    changeScene(fallbackIndex, "");
+                }
+            }
         }
-
-        if (USE_RENDER_TARGET || USE_MODEL_RENDER_TARGET) {
-            LAppModel secondModel = new LAppModel();
-            secondModel.loadAssets(modelPath, modelJsonName);
-            secondModel.setClothesMode(finalClothesMode);
-            secondModel.getModelMatrix().translateX(0.2f);
-            models.add(secondModel);
-        }
-
-        LAppDelegate.getInstance().getView().switchRenderingTarget(useRenderingTarget);
-
-        float[] clearColor = {0.0f, 0.0f, 0.0f};
-        LAppDelegate.getInstance().getView().setRenderingTargetClearColor(
-                clearColor[0],
-                clearColor[1],
-                clearColor[2]
-        );
     }
 
     private String resolveClothesMode(ModelEntry entry, String requestedClothesMode) {
@@ -439,6 +486,26 @@ public class LAppLive2DManager {
         }
 
         return value;
+    }
+
+
+    public void ensureInitialSceneLoaded() {
+        if (!initialSceneLoaded || models.isEmpty()) {
+            changeSceneByAvatarId(pendingAvatarId, pendingClothesMode);
+        }
+    }
+
+    public boolean isReadyToLoadModel() {
+        try {
+            return LAppDelegate.getInstance().isCubismReadyForModelLoad()
+                    && CubismFramework.getIdManager() != null;
+        } catch (Throwable e) {
+            return false;
+        }
+    }
+
+    public boolean hasLoadedModel() {
+        return models != null && !models.isEmpty();
     }
 
     private String getInitialAvatarIdFromIntent() {
@@ -529,6 +596,13 @@ public class LAppLive2DManager {
         return currentClothesMode;
     }
 
+    public LAppModel getCurrentModelRef() {
+        if (currentModel >= 0 && currentModel < models.size()) {
+            return models.get(currentModel);
+        }
+        return null;
+    }
+
     public int getModelNum() {
         if (models == null) {
             return 0;
@@ -559,16 +633,20 @@ public class LAppLive2DManager {
     private LAppLive2DManager() {
         setUpModel();
 
-        String avatarId = getInitialAvatarIdFromIntent();
-        String clothesMode = getInitialClothesModeFromIntent();
+        pendingAvatarId = getInitialAvatarIdFromIntent();
+        pendingClothesMode = getInitialClothesModeFromIntent();
 
-        changeSceneByAvatarId(avatarId, clothesMode);
+        int index = findModelIndexByAvatarId(normalizeAvatarId(pendingAvatarId));
+        currentModel = index < 0 ? 0 : index;
     }
 
     private final List<LAppModel> models = new ArrayList<>();
 
     private int currentModel;
     private String currentClothesMode = "";
+    private boolean initialSceneLoaded = false;
+    private String pendingAvatarId = AVATAR_DEFAULT;
+    private String pendingClothesMode = "";
 
     private final List<ModelEntry> modelEntries = new ArrayList<>();
 

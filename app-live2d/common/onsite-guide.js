@@ -138,6 +138,17 @@ export function clearOnsiteGuideRuntimeLocks() {
   }
 }
 
+export function clearOnsiteGuideStorage() {
+  try {
+    uni.removeStorageSync(ONSITE_GUIDE_CONTEXT_KEY)
+    uni.removeStorageSync(CURRENT_ONSITE_STATUS_KEY)
+    uni.removeStorageSync(LAST_PROMPT_KEY)
+    clearOnsiteGuideRuntimeLocks()
+  } catch (error) {
+    console.log('清理现场导览缓存失败：', error)
+  }
+}
+
 export function enterOnsiteGuide(context) {
   if (!context) {
     uni.showToast({
