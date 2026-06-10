@@ -32,6 +32,10 @@ import java.util.Map;
 @Service
 public class GuideChatService {
 
+    private static final long TTS_WAIT_TIMEOUT_MS = 4000L;
+    private static final long TTS_WAIT_INTERVAL_MS = 500L;
+    private static final int TTS_WAIT_MAX_ATTEMPTS = 8;
+
     private final RestTemplate restTemplate;
     private final AiProperties aiProperties;
     private final ObjectMapper objectMapper;
@@ -113,6 +117,7 @@ public class GuideChatService {
                 log.info("AI文本问答服务响应成功: status={}, responseKeys={}",
                         response.getStatusCode(), responseBody.keySet());
                 GuideChatResponse result = parseAiResponse(responseBody, true);
+                result = waitForTtsIfPending(result);
                 result.setVisitId(visitId);
 
                 if (allowRoute && containsRoutePayload(responseBody) && !Boolean.TRUE.equals(request.getRoute())) {
@@ -195,6 +200,10 @@ public class GuideChatService {
     }
 
     public GuideChatResponse queryTtsStatus(String taskId) {
+        return queryTtsStatus(taskId, null, null);
+    }
+
+    private GuideChatResponse queryTtsStatus(String taskId, String messageId, String conversationId) {
         GuideChatResponse result = new GuideChatResponse();
         result.setTtsTaskId(firstNotBlank(taskId));
         result.setTaskId(firstNotBlank(taskId));
@@ -210,9 +219,7 @@ public class GuideChatService {
             HttpHeaders headers = new HttpHeaders();
             headers.setAccept(Collections.singletonList(MediaType.APPLICATION_JSON));
             HttpEntity<Void> entity = new HttpEntity<Void>(headers);
-            String url = trimTrailingSlash(aiProperties.getBaseUrl())
-                    + firstNotBlank(aiProperties.getTtsStatusEndpoint(), "/api/chat/tts/status")
-                    + "?taskId=" + URLEncoder.encode(taskId.trim(), StandardCharsets.UTF_8.toString());
+            String url = buildTtsStatusUrl(taskId, messageId, conversationId);
             ResponseEntity<Map> response = restTemplate.exchange(url, HttpMethod.GET, entity, Map.class);
             if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
                 result = parseAiResponse(response.getBody(), false);
@@ -233,6 +240,119 @@ public class GuideChatService {
         result.setMouthStatus("FAILED");
         hydrateDigitalHumanPayloads(result);
         return result;
+    }
+
+    private GuideChatResponse waitForTtsIfPending(GuideChatResponse result) {
+        if (result == null || hasText(result.getAudioUrl())) {
+            return result;
+        }
+
+        String taskId = firstNotBlank(result.getTtsTaskId(), result.getTaskId());
+        if (!"PENDING".equalsIgnoreCase(firstNotBlank(result.getAudioStatus())) || !hasText(taskId)) {
+            return result;
+        }
+
+        if (!hasText(aiProperties.getTtsStatusEndpoint())) {
+            log.info("[TtsWait] no AI task result endpoint configured, cannot wait final audio");
+            return result;
+        }
+
+        log.info("[TtsWait] pending taskId={}, start wait", taskId);
+        long deadline = System.currentTimeMillis() + TTS_WAIT_TIMEOUT_MS;
+        for (int attempt = 1; attempt <= TTS_WAIT_MAX_ATTEMPTS; attempt++) {
+            long remainingMs = deadline - System.currentTimeMillis();
+            if (remainingMs <= 0L) {
+                break;
+            }
+            try {
+                Thread.sleep(Math.min(TTS_WAIT_INTERVAL_MS, remainingMs));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.info("[TtsWait] timeout taskId={}, keep PENDING", taskId);
+                return result;
+            }
+
+            GuideChatResponse polled = queryTtsStatus(taskId, result.getMessageId(), result.getConversationId());
+            int frameCount = polled.getMouthFrames() == null ? 0 : polled.getMouthFrames().size();
+            log.info("[TtsWait] poll attempt={}, status={}, audioUrl={}, mouthFrames={}",
+                    attempt,
+                    polled.getAudioStatus(),
+                    polled.getAudioUrl(),
+                    frameCount);
+            if (hasText(polled.getAudioUrl())) {
+                mergeTtsResult(result, polled);
+                hydrateDigitalHumanPayloads(result);
+                log.info("[TtsWait] success taskId={}, audioUrl={}, frames={}",
+                        taskId,
+                        result.getAudioUrl(),
+                        result.getMouthFrames() == null ? 0 : result.getMouthFrames().size());
+                return result;
+            }
+        }
+
+        result.setTtsTaskId(taskId);
+        result.setTaskId(firstNotBlank(result.getTaskId(), taskId));
+        hydrateDigitalHumanPayloads(result);
+        log.info("[TtsWait] timeout taskId={}, keep PENDING", taskId);
+        return result;
+    }
+
+    private void mergeTtsResult(GuideChatResponse target, GuideChatResponse source) {
+        if (target == null || source == null) {
+            return;
+        }
+        target.setAudioUrl(source.getAudioUrl());
+        target.setAudioStatus("SUCCESS");
+        if (hasText(source.getAudioFormat())) {
+            target.setAudioFormat(source.getAudioFormat());
+        }
+        if (source.getAudioDurationMs() != null) {
+            target.setAudioDurationMs(source.getAudioDurationMs());
+        }
+        if (hasText(source.getTtsTaskId())) {
+            target.setTtsTaskId(source.getTtsTaskId());
+        }
+        if (hasText(source.getTaskId())) {
+            target.setTaskId(source.getTaskId());
+        }
+        if (hasText(source.getTtsError())) {
+            target.setTtsError(source.getTtsError());
+        }
+        if (!hasText(target.getMessageId()) && hasText(source.getMessageId())) {
+            target.setMessageId(source.getMessageId());
+        }
+        if (!hasText(target.getConversationId()) && hasText(source.getConversationId())) {
+            target.setConversationId(source.getConversationId());
+        }
+        if (source.getMouthFrames() != null && !source.getMouthFrames().isEmpty()) {
+            target.setMouthFrames(source.getMouthFrames());
+            target.setMouthStatus(firstNotBlank(source.getMouthStatus(), "SUCCESS"));
+        } else if (hasText(source.getMouthStatus())) {
+            target.setMouthStatus(source.getMouthStatus());
+        }
+    }
+
+    private String buildTtsStatusUrl(String taskId, String messageId, String conversationId) {
+        String endpoint = firstNotBlank(aiProperties.getTtsStatusEndpoint(), "/api/chat/tts/status");
+        String lowerEndpoint = endpoint.toLowerCase();
+        String baseUrl = lowerEndpoint.startsWith("http://") || lowerEndpoint.startsWith("https://")
+                ? endpoint
+                : trimTrailingSlash(aiProperties.getBaseUrl()) + (endpoint.startsWith("/") ? endpoint : "/" + endpoint);
+        StringBuilder url = new StringBuilder(baseUrl);
+        appendQueryParam(url, "taskId", taskId);
+        appendQueryParam(url, "messageId", messageId);
+        appendQueryParam(url, "conversationId", conversationId);
+        return url.toString();
+    }
+
+    private void appendQueryParam(StringBuilder url, String key, String value) {
+        if (url == null || !hasText(key) || !hasText(value)) {
+            return;
+        }
+        url.append(url.indexOf("?") >= 0 ? "&" : "?")
+                .append(URLEncoder.encode(key, StandardCharsets.UTF_8))
+                .append("=")
+                .append(URLEncoder.encode(value.trim(), StandardCharsets.UTF_8));
     }
 
     /**

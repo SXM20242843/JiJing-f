@@ -7,8 +7,6 @@
 
 package com.live2d.demo.full;
 
-import android.os.SystemClock;
-
 import com.live2d.demo.LAppDefine;
 import com.live2d.sdk.cubism.framework.CubismDefaultParameterId.ParameterId;
 import com.live2d.sdk.cubism.framework.CubismFramework;
@@ -33,7 +31,6 @@ import com.live2d.sdk.cubism.framework.utils.CubismDebug;
 
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
@@ -54,30 +51,27 @@ public class LAppModel extends CubismUserModel {
 
         CubismIdManager idManager = CubismFramework.getIdManager();
         if (idManager == null) {
-            LAppPal.printLog("CubismIdManager 为空，LAppModel 将等待 Framework 初始化后再加载参数。");
+            LAppPal.printLog("CubismIdManager 为空，LAppModel 等待 Framework 初始化后再尝试绑定口型。");
             idParamAngleX = null;
             idParamAngleY = null;
             idParamAngleZ = null;
             idParamBodyAngleX = null;
             idParamEyeBallX = null;
             idParamEyeBallY = null;
-        } else {
-            idParamAngleX = idManager.getId(ParameterId.ANGLE_X.getId());
-            idParamAngleY = idManager.getId(ParameterId.ANGLE_Y.getId());
-            idParamAngleZ = idManager.getId(ParameterId.ANGLE_Z.getId());
-            idParamBodyAngleX = idManager.getId(ParameterId.BODY_ANGLE_X.getId());
-            idParamEyeBallX = idManager.getId(ParameterId.EYE_BALL_X.getId());
-            idParamEyeBallY = idManager.getId(ParameterId.EYE_BALL_Y.getId());
+            return;
         }
+
+        idParamAngleX = idManager.getId(ParameterId.ANGLE_X.getId());
+        idParamAngleY = idManager.getId(ParameterId.ANGLE_Y.getId());
+        idParamAngleZ = idManager.getId(ParameterId.ANGLE_Z.getId());
+        idParamBodyAngleX = idManager.getId(ParameterId.BODY_ANGLE_X.getId());
+        idParamEyeBallX = idManager.getId(ParameterId.EYE_BALL_X.getId());
+        idParamEyeBallY = idManager.getId(ParameterId.EYE_BALL_Y.getId());
     }
 
     public void loadAssets(final String dir, final String fileName) {
         if (LAppDefine.DEBUG_LOG_ENABLE) {
             LAppPal.printLog("load model setting: " + fileName);
-        }
-
-        if (CubismFramework.getIdManager() == null) {
-            throw new IllegalStateException("CubismFramework 尚未 initialize，不能加载 Live2D 模型");
         }
 
         modelHomeDirectory = dir;
@@ -129,7 +123,9 @@ public class LAppModel extends CubismUserModel {
 
         // モーションの再生がない場合、待機モーションの中からランダムで再生する
         if (motionManager.isFinished()) {
-            startRandomMotion(LAppDefine.MotionGroup.IDLE.getId(), LAppDefine.Priority.IDLE.getPriority());
+            if (!MouthSyncController.getInstance().isPlaying()) {
+                startRandomMotion(LAppDefine.MotionGroup.IDLE.getId(), LAppDefine.Priority.IDLE.getPriority());
+            }
         } else {
             // モーションを更新
             isMotionUpdated = motionManager.updateMotion(model, deltaTimeSeconds);
@@ -178,9 +174,6 @@ public class LAppModel extends CubismUserModel {
             physics.evaluate(model, deltaTimeSeconds);
         }
 
-        // 数字人口型同步：按 MediaPlayer 实际起播时间推进，缺帧时走本地伪口型兜底。
-        MouthSyncController.getInstance().update(SystemClock.uptimeMillis());
-
         // Pose Setting
         if (pose != null) {
             pose.updateParameters(model, deltaTimeSeconds);
@@ -188,6 +181,9 @@ public class LAppModel extends CubismUserModel {
 
         // haru 同模型内部换装：必须放在 pose 之后，避免 pose 每帧把部件透明度改回去
         applyClothesModeInternal();
+
+        // 数字人口型同步：必须放在 motion/expression/eye/breath/physics/pose 之后，model.update() 之前。
+        MouthSyncController.getInstance().update(android.os.SystemClock.uptimeMillis());
 
         model.update();
     }
@@ -401,6 +397,116 @@ public class LAppModel extends CubismUserModel {
         }
     }
 
+    public Map<String, Integer> getMotionGroupCounts() {
+        Map<String, Integer> result = new HashMap<String, Integer>();
+        if (modelSetting == null) {
+            return result;
+        }
+        try {
+            int groupCount = modelSetting.getMotionGroupCount();
+            for (int i = 0; i < groupCount; i++) {
+                String groupName = modelSetting.getMotionGroupName(i);
+                if (groupName != null && groupName.length() > 0) {
+                    result.put(groupName, modelSetting.getMotionCount(groupName));
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return result;
+    }
+
+    public List<String> getExpressionNames() {
+        return new ArrayList<String>(expressions.keySet());
+    }
+
+    public boolean startRandomMotionIfAvailable(String group, int priority) {
+        if (group == null || group.trim().length() == 0 || modelSetting == null) {
+            return false;
+        }
+        try {
+            if (modelSetting.getMotionCount(group) <= 0) {
+                return false;
+            }
+            return startRandomMotion(group, priority) != -1;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    public boolean setExpressionIfAvailable(String expressionName) {
+        if (expressionName == null || expressionName.trim().length() == 0) {
+            return false;
+        }
+        if (!expressions.containsKey(expressionName)) {
+            return false;
+        }
+        setExpression(expressionName);
+        return true;
+    }
+
+    public List<String> getAvailableParameterIds() {
+        List<String> result = new ArrayList<String>();
+        if (model == null) {
+            return result;
+        }
+        int count = model.getParameterCount();
+        for (int i = 0; i < count; i++) {
+            try {
+                CubismId id = model.getParameterId(i);
+                String value = id == null ? "" : id.getString();
+                if (value.length() > 0 && !result.contains(value)) {
+                    result.add(value);
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return result;
+    }
+
+    private void applyMouthOpenFallback(float mouthOpen) {
+        applyMouthParamByCandidates(mouthOpen, false,
+                "ParamMouthOpenY",
+                "PARAM_MOUTH_OPEN_Y",
+                "MouthOpenY",
+                "ParamMouthOpen",
+                "PARAM_MOUTH_OPEN"
+        );
+    }
+
+    private void applyMouthFormFallback(float mouthForm) {
+        applyMouthParamByCandidates(mouthForm, true,
+                "ParamMouthForm",
+                "PARAM_MOUTH_FORM",
+                "MouthForm"
+        );
+    }
+
+    private void applyMouthParamByCandidates(float value, boolean additive, String... candidates) {
+        if (model == null || candidates == null) {
+            return;
+        }
+        CubismIdManager idManager = CubismFramework.getIdManager();
+        if (idManager == null) {
+            return;
+        }
+        for (String candidate : candidates) {
+            try {
+                CubismId id = idManager.getId(candidate);
+                int parameterIndex = model.getParameterIndex(id);
+                if (id == null || parameterIndex < 0 || parameterIndex >= model.getParameterCount()) {
+                    continue;
+                }
+                if (additive) {
+                    model.addParameterValue(parameterIndex, value, 0.6f);
+                } else {
+                    model.setParameterValue(parameterIndex, value);
+                }
+                return;
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
     public CubismOffscreenSurfaceAndroid getRenderingBuffer() {
         return renderingBuffer;
     }
@@ -434,6 +540,31 @@ public class LAppModel extends CubismUserModel {
             LAppPal.printLog("create buffer: " + path);
         }
         return LAppPal.loadFileAsBytes(path);
+    }
+
+    private void addParameterValueSafely(CubismId parameterId, float value) {
+        if (model == null || parameterId == null) {
+            return;
+        }
+        try {
+            int parameterIndex = model.getParameterIndex(parameterId);
+            if (parameterIndex >= 0 && parameterIndex < model.getParameterCount()) {
+                model.addParameterValue(parameterIndex, value);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void addBreathParameterIfReady(List<CubismBreath.BreathParameterData> parameters,
+                                           CubismId parameterId,
+                                           float offset,
+                                           float peak,
+                                           float cycle,
+                                           float weight) {
+        if (parameters == null || parameterId == null) {
+            return;
+        }
+        parameters.add(new CubismBreath.BreathParameterData(parameterId, offset, peak, cycle, weight));
     }
 
     // model3.jsonからモデルを生成する
@@ -508,13 +639,20 @@ public class LAppModel extends CubismUserModel {
         breath = CubismBreath.create();
         List<CubismBreath.BreathParameterData> breathParameters = new ArrayList<CubismBreath.BreathParameterData>();
 
-        breathParameters.add(new CubismBreath.BreathParameterData(idParamAngleX, 0.0f, 15.0f, 6.5345f, 0.5f));
-        breathParameters.add(new CubismBreath.BreathParameterData(idParamAngleY, 0.0f, 8.0f, 3.5345f, 0.5f));
-        breathParameters.add(new CubismBreath.BreathParameterData(idParamAngleZ, 0.0f, 10.0f, 5.5345f, 0.5f));
-        breathParameters.add(new CubismBreath.BreathParameterData(idParamBodyAngleX, 0.0f, 4.0f, 15.5345f, 0.5f));
-        CubismId breathId = CubismFramework.getIdManager() == null ? null : CubismFramework.getIdManager().getId(ParameterId.BREATH.getId());
-        if (breathId != null) {
-            breathParameters.add(new CubismBreath.BreathParameterData(breathId, 0.5f, 0.5f, 3.2345f, 0.5f));
+        addBreathParameterIfReady(breathParameters, idParamAngleX, 0.0f, 15.0f, 6.5345f, 0.5f);
+        addBreathParameterIfReady(breathParameters, idParamAngleY, 0.0f, 8.0f, 3.5345f, 0.5f);
+        addBreathParameterIfReady(breathParameters, idParamAngleZ, 0.0f, 10.0f, 5.5345f, 0.5f);
+        addBreathParameterIfReady(breathParameters, idParamBodyAngleX, 0.0f, 4.0f, 15.5345f, 0.5f);
+        CubismIdManager idManager = CubismFramework.getIdManager();
+        if (idManager != null) {
+            addBreathParameterIfReady(
+                    breathParameters,
+                    idManager.getId(ParameterId.BREATH.getId()),
+                    0.5f,
+                    0.5f,
+                    3.2345f,
+                    0.5f
+            );
         }
 
         breath.setParameters(breathParameters);
@@ -617,64 +755,6 @@ public class LAppModel extends CubismUserModel {
         }
     }
 
-    private void addParameterValueSafely(CubismId id, float value) {
-        if (model == null || id == null) {
-            return;
-        }
-        try {
-            model.addParameterValue(id, value);
-        } catch (Exception ignored) {
-        }
-    }
-
-    public List<String> getAvailableParameterIds() {
-        List<String> result = new ArrayList<String>();
-        if (model == null) {
-            return result;
-        }
-        int parameterCount = model.getParameterCount();
-        for (int i = 0; i < parameterCount; i++) {
-            CubismId parameterId = model.getParameterId(i);
-            if (parameterId != null && parameterId.getString() != null) {
-                result.add(parameterId.getString());
-            }
-        }
-        return result;
-    }
-
-    public Map<String, Integer> getMotionGroupCounts() {
-        Map<String, Integer> result = new LinkedHashMap<String, Integer>();
-        if (modelSetting == null) {
-            return result;
-        }
-        int groupCount = modelSetting.getMotionGroupCount();
-        for (int i = 0; i < groupCount; i++) {
-            String groupName = modelSetting.getMotionGroupName(i);
-            result.put(groupName, modelSetting.getMotionCount(groupName));
-        }
-        return result;
-    }
-
-    public List<String> getExpressionNames() {
-        return new ArrayList<String>(expressions.keySet());
-    }
-
-    public boolean startRandomMotionIfAvailable(String group, int priority) {
-        if (modelSetting == null || group == null || modelSetting.getMotionCount(group) <= 0) {
-            return false;
-        }
-        startRandomMotion(group, priority);
-        return true;
-    }
-
-    public boolean setExpressionIfAvailable(String expressionId) {
-        if (expressionId == null || !expressions.containsKey(expressionId)) {
-            return false;
-        }
-        setExpression(expressionId);
-        return true;
-    }
-
     public void setClothesMode(String mode) {
         clothesMode = normalizeClothesMode(mode);
         applyClothesModeInternal();
@@ -748,15 +828,10 @@ public class LAppModel extends CubismUserModel {
         }
 
         try {
-            CubismIdManager idManager = CubismFramework.getIdManager();
-            if (idManager == null) {
-                return;
-            }
-            CubismId cubismId = idManager.getId(partId);
-            if (cubismId == null) {
-                return;
-            }
-            model.setPartOpacity(cubismId, opacity);
+            model.setPartOpacity(
+                    CubismFramework.getIdManager().getId(partId),
+                    opacity
+            );
         } catch (Exception e) {
             LAppPal.printLog("设置服装部件透明度失败: " + partId + ", opacity=" + opacity);
         }

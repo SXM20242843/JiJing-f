@@ -18,6 +18,7 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.media.AudioManager;
 import android.media.MediaPlayer;
 import android.media.MediaRecorder;
 import android.net.Uri;
@@ -27,6 +28,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.speech.tts.TextToSpeech;
+import android.speech.tts.UtteranceProgressListener;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -115,6 +117,7 @@ public class MainActivity extends Activity {
 
     // 只作为兜底欢迎语 / audioUrl 为空时使用。正式回答优先播放后端 audioUrl。
     private static final boolean ENABLE_NATIVE_TTS = true;
+    private static final long TTS_INIT_TIMEOUT_MS = 3000L;
 
     private GLSurfaceView glSurfaceView;
     private GLRenderer glRenderer;
@@ -187,6 +190,7 @@ public class MainActivity extends Activity {
     private final List<RouteNode> activeRouteNodes = new ArrayList<>();
     private MapView routeMapView;
     private AMap routeAMap;
+    private boolean pendingRouteNavigationRefresh = false;
     private boolean routeMapPrivacyReady = false;
     private int routePreviewRequestSeq = 0;
     private final List<Polyline> routePreviewPolylines = new ArrayList<>();
@@ -215,7 +219,8 @@ public class MainActivity extends Activity {
 
     private File currentAudioFile;
 
-    private boolean ttsReady = false;
+    private boolean ttsInitialized = false;
+    private boolean ttsInitializing = false;
     private boolean requesting = false;
     private boolean hasPlayedWelcome = false;
     private boolean recording = false;
@@ -224,6 +229,9 @@ public class MainActivity extends Activity {
     private long recordStartTime = 0L;
 
     private String pendingTtsText = "";
+    private String pendingTtsReason = "";
+    private long pendingTtsDurationMs = 0L;
+    private String currentTtsUtteranceId = "";
 
     private String sessionId = "";
     private String conversationId = "";
@@ -311,7 +319,6 @@ public class MainActivity extends Activity {
 
         handleGuideIntent(getIntent());
         resetSession();
-        initTtsIfNeeded();
 
         glSurfaceView = new GLSurfaceView(this);
 
@@ -373,6 +380,7 @@ public class MainActivity extends Activity {
         setContentView(rootLayout);
 
         bindEvents();
+        initTextToSpeechIfNeeded("onCreate");
         showWelcomeMessage();
 
         if (shouldRunAutoQuestionOnLaunch()) {
@@ -841,7 +849,7 @@ public class MainActivity extends Activity {
         routeCardActionRow.setGravity(Gravity.CENTER_VERTICAL);
 
         routeChangeStartButton = createMiniActionButton("更换起点");
-        LinearLayout.LayoutParams changeStartParams = new LinearLayout.LayoutParams(0, dp(30), 1);
+        LinearLayout.LayoutParams changeStartParams = new LinearLayout.LayoutParams(0, dp(44), 1);
         changeStartParams.rightMargin = dp(8);
         routeCardActionRow.addView(routeChangeStartButton, changeStartParams);
 
@@ -851,7 +859,7 @@ public class MainActivity extends Activity {
         routeStartButton.setTextColor(Color.WHITE);
         routeStartButton.setAllCaps(false);
         routeStartButton.setBackground(createRoundBg(Color.rgb(47, 128, 237), dp(18)));
-        LinearLayout.LayoutParams startParams = new LinearLayout.LayoutParams(0, dp(30), 1.25f);
+        LinearLayout.LayoutParams startParams = new LinearLayout.LayoutParams(0, dp(44), 1.25f);
         routeCardActionRow.addView(routeStartButton, startParams);
 
         LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(
@@ -964,6 +972,13 @@ public class MainActivity extends Activity {
                         return false;
                     }
                 });
+                routeAMap.setOnMapLoadedListener(new AMap.OnMapLoadedListener() {
+                    @Override
+                    public void onMapLoaded() {
+                        handleRouteMapReadyRedraw();
+                    }
+                });
+                handleRouteMapReadyRedraw();
             }
         } catch (Throwable e) {
             routeMapView = null;
@@ -1110,6 +1125,7 @@ public class MainActivity extends Activity {
                 if (appendUserToChat) {
                     appendUserMessage(question);
                 }
+                applyDigitalHumanState("thinking", "neutral");
             }
         });
 
@@ -1161,8 +1177,8 @@ public class MainActivity extends Activity {
                                     lastQuestionText.setText("游客提问：" + guideResponse.questionText);
                                 }
 
-                                updateQuickButtons(guideResponse.suggestions);
                                 showGuideAnswer(guideResponse.answer);
+                                updateQuickButtons(guideResponse.suggestions);
                                 handleGuideRouteResponse(guideResponse.route, allowRouteResponse, "text");
 
                                 if (guideResponse.conversationId != null && guideResponse.conversationId.trim().length() > 0) {
@@ -1170,6 +1186,7 @@ public class MainActivity extends Activity {
                                 }
 
                                 playAnswerVoice(guideResponse);
+                                forceRenderLive2D();
                             }
                         });
                     } else {
@@ -1187,6 +1204,7 @@ public class MainActivity extends Activity {
                                 guideStateText.setText("请求失败");
                                 voiceMainButton.setText("🎙 长按说话");
                                 showGuideAnswer(errorText);
+                                returnDigitalHumanToIdle();
                             }
                         });
                     }
@@ -1204,6 +1222,7 @@ public class MainActivity extends Activity {
                             guideStateText.setText("连接异常");
                             voiceMainButton.setText("🎙 长按说话");
                             showGuideAnswer("暂时无法连接后端服务。\n\n请检查：\n1. 小后端是否正在运行\n2. 手机和电脑是否在同一个局域网\n3. GUIDE_CHAT_URL 是否是当前电脑 IPv4 地址\n4. AndroidManifest 是否允许 HTTP 网络请求");
+                            returnDigitalHumanToIdle();
                         }
                     });
                     Log.e(TAG, "文本问答失败", e);
@@ -1531,6 +1550,7 @@ public class MainActivity extends Activity {
             voiceMainButton.setText("松开发送");
             lastQuestionText.setText("正在录音，请说出你的问题");
             appendSystemMessage("正在聆听你的语音问题...");
+            applyDigitalHumanState("listen", "neutral");
 
             if (glSurfaceView != null) {
                 glSurfaceView.requestRender();
@@ -1544,6 +1564,7 @@ public class MainActivity extends Activity {
             guideStateText.setText("录音失败");
             voiceMainButton.setText("🎙 长按说话");
             showToast("录音启动失败");
+            returnDigitalHumanToIdle();
             Log.e(TAG, "录音启动失败", e);
         }
     }
@@ -1832,6 +1853,7 @@ public class MainActivity extends Activity {
                                 guideStateText.setText("识别失败");
                                 voiceMainButton.setText("🎙 长按说话");
                                 showGuideAnswer(errorText);
+                                returnDigitalHumanToIdle();
                                 forceRenderLive2D();
                             }
                         });
@@ -1849,6 +1871,7 @@ public class MainActivity extends Activity {
                             guideStateText.setText("语音异常");
                             voiceMainButton.setText("🎙 长按说话");
                             showGuideAnswer("语音识别请求失败。\n\n请检查：\n1. 小后端语音接口是否启动\n2. GUIDE_VOICE_CHAT_URL 是否正确\n3. 后端是否能接收 multipart/form-data\n4. AI 端阿里云语音识别是否正常\n5. AI 端是否支持 m4a / audio/mp4 格式");
+                            returnDigitalHumanToIdle();
                             forceRenderLive2D();
                         }
                     });
@@ -1938,6 +1961,9 @@ public class MainActivity extends Activity {
             }
 
             JSONObject source = data != null ? data : root;
+            JSONObject audioJson = getJsonObject(source, "audio");
+            JSONObject mouthJson = getJsonObject(source, "mouth");
+            JSONObject digitalHumanJson = getJsonObject(source, "digitalHuman", "digital_human");
 
             int businessCode = root.optInt("code", 200);
             String businessMsg = firstNotEmpty(
@@ -1975,9 +2001,37 @@ public class MainActivity extends Activity {
                 result.answer = source.optString("content", "");
             }
 
-            result.audioUrl = source.optString("audioUrl", "");
-            if (result.audioUrl == null || result.audioUrl.trim().length() == 0) {
-                result.audioUrl = source.optString("audio_url", "");
+            result.audioUrl = firstNotEmpty(
+                    getJsonText(source, "audioUrl", "audio_url"),
+                    getJsonText(audioJson, "url", "audioUrl", "audio_url")
+            );
+            result.audioStatus = firstNotEmpty(
+                    getJsonText(source, "audioStatus", "audio_status"),
+                    getJsonText(audioJson, "status", "audioStatus", "audio_status")
+            );
+            result.ttsTaskId = firstNotEmpty(
+                    getJsonText(source, "ttsTaskId", "tts_task_id", "taskId", "task_id"),
+                    getJsonText(audioJson, "taskId", "task_id")
+            );
+            result.audioDurationMs = parseLongOrDefault(firstNotEmpty(
+                    getJsonText(source, "audioDurationMs", "audio_duration_ms", "durationMs", "duration_ms"),
+                    getJsonText(audioJson, "audioDurationMs", "audio_duration_ms", "durationMs", "duration_ms", "duration")
+            ), 0L);
+            result.action = getJsonText(source, "action");
+            result.actionCode = firstNotEmpty(
+                    getJsonText(source, "actionCode", "action_code"),
+                    getJsonText(digitalHumanJson, "actionCode", "action_code")
+            );
+            if (result.action.length() == 0) {
+                result.action = getJsonText(digitalHumanJson, "action");
+            }
+            result.emotion = getJsonText(source, "emotion");
+            result.emotionCode = firstNotEmpty(
+                    getJsonText(source, "emotionCode", "emotion_code"),
+                    getJsonText(digitalHumanJson, "emotionCode", "emotion_code")
+            );
+            if (result.emotion.length() == 0) {
+                result.emotion = getJsonText(digitalHumanJson, "emotion");
             }
 
             result.conversationId = source.optString("conversationId", "");
@@ -2005,18 +2059,57 @@ public class MainActivity extends Activity {
                 }
             }
 
-            JSONArray mouthFramesArray = source.optJSONArray("mouthFrames");
+            JSONArray mouthFramesArray = getJsonArray(source, "mouthFrames", "mouth_frames");
             if (mouthFramesArray == null) {
-                mouthFramesArray = source.optJSONArray("mouth_frames");
+                mouthFramesArray = getJsonArray(mouthJson, "frames", "mouthFrames", "mouth_frames");
+            }
+            if (mouthFramesArray == null) {
+                mouthFramesArray = getJsonArray(audioJson, "frames", "mouthFrames", "mouth_frames", "mouthFrames");
             }
             if (mouthFramesArray != null) {
                 for (int i = 0; i < mouthFramesArray.length(); i++) {
                     JSONObject frame = mouthFramesArray.optJSONObject(i);
                     if (frame == null) continue;
-                    int t = frame.optInt("t", frame.optInt("time", 0));
-                    double openValue = frame.optDouble("open", frame.optDouble("mouthOpen", 0.0));
-                    double formValue = frame.optDouble("form", frame.optDouble("mouthForm", 0.0));
-                    result.mouthFrames.add(new MouthSyncManager.MouthFrame(t, (float) openValue, (float) formValue));
+                    String timeText = firstNotEmpty(getJsonText(
+                            frame,
+                            "timeMs",
+                            "time_ms",
+                            "timestampMs",
+                            "timestamp_ms",
+                            "offsetMs",
+                            "offset_ms",
+                            "time",
+                            "timestamp",
+                            "t"
+                    ));
+                    boolean hasTimeField = timeText.length() > 0;
+                    double rawTime = hasTimeField ? parseDoubleOrDefault(timeText, i * 40.0d) : i * 40.0d;
+                    String openText = firstNotEmpty(getJsonText(
+                            frame,
+                            "open",
+                            "value",
+                            "mouthOpen",
+                            "mouth_open",
+                            "mouthOpenY",
+                            "mouth_open_y",
+                            "openY",
+                            "open_y",
+                            "ParamMouthOpenY",
+                            "paramMouthOpenY"
+                    ));
+                    boolean hasOpenField = openText.length() > 0;
+                    double openValue = hasOpenField ? parseDoubleOrDefault(openText, 0.0d) : 0.0d;
+                    double formValue = parseDoubleOrDefault(firstNotEmpty(
+                            getJsonText(frame, "form", "mouthForm", "mouth_form")
+                    ), 0.0d);
+                    result.mouthFrames.add(new MouthSyncManager.MouthFrame((int) Math.round(rawTime), (float) openValue, (float) formValue));
+                    result.controllerMouthFrames.add(new MouthSyncController.MouthFrame(
+                            rawTime,
+                            (float) openValue,
+                            (float) formValue,
+                            hasTimeField,
+                            hasOpenField
+                    ));
                 }
             }
 
@@ -2033,6 +2126,17 @@ public class MainActivity extends Activity {
             Log.d(TAG, "解析到 questionText: " + result.questionText);
             Log.d(TAG, "解析到 audioUrl: " + result.audioUrl);
             Log.d(TAG, "解析到 mouthFrames 数量: " + result.mouthFrames.size());
+            Log.d(TAG, "[GuideResponse] answer=" + safeLogText(result.answer)
+                    + ", audioUrl=" + safeString(result.audioUrl)
+                    + ", audioStatus=" + safeString(result.audioStatus));
+            Log.d(TAG, "[AudioPlay] parsed audioUrl=" + safeString(result.audioUrl)
+                    + ", answerLength=" + safeString(result.answer).length()
+                    + ", mouthFrames=" + result.mouthFrames.size());
+            Log.d(TAG, "[GuideResponse] audioStatus=" + safeString(result.audioStatus)
+                    + ", audioUrl=" + safeString(result.audioUrl)
+                    + ", mouthFrames=" + result.mouthFrames.size()
+                    + ", action=" + firstNotEmpty(result.action, result.actionCode)
+                    + ", emotion=" + firstNotEmpty(result.emotion, result.emotionCode));
 
             if (result.answer == null || result.answer.trim().length() == 0) {
                 String fallbackMsg = firstNotEmpty(root.optString("msg", ""), root.optString("message", ""));
@@ -2157,6 +2261,22 @@ public class MainActivity extends Activity {
         return null;
     }
 
+    private JSONObject getJsonObject(JSONObject object, String... keys) {
+        if (object == null || keys == null) {
+            return null;
+        }
+        for (String key : keys) {
+            if (key == null || !object.has(key) || object.isNull(key)) {
+                continue;
+            }
+            Object value = object.opt(key);
+            if (value instanceof JSONObject) {
+                return (JSONObject) value;
+            }
+        }
+        return null;
+    }
+
     private List<LatLng> parseRoutePolyline(JSONObject routeJson) {
         List<LatLng> result = new ArrayList<>();
         if (routeJson == null) {
@@ -2244,6 +2364,14 @@ public class MainActivity extends Activity {
     private int parseIntOrDefault(String value, int defaultValue) {
         try {
             return Integer.parseInt(safeString(value).trim());
+        } catch (Exception e) {
+            return defaultValue;
+        }
+    }
+
+    private long parseLongOrDefault(String value, long defaultValue) {
+        try {
+            return Long.parseLong(safeString(value).trim());
         } catch (Exception e) {
             return defaultValue;
         }
@@ -2728,6 +2856,9 @@ public class MainActivity extends Activity {
 
     private void drawRouteOnMap(RoutePreviewData preview) {
         if (routeAMap == null || preview == null) {
+            if (routeNavigationModeActive || routeGuideActive) {
+                requestPendingRouteNavigationRefresh();
+            }
             updateRouteMapPlaceholder(preview, false);
             return;
         }
@@ -2741,7 +2872,8 @@ public class MainActivity extends Activity {
         RouteNode startPoint = preview.routePreviewStartPoint;
         // 只有当“游客当前位置/手动模拟起点”和路线第一个景点不是同一个点时，才额外画一个“我”。
         // 否则地图上会同时出现“我”和路线节点“起”，看起来像两个起点。
-        if (shouldDrawSeparateRouteStartMarker(startPoint, preview.nodes)) {
+        boolean drawSeparateStartMarker = shouldDrawSeparateRouteStartMarker(startPoint, preview.nodes);
+        if (drawSeparateStartMarker) {
             LatLng latLng = toLatLng(startPoint);
             if (latLng != null) {
                 Marker marker = routeAMap.addMarker(new MarkerOptions()
@@ -2753,6 +2885,9 @@ public class MainActivity extends Activity {
                 boundsPoints.add(latLng);
             }
         }
+        Log.d(TAG, "[RouteMarker] currentMe=" + getRouteNodeName(getCurrentMeMarkerNode(currentRoute, preview))
+                + ", from=" + getCurrentMeMarkerSource(currentRoute, preview)
+                + ", skipStartMe=" + !drawSeparateStartMarker);
 
         updateRouteMapPlaceholder(preview, boundsPoints.size() > 0);
         fitRouteBounds(boundsPoints);
@@ -2763,8 +2898,8 @@ public class MainActivity extends Activity {
             return false;
         }
 
-        // 导航中 drawRouteMarkers 已经会用“我”标记当前模拟位置，这里不再重复画起点。
-        if (routeGuideActive && isSameRouteNodeOrLocation(startPoint, getCurrentActiveRouteNode())) {
+        RouteNode currentNode = getCurrentMeMarkerNode(currentRoute, currentRoutePreview);
+        if (currentNode != null) {
             return false;
         }
 
@@ -2787,7 +2922,47 @@ public class MainActivity extends Activity {
         LatLng rightLatLng = toLatLng(right);
         return leftLatLng != null
                 && rightLatLng != null
-                && calculateDistanceMeters(leftLatLng, rightLatLng) < 3f;
+                && calculateDistanceMeters(leftLatLng, rightLatLng) <= 10f;
+    }
+
+    private boolean hasCurrentRouteNodeForMap() {
+        return getCurrentMeMarkerNode(currentRoute, currentRoutePreview) != null;
+    }
+
+    private RouteNode getCurrentMeMarkerNode(RouteInfo route, RoutePreviewData preview) {
+        RouteNode activeNode = getCurrentActiveRouteNode();
+        if (activeNode != null) {
+            return activeNode;
+        }
+
+        RouteNode previewStart = preview == null ? null : preview.routePreviewStartPoint;
+        if (previewStart != null && previewStart.hasLocation) {
+            return previewStart;
+        }
+
+        if (route != null && route.nodes != null && route.nodes.size() > 0) {
+            return route.nodes.get(0);
+        }
+
+        return null;
+    }
+
+    private String getCurrentMeMarkerSource(RouteInfo route, RoutePreviewData preview) {
+        RouteNode activeNode = getCurrentActiveRouteNode();
+        if (activeNode != null) {
+            return "activeRouteNode";
+        }
+
+        RouteNode previewStart = preview == null ? null : preview.routePreviewStartPoint;
+        if (previewStart != null && previewStart.hasLocation) {
+            return "previewStart";
+        }
+
+        if (route != null && route.nodes != null && route.nodes.size() > 0) {
+            return "firstNode";
+        }
+
+        return "none";
     }
 
     private void drawRouteMarkers(List<RouteNode> nodes) {
@@ -2795,6 +2970,9 @@ public class MainActivity extends Activity {
             return;
         }
         List<RouteNode> safeNodes = nodes == null ? new ArrayList<RouteNode>() : nodes;
+        RouteNode currentNode = getCurrentMeMarkerNode(currentRoute, currentRoutePreview);
+        String currentSource = getCurrentMeMarkerSource(currentRoute, currentRoutePreview);
+        boolean currentMeDrawn = false;
         for (int i = 0; i < safeNodes.size(); i++) {
             RouteNode node = safeNodes.get(i);
             if (node == null || !node.hasLocation) {
@@ -2811,7 +2989,13 @@ public class MainActivity extends Activity {
                     currentRoutePreview == null ? null : currentRoutePreview.routePreviewStartPoint,
                     safeNodes
             );
-            if (i == 0 && !hasSeparateStart) {
+            boolean isCurrentNode = currentNode != null && isSameRouteNodeOrLocation(node, currentNode);
+            if (isCurrentNode && !currentMeDrawn) {
+                hue = BitmapDescriptorFactory.HUE_YELLOW;
+                markerColor = Color.rgb(245, 158, 11);
+                markerLabel = "我";
+                currentMeDrawn = true;
+            } else if (i == 0 && !hasSeparateStart) {
                 hue = BitmapDescriptorFactory.HUE_GREEN;
                 markerColor = Color.rgb(34, 197, 94);
                 markerLabel = "起";
@@ -2833,16 +3017,19 @@ public class MainActivity extends Activity {
             routePreviewMarkers.add(marker);
         }
 
-        RouteNode currentNode = firstNotNull(getCurrentActiveRouteNode(), currentDemoRouteNode);
         LatLng currentLatLng = toLatLng(currentNode);
-        if (currentLatLng != null) {
+        if (currentLatLng != null && !currentMeDrawn) {
             Marker marker = routeAMap.addMarker(new MarkerOptions()
                     .position(currentLatLng)
                     .title("当前位置：" + getRouteNodeName(currentNode))
                     .icon(createRouteMarkerIcon("我", Color.rgb(245, 158, 11), BitmapDescriptorFactory.HUE_YELLOW)));
             marker.setObject(currentNode);
             routePreviewMarkers.add(marker);
+            currentMeDrawn = true;
         }
+        Log.d(TAG, "[RouteMarker] currentMe=" + getRouteNodeName(currentNode)
+                + ", from=" + currentSource
+                + ", drawn=" + currentMeDrawn);
     }
 
     private com.amap.api.maps.model.BitmapDescriptor createRouteMarkerIcon(String label, int color, float fallbackHue) {
@@ -2915,6 +3102,8 @@ public class MainActivity extends Activity {
     }
 
     private void clearRouteMapOverlays() {
+        Log.d(TAG, "[RouteMap] clear overlays polyline=" + routePreviewPolylines.size()
+                + ", markers=" + routePreviewMarkers.size());
         for (Polyline polyline : routePreviewPolylines) {
             if (polyline != null) {
                 polyline.remove();
@@ -3506,7 +3695,7 @@ public class MainActivity extends Activity {
                 && route.nodes != null
                 && route.nodes.size() > 0
                 && (currentRoutePreview == null || !currentRoutePreview.calculating));
-        LinearLayout.LayoutParams startParams = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(40));
+        LinearLayout.LayoutParams startParams = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44));
         startParams.topMargin = dp(10);
         panel.addView(startButton, startParams);
 
@@ -3632,6 +3821,8 @@ public class MainActivity extends Activity {
         exitRouteMapModeInternal(false);
         routeNavigationModeActive = false;
         routeMapModeActive = true;
+        Log.d(TAG, "[RouteMap] enterPreview route=" + formatRouteCardTitle(route)
+                + ", nodes=" + (route.nodes == null ? 0 : route.nodes.size()));
 
         routeMapModeOverlay = new FrameLayout(this);
         routeMapModeOverlay.setBackgroundColor(Color.rgb(231, 238, 244));
@@ -3935,6 +4126,11 @@ public class MainActivity extends Activity {
             return;
         }
         currentRoute = route;
+        boolean firstTime = !routeGuideActive || activeRouteNodes.size() == 0 || currentRouteNodeIndex < 0;
+        if (!initializeRouteNavigationState(route)) {
+            showToast("当前路线没有可导航的节点");
+            return;
+        }
         if (!routeMapModeActive) {
             enterRouteMapMode(route);
         }
@@ -3943,10 +4139,95 @@ public class MainActivity extends Activity {
             return;
         }
         trackRouteEvent("navigation_start", route, null);
-        if (!routeGuideActive) {
-            startSimulatedRouteGuide();
+        if (routeAMap == null) {
+            requestPendingRouteNavigationRefresh();
         }
+        renderRouteCard(route);
+        updateRouteDemoController(route);
+        Log.d(TAG, "[RouteNav] start firstTime=" + firstTime
+                + ", currentIndex=" + currentRouteNodeIndex
+                + ", current=" + getRouteNodeName(getCurrentNavigationNode(route))
+                + ", next=" + getRouteNodeName(getNextNavigationNode(route)));
         enterNavigationMode(route);
+    }
+
+    private boolean initializeRouteNavigationState(RouteInfo route) {
+        if (route == null || route.nodes == null || route.nodes.size() == 0) {
+            return false;
+        }
+
+        rebuildActiveRouteNodes(route);
+        if (activeRouteNodes.size() == 0) {
+            return false;
+        }
+
+        int index = resolveRouteNavigationStartIndex(route);
+        if (index < 0) {
+            index = 0;
+        }
+        if (index >= activeRouteNodes.size()) {
+            index = activeRouteNodes.size() - 1;
+        }
+
+        routeGuideActive = true;
+        currentRouteNodeIndex = index;
+        routeDemoNodeIndex = index;
+        currentDemoRouteNode = activeRouteNodes.get(index);
+        applyDemoNodeToCurrentContext(currentDemoRouteNode);
+        return true;
+    }
+
+    private void rebuildActiveRouteNodes(RouteInfo route) {
+        activeRouteNodes.clear();
+        if (route == null || route.nodes == null) {
+            return;
+        }
+        for (RouteNode node : route.nodes) {
+            if (node == null) {
+                continue;
+            }
+            if (activeRouteNodes.size() > 0
+                    && isSameRouteNodeOrLocation(activeRouteNodes.get(activeRouteNodes.size() - 1), node)) {
+                continue;
+            }
+            activeRouteNodes.add(node);
+        }
+    }
+
+    private int resolveRouteNavigationStartIndex(RouteInfo route) {
+        if (route == null || route.nodes == null || route.nodes.size() == 0) {
+            return -1;
+        }
+
+        int currentDemoIndex = findRouteNodeIndex(activeRouteNodes, currentDemoRouteNode);
+        if (currentDemoIndex >= 0) {
+            return currentDemoIndex;
+        }
+
+        if (routeGuideActive && currentRouteNodeIndex >= 0 && currentRouteNodeIndex < activeRouteNodes.size()) {
+            return currentRouteNodeIndex;
+        }
+
+        RouteNode previewStart = currentRoutePreview == null ? null : currentRoutePreview.routePreviewStartPoint;
+        int previewStartIndex = findRouteNodeIndex(activeRouteNodes, previewStart);
+        if (previewStartIndex >= 0) {
+            return previewStartIndex;
+        }
+
+        return 0;
+    }
+
+    private int findRouteNodeIndex(List<RouteNode> nodes, RouteNode target) {
+        if (nodes == null || target == null) {
+            return -1;
+        }
+        for (int i = 0; i < nodes.size(); i++) {
+            RouteNode node = nodes.get(i);
+            if (node != null && isSameRouteNodeOrLocation(node, target)) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     private void enterNavigationMode(final RouteInfo route) {
@@ -4167,6 +4448,12 @@ public class MainActivity extends Activity {
     }
 
     private RouteNode getCurrentNavigationNode(RouteInfo route) {
+        if (routeGuideActive) {
+            RouteNode activeNode = getCurrentActiveRouteNode();
+            if (activeNode != null) {
+                return activeNode;
+            }
+        }
         if (route == null || route.nodes == null || route.nodes.size() == 0) {
             return null;
         }
@@ -4177,6 +4464,9 @@ public class MainActivity extends Activity {
     }
 
     private RouteNode getNextNavigationNode(RouteInfo route) {
+        if (routeGuideActive) {
+            return getNextActiveRouteNode();
+        }
         if (route == null || route.nodes == null || route.nodes.size() == 0) {
             return null;
         }
@@ -4201,30 +4491,64 @@ public class MainActivity extends Activity {
         return "约 " + Math.round(distance) + " 米";
     }
 
+    private void requestPendingRouteNavigationRefresh() {
+        pendingRouteNavigationRefresh = true;
+        Log.d(TAG, "[RouteNav] pendingMapRefresh=true");
+    }
+
+    private void handleRouteMapReadyRedraw() {
+        if (!pendingRouteNavigationRefresh || routeAMap == null || currentRoute == null) {
+            return;
+        }
+        pendingRouteNavigationRefresh = false;
+        Log.d(TAG, "[RouteNav] mapReady redraw");
+        if (routeNavigationModeActive || routeGuideActive) {
+            drawNavigationRouteState(currentRoute);
+            updateRouteDemoController(currentRoute);
+        } else if (currentRoutePreview != null) {
+            drawRouteOnMap(currentRoutePreview);
+        }
+    }
+
     private void drawNavigationRouteState(RouteInfo route) {
-        if (routeAMap == null || route == null) {
+        if (route == null) {
+            return;
+        }
+        if (routeGuideActive && (activeRouteNodes.size() == 0
+                || currentRouteNodeIndex < 0
+                || currentRouteNodeIndex >= activeRouteNodes.size())) {
+            initializeRouteNavigationState(route);
+        }
+
+        RouteNode currentNode = firstNotNull(
+                getCurrentActiveRouteNode(),
+                currentRoutePreview == null ? null : currentRoutePreview.routePreviewStartPoint,
+                route.nodes == null || route.nodes.size() == 0 ? null : route.nodes.get(0)
+        );
+        RouteNode nextNode = getNextNavigationNode(route);
+        updateNavigationInstruction(currentNode, nextNode);
+
+        if (routeAMap == null) {
+            requestPendingRouteNavigationRefresh();
             return;
         }
         clearRouteMapOverlays();
         drawRoutePolyline(route);
         drawRouteMarkers(route.nodes);
 
-        RouteNode currentNode = getCurrentNavigationNode(route);
-        RouteNode nextNode = getNextNavigationNode(route);
-        LatLng current = toLatLng(currentNode);
-        LatLng next = toLatLng(nextNode);
-        if (current != null && next != null) {
-            List<LatLng> activeSegment = new ArrayList<>();
-            activeSegment.add(current);
-            activeSegment.add(next);
-            Polyline polyline = routeAMap.addPolyline(new PolylineOptions()
-                    .addAll(activeSegment)
-                    .width(dp(8))
-                    .color(Color.rgb(34, 197, 94)));
-            routePreviewPolylines.add(polyline);
-            fitRouteBounds(activeSegment);
-        } else {
-            fitRouteBounds(getRouteDrawablePoints(route));
+        Log.d(TAG, "[RouteNav] draw full route current=" + getRouteNodeName(currentNode)
+                + ", next=" + getRouteNodeName(nextNode));
+        fitRouteBounds(getRouteDrawablePoints(route));
+    }
+
+    private void refreshRouteMapForRouteState() {
+        if (!routeMapModeActive || routeAMap == null || currentRoute == null) {
+            return;
+        }
+        if (routeNavigationModeActive) {
+            drawNavigationRouteState(currentRoute);
+        } else if (currentRoutePreview != null) {
+            drawRouteOnMap(currentRoutePreview);
         }
     }
 
@@ -4604,6 +4928,8 @@ public class MainActivity extends Activity {
         RouteNode next = getNextActiveRouteNode();
         String currentName = current == null ? getRoutePreviewStartName() : getRouteNodeName(current);
         String nextName = next == null ? "本路线终点" : getRouteNodeName(next);
+        Log.d(TAG, "[RouteNav] start current=" + currentName + ", next=" + nextName);
+        refreshRouteMapForRouteState();
         speakRouteGuideText("好的，我们从" + currentName + "出发，下一站前往" + nextName + "。比赛演示中我会按节点模拟前进。");
     }
 
@@ -4630,6 +4956,8 @@ public class MainActivity extends Activity {
         final RouteNode previousNode = firstNotNull(getCurrentActiveRouteNode(), currentDemoRouteNode);
         final RouteNode nextNode = next;
         final int nextIndex = currentRouteNodeIndex + 1;
+        Log.d(TAG, "[RouteDemo] arrive previous=" + getRouteNodeName(previousNode)
+                + ", next=" + getRouteNodeName(nextNode));
 
         routeDemoRequesting = true;
         updateRouteDemoController(route);
@@ -4661,6 +4989,7 @@ public class MainActivity extends Activity {
                             currentDemoRouteNode = nextNode;
                             applyDemoNodeToCurrentContext(nextNode);
                             renderRouteCard(route);
+                            refreshRouteMapForRouteState();
                             speakRouteGuideText("已到达" + getRouteNodeName(nextNode) + "，下面为你讲解这里的特色。");
                             if (!previousLeaveOk) {
                                 showToast("已到达新景点，但上一景点离开记录写入失败");
@@ -4726,6 +5055,7 @@ public class MainActivity extends Activity {
             lastQuestionText.setText("路线导览");
         }
         showGuideAnswer(text);
+        applyDigitalHumanState("explain", "warm");
         speakText(text);
     }
 
@@ -4964,6 +5294,7 @@ public class MainActivity extends Activity {
             lastQuestionText.setText("路线节点演示：到达" + nodeName);
         }
         showGuideAnswer(prompt);
+        applyDigitalHumanState("explain", "warm");
         speakText(prompt);
     }
 
@@ -6462,6 +6793,11 @@ public class MainActivity extends Activity {
         }
     }
 
+    private double parseDoubleOrDefault(String value, double defaultValue) {
+        double parsed = parseDoubleOrNaN(value);
+        return Double.isNaN(parsed) ? defaultValue : parsed;
+    }
+
     private boolean isValidCoordinate(double lat, double lon) {
         return !Double.isNaN(lat)
                 && !Double.isNaN(lon)
@@ -6806,6 +7142,7 @@ public class MainActivity extends Activity {
 
         resetChatMessages();
         appendAiMessage(visualText);
+        applyDigitalHumanState("welcome", "warm");
 
         // 如果真正会自动请求后端 TTS，这里不再播放原生欢迎语，避免两个声音叠在一起。
         if (!shouldRunAutoQuestionOnLaunch()) {
@@ -7903,19 +8240,138 @@ public class MainActivity extends Activity {
         return "请结合" + area + "，为我推荐几个值得优先游览的景点，并说明游览顺序。";
     }
 
-    private void initTtsIfNeeded() {
+    private void initTextToSpeechIfNeeded(final String reason) {
+        Log.d(TAG, "[TTS] init requested reason=" + (reason == null ? "" : reason)
+                + ", tts=" + (textToSpeech != null)
+                + ", initialized=" + ttsInitialized
+                + ", initializing=" + ttsInitializing);
         if (!ENABLE_NATIVE_TTS) return;
-        textToSpeech = new TextToSpeech(this, new TextToSpeech.OnInitListener() {
+        if (ttsInitialized && textToSpeech != null) {
+            Log.d(TAG, "[TTS] init skip already initialized");
+            return;
+        }
+        if (ttsInitializing) {
+            Log.d(TAG, "[TTS] init skip already initializing");
+            return;
+        }
+        if (textToSpeech != null) {
+            Log.w(TAG, "[TTS] broken instance detected, recreate");
+            try {
+                textToSpeech.stop();
+            } catch (Exception e) {
+                Log.e(TAG, "[TTS] stop broken instance failed", e);
+            }
+            try {
+                textToSpeech.shutdown();
+            } catch (Exception e) {
+                Log.e(TAG, "[TTS] shutdown broken instance failed", e);
+            }
+            textToSpeech = null;
+            ttsInitialized = false;
+            ttsInitializing = false;
+        }
+
+        final String initReason = reason == null ? "" : reason;
+        ttsInitializing = true;
+        Log.d(TAG, "[TTS] init start reason=" + initReason);
+        if (mainHandler == null) {
+            mainHandler = new Handler(Looper.getMainLooper());
+        }
+        mainHandler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (ttsInitializing && !ttsInitialized) {
+                    Log.e(TAG, "[TTS] init timeout, reset broken instance");
+                    try {
+                        if (textToSpeech != null) {
+                            textToSpeech.stop();
+                            textToSpeech.shutdown();
+                        }
+                    } catch (Exception e) {
+                        Log.e(TAG, "[TTS] shutdown timeout instance failed", e);
+                    }
+                    textToSpeech = null;
+                    ttsInitializing = false;
+                    ttsInitialized = false;
+
+                    if (pendingTtsText != null && pendingTtsText.trim().length() > 0) {
+                        initTextToSpeechIfNeeded("timeout_retry");
+                    }
+                }
+            }
+        }, TTS_INIT_TIMEOUT_MS);
+        textToSpeech = new TextToSpeech(getApplicationContext(), new TextToSpeech.OnInitListener() {
             @Override
             public void onInit(int status) {
                 if (status == TextToSpeech.SUCCESS) {
-                    int result = textToSpeech.setLanguage(Locale.CHINESE);
-                    ttsReady = result != TextToSpeech.LANG_MISSING_DATA && result != TextToSpeech.LANG_NOT_SUPPORTED;
-                    if (ttsReady && pendingTtsText != null && pendingTtsText.trim().length() > 0) {
-                        String text = pendingTtsText;
-                        pendingTtsText = "";
-                        doSpeakText(text);
+                    if (textToSpeech == null) {
+                        ttsInitialized = false;
+                        ttsInitializing = false;
+                        return;
                     }
+
+                    int languageResult = textToSpeech.setLanguage(Locale.CHINA);
+                    if (languageResult == TextToSpeech.LANG_MISSING_DATA
+                            || languageResult == TextToSpeech.LANG_NOT_SUPPORTED) {
+                        languageResult = textToSpeech.setLanguage(Locale.SIMPLIFIED_CHINESE);
+                    }
+                    if (languageResult == TextToSpeech.LANG_MISSING_DATA
+                            || languageResult == TextToSpeech.LANG_NOT_SUPPORTED) {
+                        languageResult = textToSpeech.setLanguage(Locale.CHINESE);
+                    }
+                    if (languageResult == TextToSpeech.LANG_MISSING_DATA
+                            || languageResult == TextToSpeech.LANG_NOT_SUPPORTED) {
+                        languageResult = textToSpeech.setLanguage(Locale.getDefault());
+                    }
+                    Log.d(TAG, "[TTS] setLanguage result=" + languageResult);
+
+                    textToSpeech.setSpeechRate(1.0f);
+                    textToSpeech.setPitch(1.0f);
+                    textToSpeech.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+                        @Override
+                        public void onStart(String utteranceId) {
+                            Log.d(TAG, "[TTS] onStart utteranceId=" + utteranceId);
+                        }
+
+                        @Override
+                        public void onDone(String utteranceId) {
+                            Log.d(TAG, "[TTS] onDone utteranceId=" + utteranceId);
+                            handleTtsFinished(utteranceId);
+                        }
+
+                        @Override
+                        public void onError(String utteranceId) {
+                            Log.e(TAG, "[TTS] onError utteranceId=" + utteranceId);
+                            handleTtsFinished(utteranceId);
+                        }
+                    });
+
+                    ttsInitialized = true;
+                    ttsInitializing = false;
+                    Log.d(TAG, "[TTS] onInit success, reason=" + initReason);
+
+                    String pending = pendingTtsText;
+                    String reasonText = pendingTtsReason;
+                    if (pending != null && pending.trim().length() > 0) {
+                        pendingTtsText = "";
+                        pendingTtsReason = "";
+                        pendingTtsDurationMs = 0L;
+                        Log.d(TAG, "[TTS] flush pending text length=" + pending.length());
+                        speakTextInternal(pending, reasonText != null && reasonText.length() > 0
+                                ? reasonText
+                                : "pending_flush");
+                    }
+                } else {
+                    ttsInitialized = false;
+                    ttsInitializing = false;
+                    Log.w(TAG, "[TTS] onInit failed status=" + status);
+                    try {
+                        if (textToSpeech != null) {
+                            textToSpeech.shutdown();
+                        }
+                    } catch (Exception ignored) {
+                    }
+                    textToSpeech = null;
                 }
             }
         });
@@ -7924,58 +8380,182 @@ public class MainActivity extends Activity {
     private void speakText(String text) {
         if (!ENABLE_NATIVE_TTS) return;
         if (text == null || text.trim().length() == 0) return;
-        if (!ttsReady || textToSpeech == null) {
-            pendingTtsText = text;
-            return;
-        }
-        doSpeakText(text);
+
+        final String textToSpeak = text.trim();
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                Log.d(TAG, "[TTS] speak requested textLength=" + textToSpeak.length()
+                        + ", initialized=" + ttsInitialized
+                        + ", initializing=" + ttsInitializing);
+
+                if (!ttsInitialized || textToSpeech == null) {
+                    long estimatedDurationMs = estimateSpeechDurationMs(textToSpeak);
+                    pendingTtsText = textToSpeak;
+                    pendingTtsReason = "fallback_or_pending_audio";
+                    pendingTtsDurationMs = estimatedDurationMs;
+                    Log.d(TAG, "[TTS] pending text saved length=" + textToSpeak.length());
+                    initTextToSpeechIfNeeded("speakText");
+                    startMouthSyncWithText(textToSpeak, estimatedDurationMs, android.os.SystemClock.uptimeMillis(), "");
+                    Log.d(TAG, "[MouthSync] audioUrl=, frames=0, fallbackText=" + safeLogText(textToSpeak));
+                    return;
+                }
+
+                speakTextInternal(textToSpeak, "direct");
+            }
+        });
     }
 
-    private void doSpeakText(String text) {
-        if (textToSpeech == null) return;
+    private void speakTextInternal(String text, String reason) {
+        if (!ENABLE_NATIVE_TTS) return;
+        if (text == null || text.trim().length() == 0) return;
+        if (textToSpeech == null) {
+            Log.w(TAG, "[TTS] speak internal skipped, textToSpeech=null");
+            return;
+        }
+
+        final String textToSpeak = text.trim();
+        final String speakReason = reason == null || reason.trim().length() == 0
+                ? "direct"
+                : reason;
+        final String utteranceId = "guide_tts_" + System.currentTimeMillis();
+        currentTtsUtteranceId = utteranceId;
+        long estimatedDurationMs = pendingTtsDurationMs > 0L
+                ? pendingTtsDurationMs
+                : estimateSpeechDurationMs(textToSpeak);
+        startMouthSyncWithText(textToSpeak, estimatedDurationMs, android.os.SystemClock.uptimeMillis(), "");
+        Log.d(TAG, "[MouthSync] audioUrl=, frames=0, fallbackText=" + safeLogText(textToSpeak));
+        Log.d(TAG, "[TTS] speak internal textLength=" + textToSpeak.length()
+                + ", reason=" + speakReason);
+
+        int speakResult;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            textToSpeech.speak(text, TextToSpeech.QUEUE_FLUSH, null, "guide-answer");
+            Bundle params = new Bundle();
+            params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f);
+            speakResult = textToSpeech.speak(textToSpeak, TextToSpeech.QUEUE_FLUSH, params, utteranceId);
         } else {
-            textToSpeech.speak(text, TextToSpeech.QUEUE_FLUSH, null);
+            HashMap<String, String> params = new HashMap<String, String>();
+            params.put(TextToSpeech.Engine.KEY_PARAM_VOLUME, "1.0");
+            params.put(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId);
+            speakResult = textToSpeech.speak(textToSpeak, TextToSpeech.QUEUE_FLUSH, params);
+        }
+
+        Log.d(TAG, "[TTS] speak internal result=" + speakResult);
+
+        if (speakResult == TextToSpeech.ERROR) {
+            Log.e(TAG, "[TTS] speak internal failed result=" + speakResult);
+            stopMouthSync();
+            returnDigitalHumanToIdle();
+            return;
+        }
+
+        if (mainHandler != null) {
+            mainHandler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    if (utteranceId.equals(currentTtsUtteranceId) && mediaPlayer == null) {
+                        handleTtsFinished(utteranceId);
+                    }
+                }
+            }, estimatedDurationMs + 700L);
         }
     }
 
     private void playAnswerVoice(GuideResponse guideResponse) {
         if (guideResponse == null) return;
+        if (guideEnded) {
+            Log.d(TAG, "[AudioPlay] guide ended, skip voice playback");
+            return;
+        }
         String audioUrl = guideResponse.audioUrl == null ? "" : guideResponse.audioUrl.trim();
+        String audioStatus = guideResponse.audioStatus == null ? "" : guideResponse.audioStatus.trim();
+        Log.d(TAG, "[AudioPlay] final response audioStatus=" + safeString(audioStatus)
+                + ", audioUrl=" + safeString(audioUrl)
+                + ", ttsTaskId=" + safeString(guideResponse.ttsTaskId)
+                + ", mouthFrames=" + (guideResponse.mouthFrames == null ? 0 : guideResponse.mouthFrames.size()));
         if (audioUrl.length() > 0) {
-            playAudioUrl(audioUrl, guideResponse.mouthFrames);
+            playAudioUrl(audioUrl, guideResponse);
+            return;
+        }
+        if ("PENDING".equalsIgnoreCase(audioStatus)) {
+            Log.d(TAG, "[AudioPlay] audio pending, fallback local tts");
+            applyGuideResponseDigitalHuman(guideResponse, "explain", "warm");
+            speakText(guideResponse.answer);
             return;
         }
         if (guideResponse.ttsError != null && guideResponse.ttsError.trim().length() > 0) {
             Log.w(TAG, "TTS error from AI service: " + guideResponse.ttsError);
         }
+        Log.d(TAG, "[TTS] fallback speak");
+        applyGuideResponseDigitalHuman(guideResponse, "explain", "warm");
         speakText(guideResponse.answer);
     }
 
-    private void playAudioUrl(String audioUrl, final List<MouthSyncManager.MouthFrame> mouthFrames) {
+    private void playAudioUrl(String audioUrl, final GuideResponse guideResponse) {
         try {
             stopCurrentAudio();
             String finalUrl = resolveAudioUrl(audioUrl);
+            Log.d(TAG, "[AudioPlay] rawUrl=" + safeString(audioUrl));
+            Log.d(TAG, "[AudioPlay] resolvedUrl=" + safeString(finalUrl));
+            if (finalUrl.length() == 0) {
+                Log.d(TAG, "[TTS] fallback speak");
+                applyGuideResponseDigitalHuman(guideResponse, "explain", "warm");
+                speakText(guideResponse == null ? "" : guideResponse.answer);
+                return;
+            }
+            final String finalAudioUrl = finalUrl;
+            final List<MouthSyncManager.MouthFrame> mouthFrames = guideResponse == null ? null : guideResponse.mouthFrames;
+            final List<MouthSyncController.MouthFrame> controllerMouthFrames = guideResponse == null ? null : guideResponse.controllerMouthFrames;
             Log.d(TAG, "播放后端 TTS 音频: " + finalUrl);
             Log.d(TAG, "开始播放音频，mouthFrames 数量: " + (mouthFrames == null ? 0 : mouthFrames.size()));
 
             mediaPlayer = new MediaPlayer();
+            mediaPlayer.setAudioStreamType(AudioManager.STREAM_MUSIC);
+            mediaPlayer.setVolume(1f, 1f);
             mediaPlayer.setDataSource(finalUrl);
             mediaPlayer.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
                 @Override
                 public void onPrepared(MediaPlayer mp) {
+                    Log.d(TAG, "[AudioPlay] onPrepared start");
                     guideStateText.setText("正在讲解");
                     voiceMainButton.setText("数字人正在讲解...");
-                    MouthSyncManager.getInstance().start(mouthFrames);
-                    mp.start();
+                    try {
+                        mp.start();
+                    } catch (Exception e) {
+                        Log.e(TAG, "[AudioPlay] start failed", e);
+                        stopMouthSync();
+                        returnDigitalHumanToIdle();
+                        return;
+                    }
+                    long startUptimeMs = android.os.SystemClock.uptimeMillis();
+                    long durationMs = guideResponse == null ? 0L : guideResponse.audioDurationMs;
+                    if (durationMs <= 0L) {
+                        try {
+                            durationMs = mp.getDuration();
+                        } catch (Exception ignored) {
+                        }
+                    }
+                    if (hasMouthFrames(mouthFrames, controllerMouthFrames)) {
+                        startMouthSyncWithFrames(mouthFrames, controllerMouthFrames, durationMs, startUptimeMs);
+                        Log.d(TAG, "[MouthSync] audioUrl=" + finalAudioUrl
+                                + ", frames=" + Math.max(mouthFrames == null ? 0 : mouthFrames.size(), controllerMouthFrames == null ? 0 : controllerMouthFrames.size())
+                                + ", fallbackText=");
+                    } else {
+                        String answer = guideResponse == null ? "" : guideResponse.answer;
+                        startMouthSyncWithText(answer, durationMs, startUptimeMs, finalAudioUrl);
+                        Log.d(TAG, "[MouthSync] audioUrl=" + finalAudioUrl
+                                + ", frames=0, fallbackText=" + safeLogText(answer));
+                    }
+                    applyGuideResponseDigitalHuman(guideResponse, "explain", "warm");
                     forceRenderLive2D();
                 }
             });
             mediaPlayer.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
                 @Override
                 public void onCompletion(MediaPlayer mp) {
-                    MouthSyncManager.getInstance().stop();
+                    Log.d(TAG, "[AudioPlay] onCompletion");
+                    stopMouthSync();
+                    returnDigitalHumanToIdle();
                     guideStateText.setText("讲解完成");
                     voiceMainButton.setText("🎙 长按说话");
                     stopCurrentAudio();
@@ -7984,32 +8564,240 @@ public class MainActivity extends Activity {
             mediaPlayer.setOnErrorListener(new MediaPlayer.OnErrorListener() {
                 @Override
                 public boolean onError(MediaPlayer mp, int what, int extra) {
-                    MouthSyncManager.getInstance().stop();
-                    Log.e(TAG, "音频播放失败 what=" + what + ", extra=" + extra);
+                    stopMouthSync();
+                    returnDigitalHumanToIdle();
+                    Log.e(TAG, "[AudioPlay] onError what=" + what
+                            + ", extra=" + extra
+                            + ", url=" + finalAudioUrl);
                     guideStateText.setText("语音播放失败");
                     voiceMainButton.setText("🎙 长按说话");
                     stopCurrentAudio();
+                    applyGuideResponseDigitalHuman(guideResponse, "explain", "warm");
+                    Log.d(TAG, "[TTS] fallback speak");
+                    speakText(guideResponse == null ? "" : guideResponse.answer);
                     return true;
                 }
             });
+            Log.d(TAG, "[AudioPlay] start prepareAsync");
             mediaPlayer.prepareAsync();
         } catch (Exception e) {
             Log.e(TAG, "播放音频异常", e);
             guideStateText.setText("语音播放异常");
             voiceMainButton.setText("🎙 长按说话");
-            showToast("语音播放失败");
+            stopMouthSync();
+            returnDigitalHumanToIdle();
             stopCurrentAudio();
+            applyGuideResponseDigitalHuman(guideResponse, "explain", "warm");
+            Log.d(TAG, "[TTS] fallback speak");
+            speakText(guideResponse == null ? "" : guideResponse.answer);
         }
+    }
+
+    private boolean hasMouthFrames(List<MouthSyncManager.MouthFrame> mouthFrames) {
+        return mouthFrames != null && mouthFrames.size() > 0;
+    }
+
+    private boolean hasMouthFrames(List<MouthSyncManager.MouthFrame> mouthFrames,
+                                   List<MouthSyncController.MouthFrame> controllerMouthFrames) {
+        return hasMouthFrames(mouthFrames)
+                || (controllerMouthFrames != null && controllerMouthFrames.size() > 0);
+    }
+
+    private void startMouthSyncWithFrames(List<MouthSyncManager.MouthFrame> frames,
+                                          List<MouthSyncController.MouthFrame> controllerFrames,
+                                          long durationMs,
+                                          long startUptimeMs) {
+        List<MouthSyncManager.MouthFrame> safeFrames = frames == null
+                ? new ArrayList<MouthSyncManager.MouthFrame>()
+                : new ArrayList<MouthSyncManager.MouthFrame>(frames);
+        MouthSyncManager.getInstance().start(safeFrames);
+        List<MouthSyncController.MouthFrame> safeControllerFrames = controllerFrames == null || controllerFrames.size() == 0
+                ? toControllerMouthFrames(safeFrames)
+                : new ArrayList<MouthSyncController.MouthFrame>(controllerFrames);
+        MouthSyncController.getInstance().startWithFrames(safeControllerFrames, durationMs, startUptimeMs);
+    }
+
+    private void startMouthSyncWithText(String text, long durationMs, long startUptimeMs, String audioUrl) {
+        if (text == null || text.trim().length() == 0) {
+            return;
+        }
+        long safeDurationMs = durationMs > 0L ? durationMs : estimateSpeechDurationMs(text);
+        List<MouthSyncManager.MouthFrame> pseudoFrames = buildPseudoMouthFrames(text, safeDurationMs);
+        MouthSyncManager.getInstance().start(pseudoFrames);
+        MouthSyncController.getInstance().startWithText(text, safeDurationMs, startUptimeMs);
+    }
+
+    private List<MouthSyncController.MouthFrame> toControllerMouthFrames(List<MouthSyncManager.MouthFrame> frames) {
+        List<MouthSyncController.MouthFrame> result = new ArrayList<MouthSyncController.MouthFrame>();
+        if (frames == null) {
+            return result;
+        }
+        for (MouthSyncManager.MouthFrame frame : frames) {
+            if (frame == null) {
+                continue;
+            }
+            result.add(new MouthSyncController.MouthFrame(frame.t, frame.open, frame.form));
+        }
+        return result;
+    }
+
+    private List<MouthSyncManager.MouthFrame> buildPseudoMouthFrames(String text, long durationMs) {
+        List<MouthSyncManager.MouthFrame> frames = new ArrayList<MouthSyncManager.MouthFrame>();
+        String safeText = text == null ? "" : text.trim();
+        if (safeText.length() == 0) {
+            safeText = "数字人导览";
+        }
+
+        long targetDuration = Math.max(900L, Math.min(18000L, durationMs > 0L ? durationMs : estimateSpeechDurationMs(safeText)));
+        long cursor = 0L;
+        float smoothOpen = 0.18f;
+
+        for (int i = 0; i < safeText.length(); i++) {
+            char c = safeText.charAt(i);
+            if (isSpeechPausePunctuation(c)) {
+                frames.add(new MouthSyncManager.MouthFrame((int) cursor, smoothOpen * 0.35f, 0.0f));
+                cursor += getSpeechPauseDurationMs(c);
+                continue;
+            }
+
+            float targetOpen = 0.16f + ((i % 5) * 0.13f) + ((Math.abs(c) % 4) * 0.04f);
+            if (targetOpen > 0.9f) {
+                targetOpen = 0.9f;
+            }
+            smoothOpen = smoothOpen + (targetOpen - smoothOpen) * 0.55f;
+            frames.add(new MouthSyncManager.MouthFrame((int) cursor, smoothOpen, 0.0f));
+            cursor += 85L + (Math.abs(c) % 35);
+        }
+
+        if (cursor <= 0L) {
+            cursor = targetDuration;
+        }
+        float scale = targetDuration / (float) cursor;
+        for (MouthSyncManager.MouthFrame frame : frames) {
+            frame.t = Math.round(frame.t * scale);
+        }
+        frames.add(new MouthSyncManager.MouthFrame((int) targetDuration, 0.08f, 0.0f));
+        frames.add(new MouthSyncManager.MouthFrame((int) (targetDuration + 180L), 0.0f, 0.0f));
+        return frames;
+    }
+
+    private long estimateSpeechDurationMs(String text) {
+        String safeText = text == null ? "" : text.trim();
+        if (safeText.length() == 0) {
+            return 1200L;
+        }
+        long base = safeText.length() * 180L;
+        int pauseCount = 0;
+        for (int i = 0; i < safeText.length(); i++) {
+            if (isSpeechPausePunctuation(safeText.charAt(i))) {
+                pauseCount++;
+            }
+        }
+        return Math.max(1200L, Math.min(20000L, base + pauseCount * 180L));
+    }
+
+    private boolean isSpeechPausePunctuation(char c) {
+        return c == '，' || c == '、' || c == '：' || c == '；'
+                || c == ',' || c == ';' || c == ':'
+                || c == '。' || c == '！' || c == '？'
+                || c == '.' || c == '!' || c == '?';
+    }
+
+    private long getSpeechPauseDurationMs(char c) {
+        if (c == '。' || c == '！' || c == '？' || c == '.' || c == '!' || c == '?') {
+            return 300L;
+        }
+        return 150L;
+    }
+
+    private void stopMouthSync() {
+        MouthSyncManager.getInstance().stop();
+        MouthSyncController.getInstance().stopAndReset();
+    }
+
+    private void handleTtsFinished(final String utteranceId) {
+        if (utteranceId == null || !utteranceId.equals(currentTtsUtteranceId)) {
+            return;
+        }
+        currentTtsUtteranceId = "";
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                stopMouthSync();
+                returnDigitalHumanToIdle();
+                if (!guideEnded) {
+                    if (guideStateText != null) {
+                        guideStateText.setText("讲解完成");
+                    }
+                    if (voiceMainButton != null) {
+                        voiceMainButton.setText("🎙 长按说话");
+                    }
+                }
+            }
+        });
+    }
+
+    private void applyGuideResponseDigitalHuman(GuideResponse guideResponse, String fallbackAction, String fallbackEmotion) {
+        String action = guideResponse == null ? "" : firstNotEmpty(guideResponse.action, guideResponse.actionCode);
+        String emotion = guideResponse == null ? "" : firstNotEmpty(guideResponse.emotion, guideResponse.emotionCode);
+        applyDigitalHumanState(firstNotEmpty(action, fallbackAction), firstNotEmpty(emotion, fallbackEmotion));
+    }
+
+    private void applyDigitalHumanState(String action, String emotion) {
+        String safeAction = firstNotEmpty(action, "idle");
+        String safeEmotion = firstNotEmpty(emotion, "neutral");
+        Log.d(TAG, "[DigitalHumanAction] action=" + safeAction + ", emotion=" + safeEmotion);
+        try {
+            DigitalHumanActionController.getInstance().apply(safeAction, safeEmotion);
+        } catch (Throwable e) {
+            Log.e(TAG, "[DigitalHumanAction] apply failed action=" + safeAction + ", emotion=" + safeEmotion, e);
+        }
+        forceRenderLive2D();
+    }
+
+    private void returnDigitalHumanToIdle() {
+        try {
+            DigitalHumanActionController.getInstance().returnToIdle();
+            Log.d(TAG, "[DigitalHumanAction] action=idle, emotion=neutral");
+        } catch (Throwable e) {
+            Log.e(TAG, "[DigitalHumanAction] return idle failed", e);
+        }
+        forceRenderLive2D();
+    }
+
+    private String safeLogText(String text) {
+        String value = safeString(text).replace("\n", " ").replace("\r", " ").trim();
+        return value.length() > 36 ? value.substring(0, 36) + "..." : value;
     }
 
     private String resolveAudioUrl(String audioUrl) {
         if (audioUrl == null) return "";
         String url = audioUrl.trim();
-        if (url.startsWith("http://") || url.startsWith("https://")) return url;
         try {
             URL chatUrl = new URL(GUIDE_CHAT_URL);
             String baseUrl = chatUrl.getProtocol() + "://" + chatUrl.getHost();
             if (chatUrl.getPort() > 0) baseUrl += ":" + chatUrl.getPort();
+
+            if (url.startsWith("//")) {
+                return chatUrl.getProtocol() + ":" + url;
+            }
+
+            if (url.startsWith("http://") || url.startsWith("https://")) {
+                URL parsed = new URL(url);
+                String host = parsed.getHost();
+                if ("localhost".equalsIgnoreCase(host) || "127.0.0.1".equals(host)) {
+                    String hostBase = chatUrl.getProtocol() + "://" + chatUrl.getHost();
+                    if (parsed.getPort() > 0) {
+                        hostBase += ":" + parsed.getPort();
+                    } else if (chatUrl.getPort() > 0) {
+                        hostBase += ":" + chatUrl.getPort();
+                    }
+                    String file = parsed.getFile();
+                    return hostBase + (file == null ? "" : file);
+                }
+                return url;
+            }
+
             if (url.startsWith("/")) return baseUrl + url;
             return baseUrl + "/" + url;
         } catch (Exception e) {
@@ -8018,7 +8806,8 @@ public class MainActivity extends Activity {
     }
 
     private void stopCurrentAudio() {
-        MouthSyncManager.getInstance().stop();
+        stopMouthSync();
+        currentTtsUtteranceId = "";
         try {
             if (mediaPlayer != null) {
                 if (mediaPlayer.isPlaying()) mediaPlayer.stop();
@@ -8303,9 +9092,15 @@ public class MainActivity extends Activity {
         releaseRecorder();
         stopCurrentAudio();
         if (textToSpeech != null) {
+            textToSpeech.stop();
             textToSpeech.shutdown();
             textToSpeech = null;
         }
+        ttsInitialized = false;
+        ttsInitializing = false;
+        pendingTtsText = "";
+        pendingTtsReason = "";
+        pendingTtsDurationMs = 0L;
         if (routeMapView != null) {
             routeMapView.onDestroy();
             routeMapView = null;
@@ -8318,12 +9113,20 @@ public class MainActivity extends Activity {
         String questionText = "";
         String answer = "";
         String audioUrl = "";
+        String audioStatus = "";
+        String ttsTaskId = "";
+        long audioDurationMs = 0L;
         String conversationId = "";
         String messageId = "";
         String ttsError = "";
+        String action = "";
+        String actionCode = "";
+        String emotion = "";
+        String emotionCode = "";
         RouteInfo route;
         List<String> suggestions = new ArrayList<>();
         List<MouthSyncManager.MouthFrame> mouthFrames = new ArrayList<>();
+        List<MouthSyncController.MouthFrame> controllerMouthFrames = new ArrayList<>();
     }
 
     private static class VisitEndResult {

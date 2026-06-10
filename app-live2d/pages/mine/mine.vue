@@ -149,7 +149,7 @@ import {
 } from '@/utils/auth'
 import { getFavoriteList } from '@/utils/favorite'
 import { trackPageView, trackClick } from '@/utils/track'
-import { getCurrentVisitId, getLastVisitId } from '@/utils/visit'
+import { clearVisitCacheForLogout, getLastEndedVisit, getLastVisitId } from '@/utils/visit'
 
 const FAVORITE_KEY = 'favoriteScenics'
 const CONSULT_KEY = 'recentConsults'
@@ -222,7 +222,11 @@ const profileDesc = computed(() => {
 })
 
 const recentVisitId = computed(() => {
-  return getCurrentVisitId() || getLastVisitId() || ''
+  if (!loggedIn.value || !currentUserId.value) {
+    return ''
+  }
+  const ended = getLastEndedVisit({ fallbackGlobal: false })
+  return ended.visitId || getLastVisitId({ fallbackGlobal: false }) || ''
 })
 
 const menuList = computed(() => {
@@ -498,6 +502,14 @@ function handleMenuClick(item) {
       break
 
     case 'visitReport': {
+      if (!loggedIn.value || !currentUserId.value) {
+        uni.showToast({
+          title: '请先登录后查看游玩报告',
+          icon: 'none'
+        })
+        goLogin()
+        return
+      }
       const visitId = recentVisitId.value
       uni.navigateTo({
         url: visitId
@@ -587,7 +599,9 @@ function handleLogout() {
     success: res => {
       if (!res.confirm) return
 
+      const logoutUserId = currentUserId.value || getCurrentUserId()
       clearLogin()
+      clearVisitCacheForLogout(logoutUserId)
       loadLoginState()
       favoriteList.value = []
 

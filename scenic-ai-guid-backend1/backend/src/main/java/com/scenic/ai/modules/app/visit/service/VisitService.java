@@ -36,6 +36,7 @@ public class VisitService {
     private static final String STATUS_ACTIVE_COMPAT = "ONGOING";
     private static final String STATUS_ENDED_COMPAT = "COMPLETED";
     private static final String CONSUME_STATUS_PENDING = "pending";
+    private static final long STALE_ACTIVE_VISIT_HOURS = 12L;
     private static final DateTimeFormatter DATE_TIME_FORMATTER =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final DateTimeFormatter VISIT_NO_TIME_FORMATTER =
@@ -84,9 +85,20 @@ public class VisitService {
         LocalDateTime now = LocalDateTime.now();
         TouristVisitSession activeSession = touristVisitSessionMapper.selectActiveSessionByUserAndAreaId(userId, areaId);
         if (activeSession != null && activeSession.id != null) {
-            updateActiveVisitStartSnapshot(activeSession, request, groupSize, travelType, visitPreference, now);
-            recordVisitStartEvent(request, activeSession, areaCode, areaName, estimatedDuration);
-            return buildVisitStartResponse(activeSession, areaCode, areaName, STATUS_ACTIVE_COMPAT);
+            if (isStaleActiveVisit(activeSession, now)) {
+                long staleHours = activeSession.startTime == null
+                        ? STALE_ACTIVE_VISIT_HOURS
+                        : Duration.between(activeSession.startTime, now).toHours();
+                log.warn("[VisitStart] stale active visit auto closed visitId={}, startTime={}, hours={}",
+                        activeSession.id, activeSession.startTime, staleHours);
+                closeStaleActiveVisit(activeSession, request, now, areaName);
+                log.info("[VisitStart] create new visit after stale closed");
+            } else {
+                log.info("[VisitStart] reuse active visitId={}", activeSession.id);
+                updateActiveVisitStartSnapshot(activeSession, request, groupSize, travelType, visitPreference, now);
+                recordVisitStartEvent(request, activeSession, areaCode, areaName, estimatedDuration);
+                return buildVisitStartResponse(activeSession, areaCode, areaName, STATUS_ACTIVE_COMPAT);
+            }
         }
 
         TouristVisitSession session = new TouristVisitSession();
@@ -402,6 +414,57 @@ public class VisitService {
             log.warn("写入游览结束原因失败，不影响结束导览流程。visitId={}, error={}",
                     visitId, e.getMessage());
         }
+    }
+
+    private boolean isStaleActiveVisit(TouristVisitSession session, LocalDateTime now) {
+        if (session == null || session.startTime == null || now == null) {
+            return false;
+        }
+        return Duration.between(session.startTime, now).toHours() >= STALE_ACTIVE_VISIT_HOURS;
+    }
+
+    private void closeStaleActiveVisit(
+            TouristVisitSession session,
+            VisitStartRequest request,
+            LocalDateTime endTime,
+            String areaName
+    ) {
+        TouristSpotVisitRecord activeRecord = touristSpotVisitRecordMapper.selectLatestOpenSpotVisitRecord(session.id);
+        if (activeRecord != null) {
+            autoCloseOpenSpot(session, activeRecord, request.longitude, request.latitude, "stale_auto_closed");
+        }
+
+        int realDurationSeconds = calculateStaySeconds(session.startTime, endTime);
+        int cappedDurationSeconds = Math.min(realDurationSeconds, (int) (STALE_ACTIVE_VISIT_HOURS * 3600));
+        int rows = touristVisitSessionMapper.updateVisitEnd(
+                session.id,
+                endTime,
+                request.longitude,
+                request.latitude,
+                cappedDurationSeconds
+        );
+        if (rows <= 0) {
+            throw new IllegalStateException("关闭历史现场导览失败");
+        }
+        writeEndReasonSafely(session.id, "stale_auto_closed");
+
+        session.endTime = endTime;
+        session.endLongitude = request.longitude;
+        session.endLatitude = request.latitude;
+        session.totalDurationSeconds = cappedDurationSeconds;
+        session.visitStatus = STATUS_FINISHED;
+
+        VisitEndRequest endRequest = new VisitEndRequest();
+        endRequest.visitId = session.id;
+        endRequest.userId = session.userId;
+        endRequest.areaId = session.areaId;
+        endRequest.parkName = areaName;
+        endRequest.longitude = request.longitude;
+        endRequest.latitude = request.latitude;
+        endRequest.source = "stale_auto_closed";
+        endRequest.endReason = "stale_auto_closed";
+        endRequest.trigger = "stale_auto_closed";
+        recordVisitEndEvent(endRequest, session);
     }
 
     private void updateActiveVisitStartSnapshot(

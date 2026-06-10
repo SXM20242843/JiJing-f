@@ -9,6 +9,7 @@ import com.scenic.ai.modules.app.visit.dto.VisitReportResponse;
 import com.scenic.ai.modules.app.visit.dto.VisitReportSpotDto;
 import com.scenic.ai.modules.app.visit.dto.VisitReportDetailResponse;
 import com.scenic.ai.modules.app.visit.mapper.VisitReportMapper;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -20,9 +21,11 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 
+@Slf4j
 @Service
 public class VisitReportService {
 
+    private static final int MAX_REASONABLE_REPORT_DURATION_SECONDS = 24 * 3600;
     private static final DateTimeFormatter DATE_TIME_FORMATTER =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
@@ -50,7 +53,20 @@ public class VisitReportService {
         report.startTime = formatDateTime(report.rawStartTime);
         report.endTime = formatDateTime(report.rawEndTime);
         report.stayDuration = resolveStayDuration(report.stayDuration, report.rawStartTime, report.rawEndTime);
-        report.stayDurationText = formatDuration(report.stayDuration);
+        String durationTextOverride = "";
+        if (isAbnormalReportDuration(report.stayDuration)) {
+            Integer recomputedDuration = resolveStayDuration(null, report.rawStartTime, report.rawEndTime);
+            log.warn("[VisitReport] abnormal duration visitId={}, savedSeconds={}, recomputedSeconds={}",
+                    visitId, report.stayDuration, recomputedDuration);
+            if (recomputedDuration != null && !isAbnormalReportDuration(recomputedDuration)) {
+                report.stayDuration = recomputedDuration;
+            } else {
+                durationTextOverride = "本次导览时长异常";
+            }
+        }
+        report.stayDurationText = durationTextOverride.isEmpty()
+                ? formatDuration(report.stayDuration)
+                : durationTextOverride;
         report.durationSeconds = report.stayDuration;
         report.durationText = report.stayDurationText;
         report.areaName = report.parkName;
@@ -73,6 +89,16 @@ public class VisitReportService {
         report.visitedSpots = spots;
         report.spotCount = spots.size();
         report.visitedSpotCount = report.spotCount;
+        log.info("[VisitReport] visitId={}, spots.size={}, spotCount={}",
+                visitId, spots.size(), report.spotCount);
+        for (VisitReportSpotDto spot : spots) {
+            log.info("[VisitReport] spot item id={}, name={}, enter={}, leave={}, seconds={}",
+                    firstNotBlank(spot.spotId, spot.scenicId),
+                    spot.scenicName,
+                    spot.enterTime,
+                    spot.leaveTime,
+                    spot.staySeconds);
+        }
 
         BehaviorStatsDto behaviorStats = hasColumn("tourist_behavior_event", "visit_id")
                 ? visitReportMapper.selectBehaviorStats(visitId)
@@ -125,6 +151,7 @@ public class VisitReportService {
 
         VisitReportDetailResponse detail = new VisitReportDetailResponse();
         detail.visitId = report.visitId == null ? null : String.valueOf(report.visitId);
+        detail.userId = report.userId;
         detail.areaId = report.areaId == null ? null : String.valueOf(report.areaId);
         detail.parkId = report.parkId;
         detail.areaName = report.parkName;
@@ -135,8 +162,6 @@ public class VisitReportService {
         detail.durationSeconds = report.durationSeconds;
         detail.durationText = report.durationText;
         detail.durationMinutes = toMinutes(report.stayDuration);
-        detail.spotCount = report.spotCount == null ? 0 : report.spotCount;
-        detail.visitedSpotCount = detail.spotCount;
         detail.groupSize = firstNotBlank(report.groupSize);
         detail.travelPeopleCount = firstNotBlank(report.travelPeopleCount, report.groupSize);
         detail.travelType = firstNotBlank(report.travelType);
@@ -165,7 +190,11 @@ public class VisitReportService {
         }
 
         detail.visitedSpots = detail.spotStayList;
+        detail.spotCount = detail.spotStayList.size();
+        detail.visitedSpotCount = detail.spotStayList.size();
         detail.behaviorSummary.putAll(report.behaviorSummary);
+        detail.behaviorSummary.put("spotCount", detail.spotCount);
+        detail.behaviorSummary.put("visitedSpotCount", detail.visitedSpotCount);
         detail.consumptionSummary.putAll(report.consumptionSummary);
         detail.consumeStatus = firstNotBlank(report.consumeStatus, "pending");
         detail.ticketCost = defaultMoney(report.ticketCost);
@@ -419,6 +448,10 @@ public class VisitReportService {
 
         long seconds = Duration.between(startTime, endTime).getSeconds();
         return seconds > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) seconds;
+    }
+
+    private boolean isAbnormalReportDuration(Integer seconds) {
+        return seconds != null && seconds > MAX_REASONABLE_REPORT_DURATION_SECONDS;
     }
 
     private String formatDuration(Integer seconds) {

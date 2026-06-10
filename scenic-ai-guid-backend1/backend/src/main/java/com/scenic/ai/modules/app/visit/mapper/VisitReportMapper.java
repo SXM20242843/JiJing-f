@@ -79,9 +79,9 @@ public interface VisitReportMapper {
 
     @Select("""
         SELECT
-          COALESCE(CAST(r.spot_id AS CHAR), NULLIF(r.frontend_scenic_id, ''), s.scene_code) AS spot_id,
-          COALESCE(NULLIF(r.frontend_scenic_id, ''), s.scene_code, CAST(r.spot_id AS CHAR)) AS scenic_id,
-          COALESCE(s.name, NULLIF(r.frontend_scenic_name, ''), '未知景点') AS scenic_name,
+          COALESCE(CAST(r.spot_id AS CHAR), NULLIF(r.frontend_scenic_id, ''), NULLIF(s.scene_code, '')) AS spot_id,
+          COALESCE(NULLIF(r.frontend_scenic_id, ''), NULLIF(s.scene_code, ''), CAST(r.spot_id AS CHAR)) AS scenic_id,
+          COALESCE(NULLIF(r.frontend_scenic_name, ''), NULLIF(s.name, ''), '未知景点') AS scenic_name,
           r.enter_time,
           r.leave_time,
           r.stay_seconds

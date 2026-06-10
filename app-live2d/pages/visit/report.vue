@@ -102,6 +102,24 @@
             <text class="cost-value">{{ item.value }} 元</text>
           </view>
         </view>
+        <view class="consume-detail">
+          <view v-if="reportView.consumeList.length === 0" class="empty-line">暂无消费明细</view>
+          <view v-else class="consume-list">
+            <view
+              class="consume-item"
+              v-for="(item, index) in reportView.consumeList"
+              :key="item.paymentId || index"
+            >
+              <view class="consume-main">
+                <view class="consume-merchant">{{ item.merchantName || '未知商户' }}</view>
+                <view class="consume-amount">{{ formatMoney(item.amount) }} 元</view>
+              </view>
+              <view class="consume-meta">
+                {{ item.consumptionType || '其他消费' }} · {{ item.payTime || '暂无时间' }}
+              </view>
+            </view>
+          </view>
+        </view>
       </view>
 
       <view class="section-card card">
@@ -215,6 +233,8 @@
 import { computed, ref } from 'vue'
 import { onBackPress, onLoad } from '@dcloudio/uni-app'
 import request from '@/utils/request'
+import { getCurrentUserId, isLogin } from '@/utils/auth'
+import { clearVisitCacheForLogout, getLastEndedVisit, getLastVisitId } from '@/utils/visit'
 
 const loading = ref(true)
 const error = ref(false)
@@ -263,17 +283,14 @@ function pickFirst(...values) {
   return values.find(value => value !== undefined && value !== null && value !== '') || ''
 }
 
-function hasValue(value) {
-  return value !== undefined && value !== null && value !== ''
+function pickFirstList(...values) {
+  const nonEmptyList = values.find(value => Array.isArray(value) && value.length > 0)
+  if (nonEmptyList) return nonEmptyList
+  return values.find(value => Array.isArray(value)) || []
 }
 
-function safeGetStorage(key) {
-  try {
-    return uni.getStorageSync(key)
-  } catch (error) {
-    console.warn(`读取本地缓存失败：${key}`, error)
-    return ''
-  }
+function hasValue(value) {
+  return value !== undefined && value !== null && value !== ''
 }
 
 function debugStringify(value) {
@@ -285,17 +302,22 @@ function debugStringify(value) {
 }
 
 function resolveVisitId(options = {}) {
-  return String(pickFirst(
+  const urlVisitId = String(pickFirst(
     options.visitId,
     options.visit_id,
     options.reportVisitId,
     options.report_visit_id,
     options.lastEndedVisitId,
-    options.last_ended_visit_id,
-    safeGetStorage('lastEndedVisitId'),
-    safeGetStorage('reportVisitId'),
-    safeGetStorage('lastVisitId'),
-    safeGetStorage('currentVisitId')
+    options.last_ended_visit_id
+  ))
+  if (urlVisitId) {
+    return urlVisitId
+  }
+
+  const ended = getLastEndedVisit({ fallbackGlobal: false })
+  return String(pickFirst(
+    ended.visitId,
+    getLastVisitId({ fallbackGlobal: false })
   ))
 }
 
@@ -372,6 +394,11 @@ function normalizeMoney(value) {
   return Number.isFinite(number) ? number : 0
 }
 
+function normalizeCount(value) {
+  const number = Number(value)
+  return Number.isFinite(number) ? Math.max(0, Math.floor(number)) : 0
+}
+
 function formatMoney(value) {
   const number = normalizeMoney(value)
   return Number.isInteger(number) ? String(number) : number.toFixed(2)
@@ -410,41 +437,150 @@ function formatRecommend(value) {
 
 function normalizeSpot(raw = {}) {
   const stayText = pickFirst(
+    raw.durationText,
+    raw.duration_text,
     raw.stayDurationText,
-    raw.stay_duration_text,
-    raw.stayDuration,
-    raw.stay_duration
+    raw.stay_duration_text
   )
 
   return {
     ...raw,
-    scenicId: pickFirst(raw.scenicId, raw.scenic_id, raw.sceneCode, raw.scene_code, raw.id),
-    scenicName: pickFirst(raw.scenicName, raw.scenic_name, raw.sceneName, raw.scene_name, raw.name),
+    spotId: pickFirst(raw.spotId, raw.spot_id),
+    scenicId: pickFirst(raw.scenicId, raw.scenic_id, raw.spotId, raw.spot_id, raw.sceneCode, raw.scene_code, raw.id),
+    scenicName: pickFirst(raw.spotName, raw.spot_name, raw.scenicName, raw.scenic_name, raw.sceneName, raw.scene_name, raw.name),
     enterTime: pickFirst(raw.enterTime, raw.enter_time, raw.startTime, raw.start_time),
     leaveTime: pickFirst(raw.leaveTime, raw.leave_time, raw.endTime, raw.end_time),
-    stayDurationText: stayText || normalizeDuration(pickFirst(raw.staySeconds, raw.stay_seconds, raw.durationSeconds, raw.duration_seconds))
+    stayDurationText: stayText || normalizeDuration(pickFirst(
+      raw.durationSeconds,
+      raw.duration_seconds,
+      raw.staySeconds,
+      raw.stay_seconds,
+      raw.duration,
+      raw.stayDuration,
+      raw.stay_duration
+    ))
   }
+}
+
+function normalizeConsumeRecord(raw = {}) {
+  return {
+    ...raw,
+    paymentId: pickFirst(raw.paymentId, raw.payment_id, raw.id),
+    merchantName: pickFirst(raw.merchantName, raw.merchant_name, raw.merchant, raw.shopName, raw.shop_name),
+    consumptionType: pickFirst(raw.consumptionType, raw.consumption_type, raw.type, raw.category),
+    amount: normalizeMoney(pickFirst(raw.amount, raw.payAmount, raw.pay_amount)),
+    payTime: pickFirst(raw.payTime, raw.pay_time, raw.createTime, raw.create_time, raw.createdAt, raw.created_at)
+  }
+}
+
+function summarizeConsumeList(list = []) {
+  const result = {
+    ticketCost: 0,
+    foodCost: 0,
+    shoppingCost: 0,
+    transportCost: 0,
+    entertainmentCost: 0,
+    totalCost: 0
+  }
+
+  list.forEach((item = {}) => {
+    const amount = normalizeMoney(pickFirst(item.amount, item.payAmount, item.pay_amount))
+    if (!amount) return
+
+    const type = String(pickFirst(item.consumptionType, item.consumption_type, item.type, 'entertainment')).toLowerCase()
+    result.totalCost += amount
+
+    if (type.includes('ticket') || type.includes('门票')) {
+      result.ticketCost += amount
+    } else if (type.includes('food') || type.includes('餐') || type.includes('美食')) {
+      result.foodCost += amount
+    } else if (type.includes('shop') || type.includes('shopping') || type.includes('购物')) {
+      result.shoppingCost += amount
+    } else if (type.includes('transport') || type.includes('parking') || type.includes('交通')) {
+      result.transportCost += amount
+    } else {
+      result.entertainmentCost += amount
+    }
+  })
+
+  return result
 }
 
 function normalizeReport(source = {}) {
   const consume = source.consume || source.consumption || source.consumptionSummary || source.consumption_summary || source.cost || source.costs || {}
   const feedback = source.feedback && typeof source.feedback === 'object' ? source.feedback : {}
   const feedbackText = typeof source.feedback === 'string' ? source.feedback : ''
-  const spots = pickFirst(source.spots, source.scenicStays, source.scenic_stays, source.spotDetails, source.spot_details)
-  const recommendParks = pickFirst(source.recommendParks, source.recommend_parks, source.similarParks, source.similar_parks)
+  const spots = pickFirstList(
+    source.spots,
+    source.spotStayList,
+    source.spot_stay_list,
+    source.visitedSpots,
+    source.visited_spots,
+    source.scenicStays,
+    source.scenic_stays,
+    source.spotDetails,
+    source.spot_details
+  )
+  const recommendParks = pickFirstList(
+    source.recommendParks,
+    source.recommend_parks,
+    source.recommendationSimilarScenic,
+    source.recommendation_similar_scenic,
+    source.similarParks,
+    source.similar_parks
+  )
+  const consumeList = pickFirstList(
+    source.consumeList,
+    source.consume_list,
+    source.paymentRecords,
+    source.payment_records,
+    consume.consumeList,
+    consume.consume_list,
+    consume.paymentRecords,
+    consume.payment_records
+  )
+  const normalizedConsumeList = Array.isArray(consumeList) ? consumeList.map(normalizeConsumeRecord) : []
 
-  const ticketCost = normalizeMoney(pickFirst(source.ticketCost, source.ticket_cost, consume.ticketCost, consume.ticket_cost))
-  const foodCost = normalizeMoney(pickFirst(source.foodCost, source.food_cost, consume.foodCost, consume.food_cost))
-  const shoppingCost = normalizeMoney(pickFirst(source.shoppingCost, source.shopping_cost, consume.shoppingCost, consume.shopping_cost))
-  const transportCost = normalizeMoney(pickFirst(source.transportCost, source.transport_cost, consume.transportCost, consume.transport_cost))
-  const entertainmentCost = normalizeMoney(pickFirst(source.entertainmentCost, source.entertainment_cost, consume.entertainmentCost, consume.entertainment_cost))
+  const consumeSummaryFromList = summarizeConsumeList(normalizedConsumeList)
+  const ticketCost = normalizeMoney(pickFirst(source.ticketCost, source.ticket_cost, consume.ticketCost, consume.ticket_cost, consumeSummaryFromList.ticketCost))
+  const foodCost = normalizeMoney(pickFirst(source.foodCost, source.food_cost, consume.foodCost, consume.food_cost, consumeSummaryFromList.foodCost))
+  const shoppingCost = normalizeMoney(pickFirst(source.shoppingCost, source.shopping_cost, consume.shoppingCost, consume.shopping_cost, consumeSummaryFromList.shoppingCost))
+  const transportCost = normalizeMoney(pickFirst(source.transportCost, source.transport_cost, consume.transportCost, consume.transport_cost, consumeSummaryFromList.transportCost))
+  const entertainmentCost = normalizeMoney(pickFirst(source.entertainmentCost, source.entertainment_cost, consume.entertainmentCost, consume.entertainment_cost, consumeSummaryFromList.entertainmentCost))
   const totalCost = normalizeMoney(
-    pickFirst(source.totalCost, source.total_cost, consume.totalCost, consume.total_cost) ||
+    pickFirst(source.totalCost, source.total_cost, consume.totalCost, consume.total_cost, consumeSummaryFromList.totalCost) ||
     ticketCost + foodCost + shoppingCost + transportCost + entertainmentCost
   )
   const normalizedSpots = Array.isArray(spots) ? spots.map(normalizeSpot) : []
-  const stayDurationText = pickFirst(source.stayDurationText, source.stay_duration_text) ||
-    normalizeDuration(pickFirst(source.stayDuration, source.stay_duration, source.staySeconds, source.stay_seconds))
+  const rawSpotCount = normalizeCount(pickFirst(source.spotCount, source.spot_count))
+  const rawVisitedSpotCount = normalizeCount(pickFirst(source.visitedSpotCount, source.visited_spot_count))
+  const normalizedSpotCount = Math.max(normalizedSpots.length, rawSpotCount, rawVisitedSpotCount)
+  const normalizedVisitedSpotCount = Math.max(normalizedSpots.length, rawVisitedSpotCount, rawSpotCount)
+  console.log('[visit/report] raw spotCount=' + rawSpotCount
+    + ', visitedSpotCount=' + rawVisitedSpotCount
+    + ', spots.length=' + normalizedSpots.length)
+  console.log('[visit/report] normalized spotCount=' + normalizedSpotCount
+    + ', normalized spots.length=' + normalizedSpots.length)
+  const stayDurationText = pickFirst(source.stayDurationText, source.stay_duration_text, source.durationText, source.duration_text) ||
+    normalizeDuration(pickFirst(
+      source.durationSeconds,
+      source.duration_seconds,
+      source.duration,
+      source.stayDuration,
+      source.stay_duration,
+      source.staySeconds,
+      source.stay_seconds
+    ))
+  const consumeStatusRaw = pickFirst(
+    source.consumeStatus,
+    source.consume_status,
+    consume.consumeStatus,
+    consume.consume_status,
+    consume.status
+  )
+  const consumeStatus = consumeStatusRaw
+    ? String(consumeStatusRaw).toLowerCase()
+    : (normalizedConsumeList.length > 0 || totalCost > 0 ? 'confirmed' : 'none')
 
   return {
     parkName: pickFirst(source.parkName, source.park_name, source.areaName, source.area_name),
@@ -455,11 +591,13 @@ function normalizeReport(source = {}) {
     endTime: pickFirst(source.endTime, source.end_time),
     status: pickFirst(source.status, source.visitStatus, source.visit_status),
     stayDurationText: stayDurationText || '暂无',
-    spotCount: pickFirst(source.spotCount, source.spot_count, normalizedSpots.length) || 0,
+    spotCount: normalizedSpotCount,
+    visitedSpotCount: normalizedVisitedSpotCount,
     aiQuestionCount: pickFirst(source.aiQuestionCount, source.ai_question_count, source.questionCount, source.question_count, 0),
     favoriteCount: pickFirst(source.favoriteCount, source.favorite_count, 0),
     spots: normalizedSpots,
-    consumeStatus: String(pickFirst(source.consumeStatus, source.consume_status, consume.consumeStatus, consume.consume_status, consume.status, 'pending')).toLowerCase(),
+    consumeStatus,
+    consumeList: normalizedConsumeList,
     ticketCost,
     foodCost,
     shoppingCost,
@@ -474,6 +612,23 @@ function normalizeReport(source = {}) {
 }
 
 async function loadReport() {
+  const currentUserId = getCurrentUserId()
+  console.log('[visit/report] currentUserId=' + currentUserId + ', visitId=' + visitId.value)
+
+  if (!isLogin() && !fromNativeEnd.value) {
+    loading.value = false
+    error.value = true
+    empty.value = false
+    unfinished.value = false
+    errorMessage.value = '请先登录后查看游玩报告'
+    report.value = null
+    uni.showToast({
+      title: '请先登录后查看游玩报告',
+      icon: 'none'
+    })
+    return
+  }
+
   if (!visitId.value) {
     loading.value = false
     error.value = false
@@ -489,31 +644,38 @@ async function loadReport() {
   errorMessage.value = ''
 
   try {
-    let response = null
-
-    try {
-      response = await request({
-        url: '/api/app/visit/report/detail',
-        method: 'GET',
-        data: {
-          visitId: visitId.value
-        },
-        showErrorToast: false
-      })
-    } catch (error) {
-      console.warn('新游玩报告详情接口不可用，回退旧接口：', error)
-      response = await request({
-        url: `/api/visit/report/${encodeURIComponent(visitId.value)}`,
-        method: 'GET',
-        showErrorToast: false
-      })
-    }
+    const response = await request({
+      url: '/api/app/visit/report/detail',
+      method: 'GET',
+      data: {
+        visitId: visitId.value,
+        userId: currentUserId
+      },
+      needAuth: true,
+      showErrorToast: false
+    })
 
     const data = unwrapReportResponse(response)
 
     if (!data || (typeof data === 'object' && Object.keys(data).length === 0)) {
       report.value = null
       empty.value = true
+      return
+    }
+
+    const reportUserId = String(pickFirst(data.userId, data.user_id, data.ownerUserId, data.owner_user_id))
+    if (reportUserId && currentUserId && reportUserId !== currentUserId) {
+      console.warn('[visit/report] user mismatch, clear stale visit cache')
+      clearVisitCacheForLogout(currentUserId)
+      report.value = null
+      error.value = true
+      empty.value = false
+      unfinished.value = false
+      errorMessage.value = '当前账号无权查看该报告，请重新进入现场导览'
+      uni.showToast({
+        title: '当前账号无权查看该报告',
+        icon: 'none'
+      })
       return
     }
 
@@ -641,12 +803,12 @@ function goParkDetail(item = {}) {
 }
 
 onLoad((options = {}) => {
-  visitId.value = resolveVisitId(options)
   fromNativeEnd.value =
     isTruthy(options.fromNativeEnd) ||
     isTruthy(options.from_native_end) ||
     isTruthy(options.openReport) ||
     isTruthy(options.open_report)
+  visitId.value = resolveVisitId(options)
   loadReport()
 })
 
@@ -921,6 +1083,48 @@ function goHome() {
 .cost-value {
   color: #1f2937;
   font-weight: 600;
+}
+
+.consume-detail {
+  margin-top: 18rpx;
+}
+
+.consume-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14rpx;
+}
+
+.consume-item {
+  padding: 18rpx;
+  border-radius: 18rpx;
+  background: #f9fafb;
+}
+
+.consume-main {
+  display: flex;
+  justify-content: space-between;
+  gap: 18rpx;
+}
+
+.consume-merchant {
+  flex: 1;
+  font-size: 24rpx;
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.consume-amount {
+  font-size: 24rpx;
+  font-weight: 600;
+  color: #18b368;
+}
+
+.consume-meta {
+  margin-top: 8rpx;
+  font-size: 22rpx;
+  color: #6b7280;
+  line-height: 1.5;
 }
 
 .comment-box {

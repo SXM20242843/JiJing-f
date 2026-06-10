@@ -17,6 +17,7 @@ const ACTIVE_SCENIC_NAME_KEY = 'activeScenicName'
 const LAST_VISIT_ID_KEY = 'lastVisitId'
 const LAST_ENDED_VISIT_ID_KEY = 'lastEndedVisitId'
 const LAST_ENDED_AREA_NAME_KEY = 'lastEndedAreaName'
+const REPORT_VISIT_ID_KEY = 'reportVisitId'
 const PENDING_GUIDE_RETURN_CHECK_KEY = 'pendingGuideReturnCheck'
 const CURRENT_GUIDE_AREA_NAME_KEY = 'currentGuideAreaName'
 const NATIVE_GUIDE_ENDED_RETURN_KEY = 'nativeGuideEndedReturn'
@@ -118,6 +119,49 @@ function safeRemoveStorage(key) {
     uni.removeStorageSync(key)
   } catch (error) {
     console.warn(`删除本地缓存失败：${key}`, error)
+  }
+}
+
+function normalizeVisitUserScope(value) {
+  return value === undefined || value === null ? '' : String(value).trim()
+}
+
+export function getVisitUserScope(userId = '') {
+  return normalizeVisitUserScope(userId || getCurrentUserId())
+}
+
+export function getUserScopedVisitKey(baseKey, userId = '') {
+  const scope = getVisitUserScope(userId)
+  return scope ? `${baseKey}_${scope}` : baseKey
+}
+
+function readUserScopedVisitStorage(baseKey, options = {}) {
+  const scopedKey = getUserScopedVisitKey(baseKey, options.userId || '')
+  const scopedValue = safeGetStorage(scopedKey)
+  if (scopedValue !== undefined && scopedValue !== null && scopedValue !== '') {
+    return scopedValue
+  }
+
+  if (options.fallbackGlobal === true && scopedKey !== baseKey) {
+    return safeGetStorage(baseKey)
+  }
+
+  return ''
+}
+
+function writeUserScopedVisitStorage(baseKey, value, options = {}) {
+  const scopedKey = getUserScopedVisitKey(baseKey, options.userId || '')
+  safeSetStorage(scopedKey, value)
+  if (scopedKey !== baseKey) {
+    safeRemoveStorage(baseKey)
+  }
+}
+
+function removeUserScopedVisitStorage(baseKey, userId = '') {
+  const scopedKey = getUserScopedVisitKey(baseKey, userId)
+  safeRemoveStorage(scopedKey)
+  if (scopedKey !== baseKey) {
+    safeRemoveStorage(baseKey)
   }
 }
 
@@ -442,30 +486,33 @@ export function clearCurrentVisitInfo() {
   safeRemoveStorage(ACTIVE_VISIT_ID_KEY)
 }
 
-export function saveLastVisitId(visitId) {
+export function saveLastVisitId(visitId, options = {}) {
   const normalizedVisitId = normalizeVisitId(visitId)
   if (normalizedVisitId) {
-    safeSetStorage(LAST_VISIT_ID_KEY, normalizedVisitId)
+    writeUserScopedVisitStorage(LAST_VISIT_ID_KEY, normalizedVisitId, options)
   }
 
   return normalizedVisitId
 }
 
-export function getLastVisitId() {
-  return normalizeVisitId(safeGetStorage(LAST_VISIT_ID_KEY))
+export function getLastVisitId(options = {}) {
+  return normalizeVisitId(readUserScopedVisitStorage(LAST_VISIT_ID_KEY, options))
 }
 
 export function saveLastEndedVisit(data = {}) {
   const visitId = normalizeVisitId(data.visitId)
   const areaName = data.areaName || data.parkName || data.currentParkName || ''
+  const options = {
+    userId: data.userId || ''
+  }
 
   if (visitId) {
-    safeSetStorage(LAST_ENDED_VISIT_ID_KEY, visitId)
-    saveLastVisitId(visitId)
+    writeUserScopedVisitStorage(LAST_ENDED_VISIT_ID_KEY, visitId, options)
+    saveLastVisitId(visitId, options)
   }
 
   if (areaName) {
-    safeSetStorage(LAST_ENDED_AREA_NAME_KEY, areaName)
+    writeUserScopedVisitStorage(LAST_ENDED_AREA_NAME_KEY, areaName, options)
   }
 
   return {
@@ -474,10 +521,10 @@ export function saveLastEndedVisit(data = {}) {
   }
 }
 
-export function getLastEndedVisit() {
+export function getLastEndedVisit(options = {}) {
   return {
-    visitId: normalizeVisitId(safeGetStorage(LAST_ENDED_VISIT_ID_KEY)),
-    areaName: safeGetStorage(LAST_ENDED_AREA_NAME_KEY) || ''
+    visitId: normalizeVisitId(readUserScopedVisitStorage(LAST_ENDED_VISIT_ID_KEY, options)),
+    areaName: readUserScopedVisitStorage(LAST_ENDED_AREA_NAME_KEY, options) || ''
   }
 }
 
@@ -533,7 +580,8 @@ export function markVisitEndedLocal(data = {}) {
 
 export function markNativeGuideEndedReturn(data = {}) {
   const visitId = normalizeVisitId(data.visitId || data.reportVisitId || getCurrentVisitId())
-  const areaName = data.areaName || data.parkName || safeGetStorage(LAST_ENDED_AREA_NAME_KEY) || safeGetStorage(CURRENT_PARK_NAME_KEY) || ''
+  const userId = data.userId || getCurrentUserId() || ''
+  const areaName = data.areaName || data.parkName || getLastEndedVisit({ userId }).areaName || safeGetStorage(CURRENT_PARK_NAME_KEY) || ''
 
   if (!visitId) {
     return null
@@ -543,17 +591,30 @@ export function markNativeGuideEndedReturn(data = {}) {
     guideEnded: true,
     visitId,
     areaName,
+    userId,
     source: data.source || 'native-live2d',
     statusFailed: data.statusFailed === true,
     time: Date.now()
   }
 
-  safeSetStorage(NATIVE_GUIDE_ENDED_RETURN_KEY, payload)
+  writeUserScopedVisitStorage(NATIVE_GUIDE_ENDED_RETURN_KEY, payload, { userId })
   return payload
 }
 
 export function getRecentNativeGuideEndedReturn() {
-  const value = safeGetStorage(NATIVE_GUIDE_ENDED_RETURN_KEY)
+  const userId = getCurrentUserId() || ''
+  let value = readUserScopedVisitStorage(NATIVE_GUIDE_ENDED_RETURN_KEY, { userId })
+  if (!value && userId) {
+    const legacyValue = safeGetStorage(NATIVE_GUIDE_ENDED_RETURN_KEY)
+    if (legacyValue && typeof legacyValue === 'object') {
+      const legacyUserId = legacyValue.userId || ''
+      if (!legacyUserId || legacyUserId === userId) {
+        value = legacyValue
+      } else {
+        safeRemoveStorage(NATIVE_GUIDE_ENDED_RETURN_KEY)
+      }
+    }
+  }
 
   if (!value || typeof value !== 'object') {
     return {
@@ -581,7 +642,41 @@ export function getRecentNativeGuideEndedReturn() {
 }
 
 export function clearNativeGuideEndedReturn() {
-  safeRemoveStorage(NATIVE_GUIDE_ENDED_RETURN_KEY)
+  removeUserScopedVisitStorage(NATIVE_GUIDE_ENDED_RETURN_KEY)
+}
+
+export function clearVisitCacheForLogout(userId = '') {
+  const scope = getVisitUserScope(userId)
+  const transientKeys = [
+    CURRENT_VISIT_ID_KEY,
+    CURRENT_PARK_ID_KEY,
+    CURRENT_PARK_NAME_KEY,
+    CURRENT_GROUP_SIZE_KEY,
+    CURRENT_TRAVEL_TYPE_KEY,
+    CURRENT_VISIT_PREFERENCE_KEY,
+    CURRENT_VISIT_INFO_KEY,
+    ACTIVE_VISIT_KEY,
+    ACTIVE_VISIT_ID_KEY,
+    ACTIVE_SCENIC_ID_KEY,
+    ACTIVE_SCENIC_NAME_KEY,
+    PENDING_GUIDE_RETURN_CHECK_KEY,
+    CURRENT_GUIDE_AREA_NAME_KEY,
+    NATIVE_GUIDE_ENDED_RETURN_KEY,
+    REPORT_VISIT_ID_KEY,
+    LAST_VISIT_ID_KEY,
+    LAST_ENDED_VISIT_ID_KEY,
+    LAST_ENDED_AREA_NAME_KEY
+  ]
+
+  transientKeys.forEach(key => safeRemoveStorage(key))
+
+  if (scope) {
+    safeRemoveStorage(getUserScopedVisitKey(NATIVE_GUIDE_ENDED_RETURN_KEY, scope))
+    safeRemoveStorage(getUserScopedVisitKey(REPORT_VISIT_ID_KEY, scope))
+    safeRemoveStorage(getUserScopedVisitKey(LAST_VISIT_ID_KEY, scope))
+    safeRemoveStorage(getUserScopedVisitKey(LAST_ENDED_VISIT_ID_KEY, scope))
+    safeRemoveStorage(getUserScopedVisitKey(LAST_ENDED_AREA_NAME_KEY, scope))
+  }
 }
 
 export async function queryVisitStatus(visitId) {
@@ -622,13 +717,18 @@ export async function queryVisitStatus(visitId) {
 }
 
 export function goVisitReport(visitId = '', method = 'navigateTo', extraQuery = {}) {
-  const finalVisitId = normalizeVisitId(visitId || getLastEndedVisit().visitId || getLastVisitId())
+  const finalVisitId = normalizeVisitId(
+    visitId ||
+    getLastEndedVisit({ fallbackGlobal: false }).visitId ||
+    getLastVisitId({ fallbackGlobal: false })
+  )
   const query = {
     ...extraQuery
   }
 
   if (finalVisitId) {
     query.visitId = finalVisitId
+    writeUserScopedVisitStorage(REPORT_VISIT_ID_KEY, finalVisitId)
   }
 
   const queryString = Object.keys(query)

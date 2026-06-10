@@ -9,6 +9,7 @@ import java.util.Map;
 public class VisitReportDetailResponse {
 
     public String visitId;
+    public String userId;
     public String areaId;
     public String areaName;
     public String parkId;
