@@ -29,6 +29,15 @@ public class MouthSyncController {
             "MouthForm"
     };
 
+    private static final float DEFAULT_MOUTH_MAX = 0.68f;
+    private static final float KOHARU_MOUTH_MAX = 0.80f;
+    private static final float GUIDE_MALE_MOUTH_MAX = 0.65f;
+    private static final float MOUTH_NOISE_GATE = 0.08f;
+    private static final float MOUTH_MIN_VISIBLE = 0.0f;
+    private static final float MOUTH_ATTACK_ALPHA = 0.45f;
+    private static final float MOUTH_RELEASE_ALPHA = 0.28f;
+    private static final float MOUTH_MAX_DELTA_PER_FRAME = 0.16f;
+
     private static final MouthSyncController INSTANCE = new MouthSyncController();
 
     public static MouthSyncController getInstance() {
@@ -51,6 +60,7 @@ public class MouthSyncController {
     private float closeFromForm = 0.0f;
     private float lastAppliedOpen = 0.0f;
     private float lastAppliedForm = 0.0f;
+    private float currentSmoothedOpen = 0.0f;
     private long lastApplyLogUptimeMs = 0L;
     private long lastSkipLogUptimeMs = 0L;
     private long lastBindDelayLogUptimeMs = 0L;
@@ -113,6 +123,7 @@ public class MouthSyncController {
         endTimeMs = activeFrames.isEmpty() ? startUptimeMs : startUptimeMs + activeFrames.get(activeFrames.size() - 1).timeMs + 220L;
         playing = !activeFrames.isEmpty();
         closeStartUptimeMs = 0L;
+        currentSmoothedOpen = 0.0f;
         lastApplyLogUptimeMs = 0L;
         lastSkipLogUptimeMs = 0L;
 
@@ -131,6 +142,7 @@ public class MouthSyncController {
         endTimeMs = activeFrames.isEmpty() ? this.startUptimeMs : this.startUptimeMs + activeFrames.get(activeFrames.size() - 1).timeMs + 220L;
         playing = !activeFrames.isEmpty();
         closeStartUptimeMs = 0L;
+        currentSmoothedOpen = 0.0f;
         lastApplyLogUptimeMs = 0L;
         lastSkipLogUptimeMs = 0L;
 
@@ -153,8 +165,11 @@ public class MouthSyncController {
         if (playing) {
             long elapsedMs = Math.max(0L, nowUptimeMs - startUptimeMs);
             SampledFrame sampledFrame = sampleFrame(elapsedMs);
-            applyNow(sampledFrame.frame.open, sampledFrame.frame.form);
-            logApply(nowUptimeMs, elapsedMs, sampledFrame.index, sampledFrame.frame.open);
+            float rawOpen = sampledFrame.frame.open;
+            float targetOpen = normalizeMouthOpen(rawOpen);
+            float smoothOpen = smoothMouthOpen(targetOpen);
+            applyNow(smoothOpen, sampledFrame.frame.form);
+            logApply(nowUptimeMs, elapsedMs, sampledFrame.index, rawOpen, targetOpen, smoothOpen);
             if (nowUptimeMs >= endTimeMs) {
                 playing = false;
                 beginClose(nowUptimeMs);
@@ -169,6 +184,7 @@ public class MouthSyncController {
             applyNow(open, form);
             if (progress >= 1.0f) {
                 closeStartUptimeMs = 0L;
+                currentSmoothedOpen = 0.0f;
                 applyNow(0.0f, 0.0f);
             }
             return;
@@ -182,7 +198,11 @@ public class MouthSyncController {
     public synchronized void stopAndReset() {
         playing = false;
         activeFrames.clear();
-        beginClose(android.os.SystemClock.uptimeMillis());
+        closeStartUptimeMs = 0L;
+        closeFromOpen = 0.0f;
+        closeFromForm = 0.0f;
+        currentSmoothedOpen = 0.0f;
+        applyNow(0.0f, 0.0f);
     }
 
     public synchronized boolean hasMouthOpenParam() {
@@ -208,6 +228,48 @@ public class MouthSyncController {
         closeFromOpen = lastAppliedOpen;
         closeFromForm = lastAppliedForm;
         closeStartUptimeMs = nowUptimeMs;
+    }
+
+    private float normalizeMouthOpen(float rawOpen) {
+        float raw = clamp(rawOpen, 0.0f, 1.0f);
+        if (raw < MOUTH_NOISE_GATE) {
+            return 0.0f;
+        }
+
+        raw = (raw - MOUTH_NOISE_GATE) / (1.0f - MOUTH_NOISE_GATE);
+        raw = clamp(raw, 0.0f, 1.0f);
+
+        float curved = (float) Math.pow(raw, 1.25f);
+        float avatarMaxOpen = resolveAvatarMaxOpen();
+        float normalized = curved * avatarMaxOpen;
+        if (normalized > 0.0f && normalized < MOUTH_MIN_VISIBLE) {
+            normalized = MOUTH_MIN_VISIBLE;
+        }
+        return clamp(normalized, 0.0f, avatarMaxOpen);
+    }
+
+    private float smoothMouthOpen(float targetOpen) {
+        float alpha = targetOpen > currentSmoothedOpen ? MOUTH_ATTACK_ALPHA : MOUTH_RELEASE_ALPHA;
+        float nextOpen = currentSmoothedOpen + (targetOpen - currentSmoothedOpen) * alpha;
+        float delta = nextOpen - currentSmoothedOpen;
+        if (delta > MOUTH_MAX_DELTA_PER_FRAME) {
+            nextOpen = currentSmoothedOpen + MOUTH_MAX_DELTA_PER_FRAME;
+        } else if (delta < -MOUTH_MAX_DELTA_PER_FRAME) {
+            nextOpen = currentSmoothedOpen - MOUTH_MAX_DELTA_PER_FRAME;
+        }
+        currentSmoothedOpen = clamp(nextOpen, 0.0f, resolveAvatarMaxOpen());
+        return currentSmoothedOpen;
+    }
+
+    private float resolveAvatarMaxOpen() {
+        String avatar = boundAvatarId == null ? "" : boundAvatarId.toLowerCase(java.util.Locale.ROOT);
+        if (avatar.contains("guide_female_02") || avatar.contains("koharu")) {
+            return KOHARU_MOUTH_MAX;
+        }
+        if (avatar.contains("guide_male_01")) {
+            return GUIDE_MALE_MOUTH_MAX;
+        }
+        return DEFAULT_MOUTH_MAX;
     }
 
     private void applyNow(float open, float form) {
@@ -325,7 +387,7 @@ public class MouthSyncController {
                 LAppPal.printLog("[MouthSyncStart] warning missing open field at index=" + i + ", fallbackOpen=0");
             }
             long timeMs = Math.max(0L, Math.round(seconds && frame.hasTimeField ? rawTime * 1000.0d : rawTime));
-            float open = clampOpen(frame.open * 1.25f);
+            float open = clampOpen(frame.open);
             float form = clampForm(frame.form);
             normalized.add(new MouthFrame(timeMs, open, form, true, frame.hasOpenField));
             summary.maxOpen = Math.max(summary.maxOpen, open);
@@ -455,14 +517,16 @@ public class MouthSyncController {
         }
     }
 
-    private void logApply(long nowUptimeMs, long elapsedMs, int frameIndex, float open) {
+    private void logApply(long nowUptimeMs, long elapsedMs, int frameIndex, float rawOpen, float targetOpen, float smoothOpen) {
         if (nowUptimeMs - lastApplyLogUptimeMs < 500L) {
             return;
         }
         lastApplyLogUptimeMs = nowUptimeMs;
         LAppPal.printLog("[MouthSyncApply] elapsedMs=" + elapsedMs
+                + ", rawOpen=" + formatFloat(rawOpen)
+                + ", targetOpen=" + formatFloat(targetOpen)
+                + ", smoothOpen=" + formatFloat(smoothOpen)
                 + ", frameIndex=" + frameIndex
-                + ", open=" + formatFloat(open)
                 + ", openId=" + mouthOpenParamName
                 + ", model=" + describeModel(boundModel));
     }
@@ -479,13 +543,7 @@ public class MouthSyncController {
     }
 
     private float clampOpen(float value) {
-        if (value < 0.0f) {
-            return 0.0f;
-        }
-        if (value > 1.0f) {
-            return 1.0f;
-        }
-        return value;
+        return clamp(value, 0.0f, 1.0f);
     }
 
     private float clampForm(float value) {
@@ -494,6 +552,16 @@ public class MouthSyncController {
         }
         if (value > 1.0f) {
             return 1.0f;
+        }
+        return value;
+    }
+
+    private float clamp(float value, float min, float max) {
+        if (value < min) {
+            return min;
+        }
+        if (value > max) {
+            return max;
         }
         return value;
     }

@@ -18,6 +18,7 @@ public class DigitalHumanActionController {
     private String boundAvatarId = "";
     private Map<String, Integer> motionGroupCounts;
     private List<String> expressionNames;
+    private boolean expressionUnsupportedLogged = false;
 
     private DigitalHumanActionController() {
     }
@@ -27,6 +28,7 @@ public class DigitalHumanActionController {
         boundAvatarId = avatarId == null ? "" : avatarId;
         motionGroupCounts = model == null ? null : model.getMotionGroupCounts();
         expressionNames = model == null ? new ArrayList<String>() : model.getExpressionNames();
+        expressionUnsupportedLogged = false;
         LAppPal.printLog("[DigitalHumanCapability] avatarId=" + boundAvatarId
                 + ", motions=" + motionGroupCounts
                 + ", expressions=" + expressionNames);
@@ -40,23 +42,42 @@ public class DigitalHumanActionController {
         String actualAction = firstNotBlank(action).toLowerCase(Locale.ROOT);
         String actualEmotion = firstNotBlank(emotion).toLowerCase(Locale.ROOT);
 
-        String motionGroup = resolveMotionGroup(actualAction);
+        boolean expressionsSupported = hasExpressionSupport();
+        String motionAction = expressionsSupported ? actualAction : resolveMotionAction(actualAction, actualEmotion);
+        String motionGroup = resolveMotionGroup(motionAction);
         if (motionGroup.length() > 0 && boundModel.startRandomMotionIfAvailable(motionGroup, LAppDefine.Priority.NORMAL.getPriority())) {
-            LAppPal.printLog("[DigitalHumanAction] action=" + safeLabel(actualAction, "idle")
+            LAppPal.printLog("[DigitalHumanAction] action=" + safeLabel(motionAction, "idle")
                     + " mappedTo=" + safeGroupLabel(motionGroup) + "[random]");
         } else {
             returnToIdle();
-            LAppPal.printLog("[DigitalHumanAction] action=" + safeLabel(actualAction, "idle")
+            LAppPal.printLog("[DigitalHumanAction] action=" + safeLabel(motionAction, "idle")
                     + " not supported, fallback=Idle");
+        }
+
+        if (!expressionsSupported) {
+            logExpressionUnsupportedOnce();
+            return;
         }
 
         String expression = resolveExpression(actualEmotion);
         if (expression.length() > 0 && boundModel.setExpressionIfAvailable(expression)) {
             LAppPal.printLog("[DigitalHumanAction] emotion=" + safeLabel(actualEmotion, "neutral")
                     + " mappedTo=" + expression);
-        } else if (actualEmotion.length() > 0) {
+        } else if (actualEmotion.length() > 0 && !"neutral".equals(actualEmotion)) {
             LAppPal.printLog("[DigitalHumanAction] emotion=" + actualEmotion + " not supported, fallback=idle");
         }
+    }
+
+    public synchronized boolean triggerMotionOnly(String action, String emotion) {
+        if (boundModel == null) {
+            return false;
+        }
+        String actualAction = firstNotBlank(action).toLowerCase(Locale.ROOT);
+        String actualEmotion = firstNotBlank(emotion).toLowerCase(Locale.ROOT);
+        String motionAction = resolveMotionAction(actualAction, actualEmotion);
+        String motionGroup = resolveMotionGroup(motionAction);
+        return motionGroup.length() > 0
+                && boundModel.startRandomMotionIfAvailable(motionGroup, LAppDefine.Priority.NORMAL.getPriority());
     }
 
     public synchronized void returnToIdle() {
@@ -83,6 +104,22 @@ public class DigitalHumanActionController {
             return findFirstMotionGroup("Idle", "");
         }
         return findFirstMotionGroup("TapBody", "Tap", "Flick", "FlickRight", "FlickLeft", "FlickUp", "FlickDown", "Shake", "Idle", "");
+    }
+
+    private String resolveMotionAction(String action, String emotion) {
+        if (action != null && action.length() > 0 && !"neutral".equals(action) && !"idle".equals(action)) {
+            return action;
+        }
+        if ("happy".equals(emotion) || "warm".equals(emotion) || "explain".equals(emotion)) {
+            return "explain";
+        }
+        if ("thinking".equals(emotion) || "think".equals(emotion)) {
+            return "thinking";
+        }
+        if ("idle".equals(emotion)) {
+            return "idle";
+        }
+        return safeLabel(action, "idle");
     }
 
     private String resolveExpression(String emotion) {
@@ -141,6 +178,20 @@ public class DigitalHumanActionController {
             }
         }
         return "";
+    }
+
+    private boolean hasExpressionSupport() {
+        return expressionNames != null && !expressionNames.isEmpty();
+    }
+
+    private void logExpressionUnsupportedOnce() {
+        if (expressionUnsupportedLogged) {
+            return;
+        }
+        expressionUnsupportedLogged = true;
+        LAppPal.printLog("[DigitalHumanAction] expressions unsupported for avatarId="
+                + safeLabel(boundAvatarId, "<unknown>")
+                + ", use motion only");
     }
 
     private String firstNotBlank(String value) {

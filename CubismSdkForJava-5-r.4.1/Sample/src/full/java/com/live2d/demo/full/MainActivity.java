@@ -112,6 +112,7 @@ public class MainActivity extends Activity {
     private static final String DEMO_LOCATION_SOURCE = "demo-route-node";
     private static final String DEMO_TRIGGER = "route-node-demo";
     private static final String ROUTE_EVENT_SOURCE = "android_live2d";
+    private static final long SPEAKING_MOTION_INTERVAL_MS = 6500L;
 
     private static final int REQUEST_RECORD_AUDIO_PERMISSION = 2001;
 
@@ -225,6 +226,16 @@ public class MainActivity extends Activity {
     private boolean hasPlayedWelcome = false;
     private boolean recording = false;
     private boolean voiceFlowActive = false;
+    private boolean backendAudioSpeaking = false;
+    private long backendAudioStartMs = 0L;
+    private long lastSpeakingMotionMs = 0L;
+
+    private final Runnable speakingMotionRunnable = new Runnable() {
+        @Override
+        public void run() {
+            handleSpeakingMotionTick();
+        }
+    };
 
     private long recordStartTime = 0L;
 
@@ -995,6 +1006,10 @@ public class MainActivity extends Activity {
                 Button button = (Button) v;
                 String question = button.getText().toString();
                 questionInput.setText(question);
+                if (isRouteRecommendIntent(question)) {
+                    requestRouteRecommendation(question, "button");
+                    return;
+                }
                 askGuide(question);
             }
         };
@@ -1026,6 +1041,11 @@ public class MainActivity extends Activity {
                 String question = questionInput.getText().toString().trim();
                 if (question.length() == 0) {
                     showToast("请先输入你想咨询的问题");
+                    return;
+                }
+                if (isRouteRecommendIntent(question)) {
+                    Log.d(TAG, "[RouteIntent] text input route request, use route button flow");
+                    requestRouteRecommendation(question, "text_input");
                     return;
                 }
                 askGuide(question);
@@ -1084,12 +1104,28 @@ public class MainActivity extends Activity {
         askGuideInternal(rawQuestion, true);
     }
 
+    private void requestRouteRecommendation(final String rawQuestion, final String source) {
+        String question = rawQuestion == null ? "" : rawQuestion.trim();
+        if (question.length() == 0) {
+            question = "推荐路线";
+        }
+        String routeSource = normalizeRouteRequestSource(source);
+        Log.d(TAG, "[RouteRequest] source=" + routeSource);
+        Log.d(TAG, "[RouteRequest] routeIntent=true, suppressRoute=false, requestType=route_recommend");
+        askGuideInternal(question, true, false, routeSource);
+    }
+
     private void askGuideInternal(final String rawQuestion, final boolean appendUserToChat) {
         askGuideInternal(rawQuestion, appendUserToChat, false);
     }
 
     private void askGuideInternal(final String rawQuestion, final boolean appendUserToChat, final boolean suppressRoute) {
+        askGuideInternal(rawQuestion, appendUserToChat, suppressRoute, "text");
+    }
+
+    private void askGuideInternal(final String rawQuestion, final boolean appendUserToChat, final boolean suppressRoute, final String requestSource) {
         final String question = rawQuestion == null ? "" : rawQuestion.trim();
+        final String routeRequestSource = normalizeRouteRequestSource(requestSource);
         final boolean allowRouteResponse = shouldAllowRouteResponse(question, suppressRoute);
 
         if (question.length() == 0) {
@@ -1146,7 +1182,7 @@ public class MainActivity extends Activity {
                     connection.setRequestProperty("Accept", "application/json");
                     applyAuthorizationHeader(connection);
 
-                    JSONObject requestJson = buildRequestJson(question, suppressRoute);
+                    JSONObject requestJson = buildRequestJson(question, suppressRoute, routeRequestSource);
 
                     OutputStream outputStream = connection.getOutputStream();
                     BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(outputStream, StandardCharsets.UTF_8));
@@ -1179,7 +1215,7 @@ public class MainActivity extends Activity {
 
                                 showGuideAnswer(guideResponse.answer);
                                 updateQuickButtons(guideResponse.suggestions);
-                                handleGuideRouteResponse(guideResponse.route, allowRouteResponse, "text");
+                                handleGuideRouteResponse(guideResponse.route, allowRouteResponse, routeRequestSource);
 
                                 if (guideResponse.conversationId != null && guideResponse.conversationId.trim().length() > 0) {
                                     conversationId = guideResponse.conversationId.trim();
@@ -1260,23 +1296,145 @@ public class MainActivity extends Activity {
     }
 
     private boolean isRouteIntentQuestion(String question) {
-        String text = question == null ? "" : question.trim();
+        return isRouteRecommendIntent(question);
+    }
+
+    private boolean isRouteRecommendIntent(String text) {
+        String safeText = text == null ? "" : text.trim();
+        if (safeText.length() == 0) {
+            Log.d(TAG, "[RouteIntent] text=, matched=false");
+            return false;
+        }
         if (!isOnsiteMode() && ("route".equals(contextType) || "route_planning".equals(mode))) {
+            Log.d(TAG, "[RouteIntent] text=" + safeRouteIntentLogText(safeText)
+                    + ", matched=true, reason=context:route_mode");
             return true;
         }
-        return text.contains("推荐路线")
-                || text.contains("帮我规划路线")
-                || text.contains("规划路线")
-                || text.contains("路线规划")
-                || text.contains("游览路线")
-                || text.contains("游览顺序")
-                || text.contains("怎么走")
-                || text.contains("导航")
-                || text.contains("怎么逛")
-                || text.contains("如何逛")
-                || text.contains("推荐游览")
-                || text.contains("接下来去哪")
-                || text.contains("下一站去哪");
+
+        String reason = findRouteRecommendIntentReason(safeText);
+        boolean matched = reason.length() > 0;
+        Log.d(TAG, "[RouteIntent] text=" + safeRouteIntentLogText(safeText)
+                + ", matched=" + matched
+                + (matched ? ", reason=" + reason : ""));
+        return matched;
+    }
+
+    private String findRouteRecommendIntentReason(String text) {
+        String[] strongKeywords = new String[]{
+                "推荐路线",
+                "路线推荐",
+                "规划路线",
+                "路线规划",
+                "游览路线",
+                "导览路线",
+                "最佳路线",
+                "最优路线",
+                "怎么走",
+                "先去哪",
+                "先去哪里",
+                "接下来去哪",
+                "接下来去哪里",
+                "下一站去哪",
+                "下一站去哪里",
+                "玩一圈",
+                "逛一圈",
+                "半日游",
+                "一日游",
+                "从这里开始",
+                "从当前景点开始",
+                "按我的偏好",
+                "帮我规划",
+                "帮我安排",
+                "拍照打卡路线",
+                "拍照路线",
+                "亲子路线",
+                "避开拥挤",
+                "省力路线",
+                "深度游路线",
+                "经典路线",
+                "游览顺序",
+                "游玩顺序",
+                "参观顺序",
+                "怎么逛",
+                "如何逛"
+        };
+        for (String keyword : strongKeywords) {
+            if (text.contains(keyword)) {
+                return "keyword:" + keyword;
+            }
+        }
+
+        String[] routeActions = new String[]{
+                "推荐",
+                "安排",
+                "规划",
+                "帮我推荐",
+                "帮我安排",
+                "帮我规划",
+                "怎么玩",
+                "怎么游",
+                "怎么逛",
+                "玩",
+                "逛"
+        };
+        String[] routeContexts = new String[]{
+                "路线",
+                "顺序",
+                "游览",
+                "导览",
+                "一圈",
+                "半日游",
+                "一日游",
+                "偏好",
+                "拍照打卡",
+                "亲子",
+                "拥挤",
+                "省力",
+                "深度游",
+                "经典"
+        };
+        String action = firstMatchedKeyword(text, routeActions);
+        String context = firstMatchedKeyword(text, routeContexts);
+        if (action.length() > 0 && context.length() > 0) {
+            return "combo:" + action + "+" + context;
+        }
+
+        String planningAction = firstMatchedKeyword(text, new String[]{"帮我规划", "帮我安排", "规划", "安排"});
+        if (planningAction.length() > 0 && text.contains("景点")
+                && containsAnyKeyword(text, new String[]{"先", "再", "接下来", "下一个", "下一站", "顺序", "一圈"})) {
+            return "combo:" + planningAction + "+景点顺序";
+        }
+
+        return "";
+    }
+
+    private boolean containsAnyKeyword(String text, String[] keywords) {
+        return firstMatchedKeyword(text, keywords).length() > 0;
+    }
+
+    private String firstMatchedKeyword(String text, String[] keywords) {
+        if (text == null || keywords == null) {
+            return "";
+        }
+        for (String keyword : keywords) {
+            if (keyword != null && keyword.length() > 0 && text.contains(keyword)) {
+                return keyword;
+            }
+        }
+        return "";
+    }
+
+    private String safeRouteIntentLogText(String text) {
+        String value = safeString(text).replace("\n", " ").replace("\r", " ").trim();
+        return value.length() > 80 ? value.substring(0, 80) + "..." : value;
+    }
+
+    private String normalizeRouteRequestSource(String source) {
+        String value = source == null ? "" : source.trim();
+        if (value.length() == 0) {
+            return "text";
+        }
+        return value;
     }
 
     private JSONObject buildRequestJson(String question) throws Exception {
@@ -1284,12 +1442,17 @@ public class MainActivity extends Activity {
     }
 
     private JSONObject buildRequestJson(String question, boolean suppressRoute) throws Exception {
+        return buildRequestJson(question, suppressRoute, "text");
+    }
+
+    private JSONObject buildRequestJson(String question, boolean suppressRoute, String requestSource) throws Exception {
         JSONObject requestJson = new JSONObject();
 
         String realUserId = getEffectiveNativeUserId();
         String realSessionId = firstNotEmpty(sessionId, conversationId);
         String realConversationId = firstNotEmpty(conversationId, sessionId);
         boolean routeIntent = shouldAllowRouteResponse(question, suppressRoute);
+        String routeRequestSource = normalizeRouteRequestSource(requestSource);
 
         requestJson.put("sessionId", safeString(realSessionId));
         requestJson.put("session_id", safeString(realSessionId));
@@ -1373,7 +1536,20 @@ public class MainActivity extends Activity {
         requestJson.put("source_page", GUIDE_SOURCE);
         requestJson.put("routeIntent", routeIntent);
         requestJson.put("route_intent", routeIntent);
-        if (!routeIntent) {
+        if (routeIntent) {
+            requestJson.put("suppressRoute", false);
+            requestJson.put("suppress_route", false);
+            requestJson.put("requestType", "route_recommend");
+            requestJson.put("request_type", "route_recommend");
+            requestJson.put("routeEnabled", true);
+            requestJson.put("route_enabled", true);
+            requestJson.put("routeQuestion", question);
+            requestJson.put("route_question", question);
+            requestJson.put("triggerQuestion", question);
+            requestJson.put("trigger_question", question);
+            requestJson.put("routeRequestSource", routeRequestSource);
+            requestJson.put("route_request_source", routeRequestSource);
+        } else {
             requestJson.put("route", false);
             requestJson.put("suppressRoute", true);
             requestJson.put("suppress_route", true);
@@ -1399,6 +1575,10 @@ public class MainActivity extends Activity {
                 + ", groupSize=" + groupSize
                 + ", travelType=" + travelType
                 + ", visitPreference=" + visitPreference);
+        if (routeIntent) {
+            Log.d(TAG, "[RouteRequest] source=" + routeRequestSource);
+            Log.d(TAG, "[RouteRequest] routeIntent=true, suppressRoute=false, requestType=route_recommend");
+        }
         logAiQuestion(question);
 
         return requestJson;
@@ -1457,6 +1637,8 @@ public class MainActivity extends Activity {
         clientContext.put("suppressRoute", suppressRoute);
         if (routeIntent) {
             clientContext.put("routeTrigger", "manual");
+            clientContext.put("requestType", "route_recommend");
+            clientContext.put("routeEnabled", true);
         } else {
             clientContext.put("requestType", "spot_explain");
         }
@@ -1813,6 +1995,19 @@ public class MainActivity extends Activity {
                                 guideStateText.setText("识别完成");
                                 voiceMainButton.setText("🎙 长按说话");
 
+                                if (guideResponse.conversationId != null && guideResponse.conversationId.trim().length() > 0) {
+                                    conversationId = guideResponse.conversationId.trim();
+                                }
+
+                                String recognizedText = guideResponse.questionText == null ? "" : guideResponse.questionText.trim();
+                                if (recognizedText.length() > 0
+                                        && !"null".equalsIgnoreCase(recognizedText)
+                                        && isRouteRecommendIntent(recognizedText)) {
+                                    Log.d(TAG, "[RouteIntent] voice input route request, use route button flow");
+                                    requestRouteRecommendation(recognizedText, "voice_input");
+                                    return;
+                                }
+
                                 if (guideResponse.questionText != null
                                         && guideResponse.questionText.trim().length() > 0
                                         && !"null".equalsIgnoreCase(guideResponse.questionText.trim())) {
@@ -1830,10 +2025,6 @@ public class MainActivity extends Activity {
                                         isRouteIntentQuestion(guideResponse.questionText),
                                         "voice"
                                 );
-
-                                if (guideResponse.conversationId != null && guideResponse.conversationId.trim().length() > 0) {
-                                    conversationId = guideResponse.conversationId.trim();
-                                }
 
                                 playAnswerVoice(guideResponse);
                                 forceRenderLive2D();
@@ -8523,6 +8714,7 @@ public class MainActivity extends Activity {
                         mp.start();
                     } catch (Exception e) {
                         Log.e(TAG, "[AudioPlay] start failed", e);
+                        stopBackendAudioSpeaking();
                         stopMouthSync();
                         returnDigitalHumanToIdle();
                         return;
@@ -8546,7 +8738,7 @@ public class MainActivity extends Activity {
                         Log.d(TAG, "[MouthSync] audioUrl=" + finalAudioUrl
                                 + ", frames=0, fallbackText=" + safeLogText(answer));
                     }
-                    applyGuideResponseDigitalHuman(guideResponse, "explain", "warm");
+                    startBackendAudioSpeaking(guideResponse);
                     forceRenderLive2D();
                 }
             });
@@ -8554,6 +8746,7 @@ public class MainActivity extends Activity {
                 @Override
                 public void onCompletion(MediaPlayer mp) {
                     Log.d(TAG, "[AudioPlay] onCompletion");
+                    stopBackendAudioSpeaking();
                     stopMouthSync();
                     returnDigitalHumanToIdle();
                     guideStateText.setText("讲解完成");
@@ -8564,6 +8757,7 @@ public class MainActivity extends Activity {
             mediaPlayer.setOnErrorListener(new MediaPlayer.OnErrorListener() {
                 @Override
                 public boolean onError(MediaPlayer mp, int what, int extra) {
+                    stopBackendAudioSpeaking();
                     stopMouthSync();
                     returnDigitalHumanToIdle();
                     Log.e(TAG, "[AudioPlay] onError what=" + what
@@ -8584,12 +8778,78 @@ public class MainActivity extends Activity {
             Log.e(TAG, "播放音频异常", e);
             guideStateText.setText("语音播放异常");
             voiceMainButton.setText("🎙 长按说话");
+            stopBackendAudioSpeaking();
             stopMouthSync();
             returnDigitalHumanToIdle();
             stopCurrentAudio();
             applyGuideResponseDigitalHuman(guideResponse, "explain", "warm");
             Log.d(TAG, "[TTS] fallback speak");
             speakText(guideResponse == null ? "" : guideResponse.answer);
+        }
+    }
+
+    private void startBackendAudioSpeaking(GuideResponse guideResponse) {
+        backendAudioSpeaking = true;
+        backendAudioStartMs = android.os.SystemClock.uptimeMillis();
+        lastSpeakingMotionMs = 0L;
+        Log.d(TAG, "[SpeakingMotion] start audio speaking");
+
+        String action = guideResponse == null ? "" : firstNotEmpty(guideResponse.action, guideResponse.actionCode);
+        String emotion = guideResponse == null ? "" : firstNotEmpty(guideResponse.emotion, guideResponse.emotionCode);
+        triggerSpeakingMotion(firstNotEmpty(action, "explain"), firstNotEmpty(emotion, "warm"));
+        scheduleSpeakingMotionTick();
+    }
+
+    private void stopBackendAudioSpeaking() {
+        if (mainHandler != null) {
+            mainHandler.removeCallbacks(speakingMotionRunnable);
+        }
+        if (backendAudioSpeaking) {
+            Log.d(TAG, "[SpeakingMotion] stop audio speaking");
+        }
+        backendAudioSpeaking = false;
+        backendAudioStartMs = 0L;
+        lastSpeakingMotionMs = 0L;
+    }
+
+    private void scheduleSpeakingMotionTick() {
+        if (!backendAudioSpeaking || mainHandler == null) {
+            return;
+        }
+        mainHandler.removeCallbacks(speakingMotionRunnable);
+        mainHandler.postDelayed(speakingMotionRunnable, SPEAKING_MOTION_INTERVAL_MS);
+    }
+
+    private void handleSpeakingMotionTick() {
+        if (!backendAudioSpeaking) {
+            return;
+        }
+        long now = android.os.SystemClock.uptimeMillis();
+        if (lastSpeakingMotionMs <= 0L || now - lastSpeakingMotionMs >= SPEAKING_MOTION_INTERVAL_MS) {
+            triggerSpeakingMotion("explain", "warm");
+        }
+        scheduleSpeakingMotionTick();
+    }
+
+    private void triggerSpeakingMotion(String action, String emotion) {
+        if (!backendAudioSpeaking) {
+            return;
+        }
+        long now = android.os.SystemClock.uptimeMillis();
+        long elapsedMs = backendAudioStartMs > 0L ? Math.max(0L, now - backendAudioStartMs) : 0L;
+        boolean started = false;
+        try {
+            started = DigitalHumanActionController.getInstance().triggerMotionOnly(action, emotion);
+        } catch (Throwable e) {
+            Log.e(TAG, "[SpeakingMotion] trigger failed action=" + safeString(action), e);
+        }
+        if (started) {
+            lastSpeakingMotionMs = now;
+            Log.d(TAG, "[SpeakingMotion] trigger action=" + firstNotEmpty(action, "explain")
+                    + ", elapsedMs=" + elapsedMs);
+            forceRenderLive2D();
+        } else {
+            Log.d(TAG, "[SpeakingMotion] skip reason=motion_busy");
         }
     }
 
@@ -8806,6 +9066,7 @@ public class MainActivity extends Activity {
     }
 
     private void stopCurrentAudio() {
+        stopBackendAudioSpeaking();
         stopMouthSync();
         currentTtsUtteranceId = "";
         try {
