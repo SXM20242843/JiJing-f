@@ -1,14 +1,31 @@
 package com.scenic.ai.modules.app.route.dto;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
+
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class RouteCardDto {
 
     public String type = "route";
     public String mapAction = "show_route_card";
+    @JsonAlias({"route_mode", "routeMode"})
+    @JsonProperty("route_mode")
+    public String routeMode;
+    @JsonAlias({"visit_status", "visitStatus"})
+    @JsonProperty("visit_status")
+    public String visitStatus;
+    @JsonAlias({"is_official_template", "isOfficialTemplate"})
+    @JsonProperty("is_official_template")
+    public Boolean isOfficialTemplate;
+    @JsonAlias({"should_show_route_card", "shouldShowRouteCard"})
+    @JsonProperty("should_show_route_card")
+    public Boolean shouldShowRouteCard;
     public String planId;
     public Long routePlanId;
     public String routeName;
@@ -20,6 +37,10 @@ public class RouteCardDto {
     public Integer estimatedDurationMin;
     public String durationText;
     public Integer spotCount;
+    public List<Object> spots = new ArrayList<>();
+    @JsonAlias({"template_spot_sequence", "templateSpotSequence"})
+    @JsonProperty("template_spot_sequence")
+    public List<Object> templateSpotSequence = new ArrayList<>();
     public List<RouteCardNodeDto> nodes = new ArrayList<>();
 
     /**

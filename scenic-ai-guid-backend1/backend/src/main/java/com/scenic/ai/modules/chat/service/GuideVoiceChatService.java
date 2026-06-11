@@ -3,6 +3,7 @@ package com.scenic.ai.modules.chat.service;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.scenic.ai.common.config.AiProperties;
+import com.scenic.ai.modules.app.route.dto.RouteCardDto;
 import com.scenic.ai.modules.app.route.service.RouteRecommendService;
 import com.scenic.ai.modules.app.visit.service.VisitService;
 import com.scenic.ai.modules.chat.dto.GuideChatRequest;
@@ -19,6 +20,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.net.URI;
 import java.net.URLEncoder;
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -87,7 +89,12 @@ public class GuideVoiceChatService {
                                                      String voiceId,
                                                      String avatarId,
                                                      String routeStartType,
-                                                     String mode
+                                                     String mode,
+                                                     String visitStatus,
+                                                     Boolean isInsideArea,
+                                                     String latitude,
+                                                     String longitude,
+                                                     String locationContext
     ) {
         // ========== 1. 确保游览会话存在 ==========
         String finalUserId = firstNotBlank(userId, loginUserId, visitorId);
@@ -164,6 +171,13 @@ public class GuideVoiceChatService {
             putIfHasText(routeBody, "scene_name", finalSceneName);
             putIfHasText(routeBody, "current_spot_id", finalCurrentSpotId);
             putIfHasText(routeBody, "current_spot_name", finalCurrentSpotName);
+            putIfHasText(routeBody, "visit_status", visitStatus);
+            if (isInsideArea != null) {
+                routeBody.put("is_inside_area", isInsideArea);
+            }
+            putIfHasText(routeBody, "latitude", latitude);
+            putIfHasText(routeBody, "longitude", longitude);
+            putLocationContext(routeBody, locationContext);
             if (profile != null) {
                 routeBody.put("profile", profile);
             }
@@ -189,7 +203,12 @@ public class GuideVoiceChatService {
                     digitalHumanConfig,
                     finalVoiceId,
                     avatarId,
-                    mode
+                    mode,
+                    visitStatus,
+                    isInsideArea,
+                    latitude,
+                    longitude,
+                    locationContext
             );
             boolean allowRoute = isExplicitRouteRequest(route, routeStartType, finalQuestion);
             if (allowRoute && !Boolean.TRUE.equals(route)) {
@@ -212,6 +231,20 @@ public class GuideVoiceChatService {
 
             log.info("语音问答请求字段: user_id={}, visit_id={}, groupSize={}, travelType={}, visitPreference={}",
                     finalUserId, finalVisitId, groupSize, travelType, visitPreference);
+
+            Object candidateSpotsObj = routeBody.get("candidate_spots");
+            int candidateSpotCount = candidateSpotsObj instanceof List<?> ? ((List<?>) candidateSpotsObj).size() : 0;
+            log.info("[AI Route Forward] mode={}, requestType={}, routeEnabled={}, visitStatus={}, isInsideArea={}, routeStartType={}, currentSpotId={}, currentSpotName={}, candidateSpotsSize={}, willEnhanceOnsiteRoute={}",
+                    mode,
+                    routeBody.get("request_type"),
+                    routeBody.get("route_enabled"),
+                    routeBody.get("visit_status"),
+                    routeBody.get("is_inside_area"),
+                    routeBody.get("route_start_type"),
+                    routeBody.get("current_spot_id"),
+                    routeBody.get("current_spot_name"),
+                    candidateSpotCount,
+                    allowRoute && "IN_AREA".equalsIgnoreCase(firstNotBlank(visitStatus)));
 
             HttpEntity<MultiValueMap<String, Object>> entity = new HttpEntity<>(body, headers);
             ResponseEntity<Map> response = restTemplate.exchange(url, HttpMethod.POST, entity, Map.class);
@@ -372,7 +405,12 @@ public class GuideVoiceChatService {
             Object digitalHumanConfig,
             String voiceId,
             String avatarId,
-            String mode
+            String mode,
+            String visitStatus,
+            Boolean isInsideArea,
+            String latitude,
+            String longitude,
+            String locationContext
     ) {
         GuideChatRequest request = new GuideChatRequest();
         request.setUserId(userId);
@@ -400,6 +438,14 @@ public class GuideVoiceChatService {
         request.setVoiceId(voiceId);
         request.setAvatarId(avatarId);
         request.setMode(mode);
+        request.setVisitStatus(visitStatus);
+        request.setIsInsideArea(isInsideArea);
+        request.setLatitude(parseBigDecimal(latitude));
+        request.setLongitude(parseBigDecimal(longitude));
+        Object parsedLocationContext = parseJsonObject(locationContext);
+        if (parsedLocationContext instanceof Map<?, ?> rawMap) {
+            request.setLocationContext(objectMapper.convertValue(rawMap, new TypeReference<Map<String, Object>>() {}));
+        }
         request.setEnableTts(true);
         request.setEnableContext(true);
         return request;
@@ -478,6 +524,37 @@ public class GuideVoiceChatService {
     private void putIfHasText(Map<String, Object> body, String key, String value) {
         if (hasText(value)) {
             body.put(key, value.trim());
+        }
+    }
+
+    private void putLocationContext(Map<String, Object> body, String locationContext) {
+        if (!hasText(locationContext)) {
+            return;
+        }
+
+        Object parsed = parseJsonObject(locationContext);
+        body.put("location_context", parsed == null ? locationContext.trim() : parsed);
+    }
+
+    private Object parseJsonObject(String value) {
+        if (!hasText(value)) {
+            return null;
+        }
+        try {
+            return objectMapper.readValue(value.trim(), new TypeReference<Map<String, Object>>() {});
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private BigDecimal parseBigDecimal(String value) {
+        if (!hasText(value)) {
+            return null;
+        }
+        try {
+            return new BigDecimal(value.trim());
+        } catch (NumberFormatException e) {
+            return null;
         }
     }
 
@@ -869,6 +946,13 @@ public class GuideVoiceChatService {
                 readStringCascade(dataMap, rootMap, "avatar_id", "avatarId"),
                 readString(digitalHumanMap, "avatarId", "avatar_id")
         ));
+        result.setRoute(readRawRouteCard(dataMap, rootMap));
+        Object routeRecommendation = firstNonNull(
+                readObject(dataMap, "route_recommendation", "routeRecommendation"),
+                readObject(rootMap, "route_recommendation", "routeRecommendation")
+        );
+        result.setRouteRecommendation(routeRecommendation);
+        result.setRouteRecommendationSnake(routeRecommendation);
 
         result.setAudio(buildAudioPayload(result));
         result.setMouth(buildMouthPayload(result));
@@ -927,6 +1011,17 @@ public class GuideVoiceChatService {
         Object object = firstNonNull(readObject(primary, keys), readObject(fallback, keys));
         if (object instanceof Map<?, ?> rawMap) {
             return (Map<String, Object>) rawMap;
+        }
+        return null;
+    }
+
+    private RouteCardDto readRawRouteCard(Map<String, Object> dataMap, Map<String, Object> rootMap) {
+        Object routeObj = firstNonNull(
+                readObject(dataMap, "route"),
+                readObject(rootMap, "route")
+        );
+        if (routeObj instanceof Map<?, ?>) {
+            return objectMapper.convertValue(routeObj, RouteCardDto.class);
         }
         return null;
     }

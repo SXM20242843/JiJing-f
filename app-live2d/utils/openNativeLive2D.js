@@ -196,6 +196,35 @@ export async function openNativeLive2DGuide(options = {}) {
     )
     const isOnsiteGuide = resolveIsOnsiteGuideMode(options, mode, entry)
     const requestedStartVisitGuide = false
+    const isNonOnsiteExplain = isNonOnsiteExplainEntry(entry, mode)
+    const optionVisitStatus = pickFirstFilledValue(
+      options.visit_status,
+      options.visitStatus,
+      ''
+    )
+    const finalVisitStatus = isOnsiteGuide
+      ? 'IN_AREA'
+      : isNonOnsiteExplain && !optionVisitStatus
+        ? 'NOT_IN_AREA'
+        : optionVisitStatus
+    const optionIsInsideArea = pickFirstFilledValue(
+      options.is_inside_area,
+      options.isInsideArea,
+      ''
+    )
+    const finalIsInsideArea = isOnsiteGuide
+      ? 'true'
+      : isNonOnsiteExplain && !optionIsInsideArea
+        ? 'false'
+        : normalizeBooleanExtra(optionIsInsideArea)
+    const rawLocationContext = getOption(
+      options,
+      'location_context',
+      getOption(options, 'locationContext', '')
+    )
+    const locationContextText = rawLocationContext && typeof rawLocationContext === 'object'
+      ? safeJsonStringify(rawLocationContext)
+      : safeString(rawLocationContext)
 
     if (isOnsiteGuide && !explicitVisitId) {
       console.warn('[openNativeLive2DGuide] 现场导览缺少显式 visitId，已拦截打开：', {
@@ -556,14 +585,20 @@ export async function openNativeLive2DGuide(options = {}) {
 
     intent.putExtra('scene_code', safeString(spotId || scenicId))
     intent.putExtra('scene_name', safeString(spotName || scenicName))
-    intent.putExtra('current_spot_id', safeString(spotId || scenicId))
-    intent.putExtra('current_spot_name', safeString(spotName || scenicName))
+    // 非现场入口不要把 scenicId/areaId 当作 current_spot 传给 Android
+    // 否则 routeStartType 会被错误变成 current_spot，导致 AI 返回现场路线
+    intent.putExtra('current_spot_id', isOnsiteGuide ? safeString(spotId) : '')
+    intent.putExtra('current_spot_name', isOnsiteGuide ? safeString(spotName) : '')
 
     intent.putExtra('mode', safeString(mode))
     intent.putExtra('guideMode', safeString(mode))
     intent.putExtra('guide_mode', safeString(mode))
     intent.putExtra('isOnsiteGuide', isOnsiteGuide ? 'true' : 'false')
     intent.putExtra('is_onsite_guide', isOnsiteGuide ? 'true' : 'false')
+    intent.putExtra('visit_status', safeString(finalVisitStatus))
+    intent.putExtra('visitStatus', safeString(finalVisitStatus))
+    intent.putExtra('is_inside_area', safeString(finalIsInsideArea))
+    intent.putExtra('isInsideArea', safeString(finalIsInsideArea))
     intent.putExtra('startVisitGuide', requestedStartVisitGuide ? 'true' : 'false')
     intent.putExtra('start_visit_guide', requestedStartVisitGuide ? 'true' : 'false')
     intent.putExtra('allowEndVisit', allowEndVisit ? 'true' : 'false')
@@ -572,6 +607,8 @@ export async function openNativeLive2DGuide(options = {}) {
     intent.putExtra('distance', safeString(distance))
     intent.putExtra('latitude', safeString(latitude))
     intent.putExtra('longitude', safeString(longitude))
+    intent.putExtra('location_context', safeString(locationContextText))
+    intent.putExtra('locationContext', safeString(locationContextText))
 
     const extras = {
       entry: safeString(entry),
@@ -631,8 +668,9 @@ export async function openNativeLive2DGuide(options = {}) {
 
       scene_name: safeString(spotName || scenicName),
       scene_code: safeString(spotId || scenicId),
-      current_spot_id: safeString(spotId || scenicId),
-      current_spot_name: safeString(spotName || scenicName),
+      // 非现场入口不要把 scenicId 当作 current_spot
+      current_spot_id: isOnsiteGuide ? safeString(spotId) : '',
+      current_spot_name: isOnsiteGuide ? safeString(spotName) : '',
 
       groupSize: safeString(finalGroupSize),
       group_size: safeString(finalGroupSize),
@@ -658,6 +696,10 @@ export async function openNativeLive2DGuide(options = {}) {
       guide_mode: safeString(mode),
       isOnsiteGuide: isOnsiteGuide ? 'true' : 'false',
       is_onsite_guide: isOnsiteGuide ? 'true' : 'false',
+      visit_status: safeString(finalVisitStatus),
+      visitStatus: safeString(finalVisitStatus),
+      is_inside_area: safeString(finalIsInsideArea),
+      isInsideArea: safeString(finalIsInsideArea),
       startVisitGuide: requestedStartVisitGuide ? 'true' : 'false',
       start_visit_guide: requestedStartVisitGuide ? 'true' : 'false',
       allowEndVisit: allowEndVisit ? 'true' : 'false',
@@ -666,6 +708,8 @@ export async function openNativeLive2DGuide(options = {}) {
       distance: safeString(distance),
       latitude: safeString(latitude),
       longitude: safeString(longitude),
+      location_context: safeString(locationContextText),
+      locationContext: safeString(locationContextText),
 
       avatarId: safeString(avatarId),
       avatar_id: safeString(avatarId),
@@ -713,6 +757,8 @@ export async function openNativeLive2DGuide(options = {}) {
       mode: extras.mode,
       guideMode: extras.guideMode || extras.guide_mode,
       isOnsiteGuide: extras.isOnsiteGuide || extras.is_onsite_guide,
+      visitStatus: extras.visitStatus || extras.visit_status,
+      isInsideArea: extras.isInsideArea || extras.is_inside_area,
       avatarId: extras.avatarId || extras.avatar_id,
       modelPath: extras.modelPath || extras.model_path,
       voiceId: extras.voiceId || extras.voice_id,
@@ -877,6 +923,33 @@ function resolveIsOnsiteGuideMode(options, mode, entry = '') {
     entryText.includes('continue-onsite-guide')
 }
 
+/**
+ * 判断当前入口是否属于非现场数字人讲解页。
+ * 这类页面点击"推荐路线"应按行前路线处理，不应走现场动态路线。
+ */
+function isNonOnsiteExplainEntry(entry = '', mode = '') {
+  const entryLower = safeString(entry).toLowerCase()
+  const modeLower = safeString(mode).toLowerCase()
+
+  // 非现场入口关键词
+  if (entryLower.includes('scenic-list-explain')
+      || entryLower.includes('scenic-detail-explain')
+      || entryLower.includes('park-detail-explain')
+      || entryLower.includes('spot-detail-explain')) {
+    return true
+  }
+
+  // 非现场 mode
+  if (modeLower === 'scenic_explain'
+      || modeLower === 'spot_explain'
+      || modeLower === 'normal'
+      || modeLower === '') {
+    return true
+  }
+
+  return false
+}
+
 function resolveScenicVisitTarget({ options, contextType, scenicId, scenicName, spotId, spotName, parkName }) {
   const explicitTrack = getOption(options, 'trackScenicVisit', undefined)
   const shouldTrack = explicitTrack === undefined ? contextType === 'scenic' : !!explicitTrack
@@ -917,6 +990,18 @@ function resolveScenicVisitTarget({ options, contextType, scenicId, scenicName, 
       getOption(options, 'enter_source', 'ai_guide_click')
     )
   }
+}
+
+function normalizeBooleanExtra(value) {
+  if (value === true || value === 'true') {
+    return 'true'
+  }
+
+  if (value === false || value === 'false') {
+    return 'false'
+  }
+
+  return safeString(value)
 }
 
 function safeGetStorage(key) {

@@ -1,5 +1,6 @@
 package com.scenic.ai.modules.chat.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.scenic.ai.modules.app.route.dto.RouteCardDto;
 import lombok.Data;
 import java.util.List;
@@ -35,6 +36,10 @@ public class GuideChatResponse {
     private String actionCode;
     private String avatarId;
     private RouteCardDto route;
+    private Object routeRecommendation;
+
+    @JsonProperty("route_recommendation")
+    private Object routeRecommendationSnake;
 
     // 新增字段：返回 visitId 给 Android 端
     private String visitId;

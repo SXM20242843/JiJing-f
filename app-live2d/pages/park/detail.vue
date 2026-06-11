@@ -531,7 +531,7 @@ function openAiExplainPark() {
   const parkId = park.value.id || currentParkId.value || ''
   const areaId = parkId
   const areaCode = parkId
-  const autoQuestion = `请为我讲解“${parkName}”这个景区`
+  const autoQuestion = `请为我讲解「${parkName}」这个景区，重点介绍景区特色、文化背景、代表景点和参观注意事项。`
   const digitalHumanConfig = normalizeDigitalHumanConfig(
     park.value.digitalHumanConfig || park.value,
     parkName

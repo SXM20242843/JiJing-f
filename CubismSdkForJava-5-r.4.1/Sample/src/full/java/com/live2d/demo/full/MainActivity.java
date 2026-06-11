@@ -299,6 +299,9 @@ public class MainActivity extends Activity {
     private String distance = "";
     private String latitude = "";
     private String longitude = "";
+    private String visitStatus = "";
+    private String isInsideArea = "";
+    private String locationContext = "";
 
     // 数字人形象 / 音色配置参数
     private String avatarId = "guide_female_01";
@@ -1184,6 +1187,8 @@ public class MainActivity extends Activity {
 
                     JSONObject requestJson = buildRequestJson(question, suppressRoute, routeRequestSource);
 
+                    logRouteContext(requestJson, question, allowRouteResponse);
+
                     OutputStream outputStream = connection.getOutputStream();
                     BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(outputStream, StandardCharsets.UTF_8));
                     writer.write(requestJson.toString());
@@ -1556,6 +1561,7 @@ public class MainActivity extends Activity {
             requestJson.put("requestType", "spot_explain");
             requestJson.put("request_type", "spot_explain");
         }
+        appendRouteVisitStatusParams(requestJson, routeIntent);
         appendRouteStartParams(requestJson, routeIntent, !routeIntent);
 
         // 路线推荐时只传 routeStart*；不把手机 GPS 当作景区内路线起点。
@@ -1582,6 +1588,25 @@ public class MainActivity extends Activity {
         logAiQuestion(question);
 
         return requestJson;
+    }
+
+    private void logRouteContext(JSONObject requestJson, String question, boolean allowRouteResponse) {
+        try {
+            Log.d(TAG, "[RouteContext] entry=" + safeString(entry)
+                    + ", mode=" + safeString(mode)
+                    + ", isOnsiteGuide=" + isOnsiteGuide
+                    + ", startVisitGuide=" + startVisitGuide
+                    + ", visitId=" + safeString(visitId)
+                    + ", isRealOnsiteRouteContext=" + isRealOnsiteRouteContext()
+                    + ", routeIntent=" + allowRouteResponse
+                    + ", visitStatus=" + resolveRouteVisitStatusForRequest()
+                    + ", isInsideArea=" + resolveIsInsideAreaForRequest()
+                    + ", routeStartType=" + routeStartType
+                    + ", currentSpotId=" + safeString(routeStartCurrentSpotId)
+                    + ", currentSpotName=" + safeString(routeStartCurrentSpotName));
+        } catch (Exception e) {
+            Log.d(TAG, "[RouteContext] log error: " + e.getMessage());
+        }
     }
 
     private void appendRouteStartParams(JSONObject requestJson, boolean routeIntent) throws Exception {
@@ -1636,6 +1661,14 @@ public class MainActivity extends Activity {
         clientContext.put("routeIntent", routeIntent);
         clientContext.put("suppressRoute", suppressRoute);
         if (routeIntent) {
+            String requestVisitStatus = resolveRouteVisitStatusForRequest();
+            String requestIsInsideArea = resolveIsInsideAreaForRequest();
+            if (requestVisitStatus.length() > 0) {
+                clientContext.put("visit_status", requestVisitStatus);
+            }
+            if (requestIsInsideArea.length() > 0) {
+                clientContext.put("is_inside_area", parseBooleanLike(requestIsInsideArea));
+            }
             clientContext.put("routeTrigger", "manual");
             clientContext.put("requestType", "route_recommend");
             clientContext.put("routeEnabled", true);
@@ -1651,6 +1684,77 @@ public class MainActivity extends Activity {
                 + ", routeStartLatitude=" + routeStartLatitude
                 + ", routeStartLongitude=" + routeStartLongitude
                 + ", routeIntent=" + routeIntent);
+    }
+
+    private void appendRouteVisitStatusParams(JSONObject requestJson, boolean routeIntent) throws Exception {
+        if (!routeIntent) {
+            return;
+        }
+
+        String requestVisitStatus = resolveRouteVisitStatusForRequest();
+        String requestIsInsideArea = resolveIsInsideAreaForRequest();
+
+        if (requestVisitStatus.length() > 0) {
+            requestJson.put("visit_status", requestVisitStatus);
+            requestJson.put("visitStatus", requestVisitStatus);
+        }
+        if (requestIsInsideArea.length() > 0) {
+            boolean inside = parseBooleanLike(requestIsInsideArea);
+            requestJson.put("is_inside_area", inside);
+            requestJson.put("isInsideArea", inside);
+        }
+
+        JSONObject context = buildRouteLocationContextForRequest();
+        if (context != null) {
+            requestJson.put("location_context", context);
+            requestJson.put("locationContext", context);
+        }
+    }
+
+    private String resolveRouteVisitStatusForRequest() {
+        if (isRealOnsiteRouteContext()) {
+            return "IN_AREA";
+        }
+        // 非现场入口：优先使用 visitStatus；未传则默认 NOT_IN_AREA
+        String explicit = firstNotEmpty(visitStatus);
+        if (explicit.length() > 0) {
+            return explicit;
+        }
+        return "NOT_IN_AREA";
+    }
+
+    private String resolveIsInsideAreaForRequest() {
+        if (isRealOnsiteRouteContext()) {
+            return "true";
+        }
+        // 非现场入口：优先使用 isInsideArea；未传则默认 false
+        String explicit = firstNotEmpty(isInsideArea);
+        if (explicit.length() > 0) {
+            return String.valueOf(parseBooleanLike(explicit));
+        }
+        return "false";
+    }
+
+    private JSONObject buildRouteLocationContextForRequest() {
+        try {
+            if (locationContext != null && locationContext.trim().startsWith("{")) {
+                return new JSONObject(locationContext.trim());
+            }
+
+            if (latitude.length() == 0 && longitude.length() == 0) {
+                return null;
+            }
+
+            JSONObject context = new JSONObject();
+            context.put("source", "ANDROID_NATIVE");
+            context.put("latitude", safeString(latitude));
+            context.put("longitude", safeString(longitude));
+            context.put("visit_status", resolveRouteVisitStatusForRequest());
+            context.put("is_inside_area", parseBooleanLike(resolveIsInsideAreaForRequest()));
+            return context;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private void appendGuideContextParams(JSONObject requestJson, String effectiveUserId, String inputType) throws Exception {
@@ -1959,6 +2063,21 @@ public class MainActivity extends Activity {
                     writeFormField(outputStream, boundary, "distance", safeString(distance));
                     writeFormField(outputStream, boundary, "latitude", safeString(latitude));
                     writeFormField(outputStream, boundary, "longitude", safeString(longitude));
+                    String requestVisitStatus = resolveRouteVisitStatusForRequest();
+                    String requestIsInsideArea = resolveIsInsideAreaForRequest();
+                    if (requestVisitStatus.length() > 0) {
+                        writeFormField(outputStream, boundary, "visit_status", requestVisitStatus);
+                        writeFormField(outputStream, boundary, "visitStatus", requestVisitStatus);
+                    }
+                    if (requestIsInsideArea.length() > 0) {
+                        writeFormField(outputStream, boundary, "is_inside_area", String.valueOf(parseBooleanLike(requestIsInsideArea)));
+                        writeFormField(outputStream, boundary, "isInsideArea", String.valueOf(parseBooleanLike(requestIsInsideArea)));
+                    }
+                    JSONObject routeLocationContext = buildRouteLocationContextForRequest();
+                    if (routeLocationContext != null) {
+                        writeFormField(outputStream, boundary, "location_context", routeLocationContext.toString());
+                        writeFormField(outputStream, boundary, "locationContext", routeLocationContext.toString());
+                    }
 
                     Log.d(TAG, "语音问答真实身份参数 realUserId=" + realUserId
                             + ", appUserId=" + appUserId
@@ -2398,6 +2517,10 @@ public class MainActivity extends Activity {
         route.estimatedDurationMin = getJsonText(routeJson, "estimatedDurationMin", "estimated_duration_min", "durationMin", "duration_min");
         route.mapAction = getJsonText(routeJson, "mapAction", "map_action");
         route.routeMapReady = getJsonText(routeJson, "routeMapReady", "route_map_ready", "mapReady", "map_ready");
+        route.routeMode = getJsonText(routeJson, "route_mode", "routeMode");
+        route.visitStatus = getJsonText(routeJson, "visit_status", "visitStatus");
+        route.shouldShowRouteCard = getBooleanCompat(routeJson, "should_show_route_card", "shouldShowRouteCard");
+        route.isOfficialTemplate = getBooleanCompat(routeJson, "is_official_template", "isOfficialTemplate");
         route.rawPolylinePoints.addAll(parseRoutePolyline(routeJson));
 
         JSONArray nodesArray = getJsonArray(routeJson,
@@ -2552,6 +2675,34 @@ public class MainActivity extends Activity {
         return "";
     }
 
+    private boolean getBooleanCompat(JSONObject object, String... keys) {
+        if (object == null || keys == null) {
+            return false;
+        }
+
+        for (String key : keys) {
+            if (key == null || !object.has(key) || object.isNull(key)) {
+                continue;
+            }
+            Object value = object.opt(key);
+            if (value instanceof Boolean) {
+                return (Boolean) value;
+            }
+            if (value instanceof Number) {
+                return ((Number) value).intValue() != 0;
+            }
+            String text = value == null ? "" : String.valueOf(value).trim();
+            if ("true".equalsIgnoreCase(text) || "1".equals(text) || "yes".equalsIgnoreCase(text)) {
+                return true;
+            }
+            if ("false".equalsIgnoreCase(text) || "0".equals(text) || "no".equalsIgnoreCase(text)) {
+                return false;
+            }
+        }
+
+        return false;
+    }
+
     private int parseIntOrDefault(String value, int defaultValue) {
         try {
             return Integer.parseInt(safeString(value).trim());
@@ -2688,14 +2839,16 @@ public class MainActivity extends Activity {
         if (route == null) {
             return false;
         }
-        boolean hasNodes = route.nodes != null && route.nodes.size() > 0;
-        if (!"show_route_card".equals(route.mapAction) && !hasNodes) {
-            Log.d(TAG, "忽略路线卡片 mapAction=" + route.mapAction + ", nodes=0");
+        normalizeRouteNodes(route);
+        if (!shouldShowOnsiteRouteCard(route, route.nodes)) {
+            Log.d(TAG, "忽略非现场动态路线卡片 routeMode=" + route.routeMode
+                    + ", visitStatus=" + route.visitStatus
+                    + ", shouldShow=" + route.shouldShowRouteCard
+                    + ", nodes=" + (route.nodes == null ? 0 : route.nodes.size()));
             return false;
         }
 
         currentRoute = route;
-        normalizeRouteNodes(route);
         currentRoutePreview = createInitialRoutePreview(route);
         route.preview = currentRoutePreview;
         routeCardExpanded = false;
@@ -2708,6 +2861,30 @@ public class MainActivity extends Activity {
         trackRouteEventOnce("map_card_show", route, null);
         trackRouteEvent("route_view", route, null);
         return true;
+    }
+
+    private boolean shouldShowOnsiteRouteCard(RouteInfo route, List<RouteNode> nodes) {
+        if (route == null) {
+            return false;
+        }
+
+        // 四个条件同时成立才弹现场路线卡片：
+        // 1. 当前处于真正的现场导览上下文中
+        // 2. AI 明确标记 should_show_route_card=true
+        // 3. route_mode == "onsite_dynamic"
+        // 4. spots / nodes 非空
+        boolean realOnsite = isRealOnsiteRouteContext();
+        boolean isOnsiteDynamic = "onsite_dynamic".equalsIgnoreCase(firstNotEmpty(route.routeMode));
+        boolean hasNodes = nodes != null && !nodes.isEmpty();
+
+        Log.d(TAG, "[RouteCardGate] isRealOnsiteRouteContext=" + realOnsite
+                + ", routeMode=" + route.routeMode
+                + ", visitStatus=" + route.visitStatus
+                + ", shouldShowRouteCard=" + route.shouldShowRouteCard
+                + ", spotsSize=" + (nodes == null ? 0 : nodes.size())
+                + ", finalShowCard=" + (realOnsite && route.shouldShowRouteCard && isOnsiteDynamic && hasNodes));
+
+        return realOnsite && route.shouldShowRouteCard && isOnsiteDynamic && hasNodes;
     }
 
     private void hideRouteCard() {
@@ -6354,15 +6531,26 @@ public class MainActivity extends Activity {
     }
 
     private void resetRouteStartSelection() {
-        String currentName = firstNotEmpty(spotName, scenicName);
-        String currentId = firstNotEmpty(spotId, scenicId);
-        if (currentName.length() > 0 || currentId.length() > 0 || (latitude.length() > 0 && longitude.length() > 0)) {
-            routeStartType = "current_spot";
-            routeStartCurrentSpotId = currentId;
-            routeStartCurrentSpotName = firstNotEmpty(currentName, "当前起点");
-            routeStartLatitude = latitude;
-            routeStartLongitude = longitude;
+        // 只有现场导览页才允许 current_spot 作为路线起点
+        // 非现场页面（景区列表 AI 讲解等）即使有 spotName/scenicName 也不走 current_spot
+        if (isRealOnsiteRouteContext()) {
+            String currentName = firstNotEmpty(spotName, scenicName);
+            String currentId = firstNotEmpty(spotId, scenicId);
+            if (currentName.length() > 0 || currentId.length() > 0 || (latitude.length() > 0 && longitude.length() > 0)) {
+                routeStartType = "current_spot";
+                routeStartCurrentSpotId = currentId;
+                routeStartCurrentSpotName = firstNotEmpty(currentName, "当前起点");
+                routeStartLatitude = latitude;
+                routeStartLongitude = longitude;
+            } else {
+                routeStartType = "park_entrance";
+                routeStartCurrentSpotId = "";
+                routeStartCurrentSpotName = "景区入口";
+                routeStartLatitude = "";
+                routeStartLongitude = "";
+            }
         } else {
+            // 非现场入口：强制 park_entrance，不把景区名称当 current_spot
             routeStartType = "park_entrance";
             routeStartCurrentSpotId = "";
             routeStartCurrentSpotName = "景区入口";
@@ -7562,6 +7750,18 @@ public class MainActivity extends Activity {
                 getSafeExtra(intent, "lng"),
                 getSafeExtra(intent, "lon")
         );
+        visitStatus = firstNotEmpty(
+                getSafeExtra(intent, "visit_status"),
+                getSafeExtra(intent, "visitStatus")
+        );
+        isInsideArea = firstNotEmpty(
+                getSafeExtra(intent, "is_inside_area"),
+                getSafeExtra(intent, "isInsideArea")
+        );
+        locationContext = firstNotEmpty(
+                getSafeExtra(intent, "location_context"),
+                getSafeExtra(intent, "locationContext")
+        );
 
         String intentAvatarId = firstNotEmpty(
                 getSafeExtra(intent, "avatarId"),
@@ -7702,6 +7902,8 @@ public class MainActivity extends Activity {
         Log.d(TAG, "distance = " + distance);
         Log.d(TAG, "latitude = " + latitude);
         Log.d(TAG, "longitude = " + longitude);
+        Log.d(TAG, "visitStatus = " + visitStatus);
+        Log.d(TAG, "isInsideArea = " + isInsideArea);
         Log.d(TAG, "action = " + intent.getAction());
         Log.d(TAG, "avatarId = " + avatarId);
         Log.d(TAG, "avatarName = " + avatarName);
@@ -8144,6 +8346,18 @@ public class MainActivity extends Activity {
 
     private boolean isOnsiteMode() {
         return isOnsiteGuide;
+    }
+
+    /**
+     * 真正的现场路线上下文。
+     * 景区列表 AI 讲解 / 景区详情 AI 讲解 / 景点详情 AI 讲解等
+     * 虽然可能有 scenicName/areaName/spotName，但不是现场导览页。
+     * 只根据 isOnsiteGuide（由前端 is_onsite_guide 明确传入）+ visitId 判断，
+     * 不根据 areaName/scenicName/currentSpotName 推断。
+     */
+    private boolean isRealOnsiteRouteContext() {
+        return isOnsiteGuide
+            && visitId != null && visitId.trim().length() > 0;
     }
 
     private boolean shouldShowEndVisitButton() {
@@ -9404,6 +9618,10 @@ public class MainActivity extends Activity {
         String estimatedDurationMin = "";
         String mapAction = "";
         String routeMapReady = "";
+        String routeMode = "";
+        String visitStatus = "";
+        boolean shouldShowRouteCard = false;
+        boolean isOfficialTemplate = false;
         RoutePreviewData preview;
         List<LatLng> rawPolylinePoints = new ArrayList<>();
         List<RouteNode> nodes = new ArrayList<>();

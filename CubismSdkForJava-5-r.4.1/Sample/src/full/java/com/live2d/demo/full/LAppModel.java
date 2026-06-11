@@ -36,6 +36,13 @@ import java.util.Map;
 import java.util.Random;
 
 public class LAppModel extends CubismUserModel {
+    /**
+     * 数字人导览场景中禁用 Live2D motion 自带声音。
+     * 设为 true 时，动作仍正常播放，但不读取/播放 motion sound 文件。
+     * 数字人语音只允许播放后端 TTS audioUrl。
+     */
+    private static final boolean DISABLE_MOTION_SOUND_FOR_DIGITAL_HUMAN = true;
+
     public LAppModel() {
         if (LAppDefine.MOC_CONSISTENCY_VALIDATION_ENABLE) {
             mocConsistency = true;
@@ -266,13 +273,20 @@ public class LAppModel extends CubismUserModel {
         }
 
         // load sound files
-        String voice = modelSetting.getMotionSoundFileName(group, number);
-        if (!voice.equals("")) {
-            String path = modelHomeDirectory + voice;
+        if (!DISABLE_MOTION_SOUND_FOR_DIGITAL_HUMAN) {
+            String voice = modelSetting.getMotionSoundFileName(group, number);
+            if (!voice.equals("")) {
+                String path = modelHomeDirectory + voice;
 
-            // 別スレッドで音声再生
-            LAppWavFileHandler voicePlayer = new LAppWavFileHandler(path);
-            voicePlayer.start();
+                // 別スレッドで音声再生
+                LAppWavFileHandler voicePlayer = new LAppWavFileHandler(path);
+                voicePlayer.start();
+            }
+        } else {
+            if (debugMode) {
+                LAppPal.printLog("[MotionSound] disabled for digital human, motionGroup="
+                        + group + ", motionIndex=" + number);
+            }
         }
 
         if (debugMode) {
@@ -798,6 +812,13 @@ public class LAppModel extends CubismUserModel {
 
             // 暂时隐藏制服手臂，让 pose 控制原手臂，避免 A/B 同时出现
             setPartOpacities(HARU_UNIFORM_ARMS, 0.0f);
+
+            if (debugMode) {
+                LAppPal.printLog("[PartOpacityDebug] clothesMode=uniform"
+                        + ", HARU_DRESS_BODY=" + HARU_DRESS_BODY + "->0.0"
+                        + ", HARU_UNIFORM_BODY=" + HARU_UNIFORM_BODY + "->1.0"
+                        + ", HARU_UNIFORM_ARMS->0.0");
+            }
             return;
         }
 
@@ -809,6 +830,19 @@ public class LAppModel extends CubismUserModel {
             // 关键：不要强制显示连衣裙 A/B 手臂
             // A/B 手臂应该交给 pose.updateParameters 控制
             setPartOpacities(HARU_UNIFORM_ARMS, 0.0f);
+
+            if (debugMode) {
+                LAppPal.printLog("[PartOpacityDebug] clothesMode=dress"
+                        + ", HARU_DRESS_BODY=" + HARU_DRESS_BODY + "->1.0"
+                        + ", HARU_UNIFORM_BODY=" + HARU_UNIFORM_BODY + "->0.0"
+                        + ", HARU_UNIFORM_ARMS->0.0");
+            }
+            return;
+        }
+
+        if (debugMode) {
+            LAppPal.printLog("[PartOpacityDebug] clothesMode=" + clothesMode
+                    + ", skipped (no Part changes, using default model state)");
         }
     }
 

@@ -1928,7 +1928,7 @@ function openAiExplainPark(park) {
   const parkId = park.id || park.areaCode || park.area_code || ''
   const areaId = park.areaId || park.area_id || parkId
   const areaCode = park.areaCode || park.area_code || parkId
-  const autoQuestion = `请介绍${parkName}的主要特色和推荐游览方式`
+  const autoQuestion = `请为我讲解「${parkName}」这个景区，重点介绍景区特色、文化背景、代表景点和参观注意事项。`
   const digitalHumanConfig = normalizeDigitalHumanConfig(park, parkName)
 
   uni.setStorageSync('selectedScenicName', parkName)

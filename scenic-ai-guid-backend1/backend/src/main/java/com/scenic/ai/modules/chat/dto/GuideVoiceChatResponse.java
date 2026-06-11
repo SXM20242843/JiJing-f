@@ -1,5 +1,6 @@
 package com.scenic.ai.modules.chat.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.scenic.ai.modules.app.route.dto.RouteCardDto;
 import lombok.Data;
 import java.util.List;
@@ -33,6 +34,10 @@ public class GuideVoiceChatResponse {
     private String actionCode;
     private String avatarId;
     private RouteCardDto route;
+    private Object routeRecommendation;
+
+    @JsonProperty("route_recommendation")
+    private Object routeRecommendationSnake;
     private List<String> suggestions;
     private List<Map<String, Object>> sources;
 

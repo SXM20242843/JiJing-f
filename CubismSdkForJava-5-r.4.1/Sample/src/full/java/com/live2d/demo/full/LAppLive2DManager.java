@@ -365,9 +365,30 @@ public class LAppLive2DManager {
 
         ModelEntry entry = modelEntries.get(index);
         String finalClothesMode = resolveClothesMode(entry, requestedClothesMode);
+
+        // guide_female_03: uniform 模式会将 HARU_DRESS_BODY (PARTS_01_BODY_001) 置为 0 隐藏，
+        // 而 HARU_UNIFORM_BODY (PARTS_01_BODY_002) 仅为外套叠加不含完整身体，导致身体消失。
+        // 因此禁用 uniform 服装切换，让 haru 模型以默认状态完整显示。
+        if ("guide_female_03".equals(entry.avatarId)) {
+            String beforeOverride = finalClothesMode;
+            finalClothesMode = "";
+            LAppPal.printLog("[ClothesMode] avatarId=guide_female_03"
+                    + ", requested=" + beforeOverride
+                    + ", effective=" + finalClothesMode
+                    + ", apply=false"
+                    + ", reason=uniform body part missing, use default model state");
+        }
+
         currentClothesMode = finalClothesMode;
         pendingAvatarId = entry.avatarId;
         pendingClothesMode = finalClothesMode;
+
+        // 模型最终映射日志（确保真机可看到 guide_female_03 的完整映射链）
+        LAppPal.printLog("[AvatarMapping] avatarId=" + entry.avatarId
+                + ", dir=" + entry.modelDirName
+                + ", json=" + entry.modelJsonName
+                + ", requestedClothesMode=" + requestedClothesMode
+                + ", effectiveClothesMode=" + finalClothesMode);
 
         if (DEBUG_LOG_ENABLE) {
             LAppPal.printLog("当前模型索引: " + currentModel);
@@ -395,6 +416,8 @@ public class LAppLive2DManager {
             models.add(mainModel);
             MouthSyncController.getInstance().bindModel(mainModel, entry.avatarId);
             DigitalHumanActionController.getInstance().bindModel(mainModel, entry.avatarId);
+
+            applyAvatarDisplayTuning(mainModel, entry.avatarId);
 
             LAppView.RenderingTarget useRenderingTarget;
             if (USE_RENDER_TARGET) {
@@ -434,6 +457,25 @@ public class LAppLive2DManager {
                     changeScene(fallbackIndex, "");
                 }
             }
+        }
+    }
+
+    /**
+     * 为特定数字人应用显示参数调整（不修改模型资源文件）。
+     * 在模型加载 &amp; 换装完成之后调用。
+     */
+    private void applyAvatarDisplayTuning(LAppModel model, String avatarId) {
+        if (model == null) {
+            return;
+        }
+
+        if ("guide_female_03".equals(avatarId)) {
+            // guide_female_03 身体不完整不是裁切问题，而是 clothesMode=uniform
+            // 将 HARU_DRESS_BODY 置 0 后，HARU_UNIFORM_BODY 不含完整身体。
+            // 修复已在 resolveClothesMode 中完成：禁用 uniform 服装切换，保持默认模型完整显示。
+            // 因此这里不需要 scale/offset 调整，恢复默认 modelMatrix 大小。
+            LAppPal.printLog("[AvatarDisplayTuning] disabled for guide_female_03"
+                    + ", reason=restore default model size, body fix via clothesMode override");
         }
     }
 

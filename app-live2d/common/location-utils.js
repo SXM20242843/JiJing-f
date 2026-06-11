@@ -114,3 +114,80 @@ export function matchCurrentScenicFence(location, fences = SCENIC_GEOFENCES) {
 
   return matchedParks[0]
 }
+
+export async function resolveRouteVisitLocationStatus(fences = SCENIC_GEOFENCES) {
+  try {
+    const location = await getCurrentLocation()
+    const nearestScenic = findNearestScenicFence(location, fences)
+    const matchedScenic = matchCurrentScenicFence(location, fences)
+    const accuracy = Number(location.accuracy)
+    const accuracyTooLow = Number.isFinite(accuracy) && accuracy > 1000
+    const isInsideArea = !!matchedScenic && !accuracyTooLow
+    const visitStatus = accuracyTooLow ? 'UNKNOWN' : (isInsideArea ? 'IN_AREA' : 'NOT_IN_AREA')
+
+    return {
+      visit_status: visitStatus,
+      visitStatus,
+      is_inside_area: isInsideArea,
+      isInsideArea,
+      latitude: location.latitude,
+      longitude: location.longitude,
+      location_context: buildRouteLocationContext(location, matchedScenic || nearestScenic, accuracyTooLow),
+      locationContext: buildRouteLocationContext(location, matchedScenic || nearestScenic, accuracyTooLow)
+    }
+  } catch (error) {
+    console.log('路线推荐定位状态判断失败：', error)
+    return {
+      visit_status: 'UNKNOWN',
+      visitStatus: 'UNKNOWN',
+      is_inside_area: false,
+      isInsideArea: false
+    }
+  }
+}
+
+function findNearestScenicFence(location, fences = SCENIC_GEOFENCES) {
+  if (!location || !location.latitude || !location.longitude) {
+    return null
+  }
+
+  return fences
+    .map(item => ({
+      ...item,
+      distance: getDistanceMeters(
+        location.latitude,
+        location.longitude,
+        item.latitude,
+        item.longitude
+      )
+    }))
+    .sort((a, b) => a.distance - b.distance)[0] || null
+}
+
+function buildRouteLocationContext(location, scenic, accuracyTooLow = false) {
+  if (!location) {
+    return null
+  }
+
+  const context = {
+    source: 'GPS',
+    latitude: location.latitude,
+    longitude: location.longitude,
+    accuracy: location.accuracy
+  }
+
+  if (scenic && scenic.distance !== undefined) {
+    context.distance_to_area_center_m = scenic.distance
+  }
+
+  if (scenic && scenic.parkId) {
+    context.area_code = scenic.parkId
+    context.area_name = scenic.parkName || ''
+  }
+
+  if (accuracyTooLow) {
+    context.status_reason = 'LOW_ACCURACY'
+  }
+
+  return context
+}

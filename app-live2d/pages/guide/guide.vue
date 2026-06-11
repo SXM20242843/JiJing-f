@@ -97,6 +97,7 @@ import {
   getCurrentOnsiteStatus,
   takeOnsiteGuideContext
 } from '@/common/onsite-guide.js'
+import { resolveRouteVisitLocationStatus } from '@/common/location-utils.js'
 import TripInfoPopup from '@/components/TripInfoPopup.vue'
 import {
   useTripInfoConfirm,
@@ -615,7 +616,7 @@ function formatShortDesc(desc, maxLength = 42) {
 }
 
 async function openParkFromMatch(park) {
-  const text = question.value.trim() || `请介绍${park.name}景区`
+  const text = question.value.trim() || `请为我讲解「${park.name}」这个景区，重点介绍景区特色、文化背景、代表景点和参观注意事项。`
 
   if (isRouteIntent(text)) {
     openRoutePlanForPark(park, text)
@@ -631,7 +632,8 @@ function openRoutePlanForPark(park, text) {
       mode: 'route_planning',
       trigger: 'route-planning',
       allowEndVisit: false,
-      startVisitGuide: false
+      startVisitGuide: false,
+      routeVisitStatus: true
     })
   )
 }
@@ -659,7 +661,10 @@ async function openParkGuide(park, autoQuestion, extraOptions = {}) {
         basePark,
       finalParkName
     )
-    const finalAutoQuestion = safeString(autoQuestion || `请介绍${finalParkName}景区`)
+    const finalAutoQuestion = safeString(autoQuestion || `请为我讲解「${finalParkName}」这个景区，重点介绍景区特色、文化背景、代表景点和参观注意事项。`)
+    const routeLocationStatus = extraOptions.routeVisitStatus
+      ? await resolveRouteVisitLocationStatus()
+      : {}
 
     uni.removeStorageSync(GUIDE_CONVERSATION_ID_KEY)
     uni.setStorageSync('selectedScenicName', finalParkName)
@@ -702,7 +707,8 @@ async function openParkGuide(park, autoQuestion, extraOptions = {}) {
       mode: guideMode,
       trigger,
       allowEndVisit: extraOptions.allowEndVisit === true,
-      startVisitGuide: extraOptions.startVisitGuide === true
+      startVisitGuide: extraOptions.startVisitGuide === true,
+      ...routeLocationStatus
     })
   } catch (error) {
     console.log('AI 助手打开景区讲解失败：', error)

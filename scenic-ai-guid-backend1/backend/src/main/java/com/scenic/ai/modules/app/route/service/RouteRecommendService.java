@@ -169,7 +169,7 @@ public class RouteRecommendService {
 
         RouteRecommendResponse response = new RouteRecommendResponse();
         response.answer = answer;
-        response.route = toRouteCard(plan, resolvedNodes, roadResult);
+        response.route = toRouteCard(plan, resolvedNodes, roadResult, routeData);
         return response;
     }
 
@@ -184,8 +184,63 @@ public class RouteRecommendService {
             return context;
         }
 
+        // 判断是否是真正的现场路线上下文
+        boolean isOnsiteRouteContext = isOnsiteRouteRequest(chatRequest);
+        log.info("[AI Route Forward] isOnsiteRouteContext={}, visitStatus={}, isInsideArea={}, routeStartType={}, mode={}",
+                isOnsiteRouteContext,
+                chatRequest.getVisitStatus(),
+                chatRequest.getIsInsideArea(),
+                chatRequest.getRouteStartType(),
+                chatRequest.getMode());
+
         RouteRecommendRequest routeRequest = toRouteRecommendRequest(chatRequest, userId);
         Long areaId = resolveAreaId(routeRequest);
+
+        // 非现场路线请求：只传 route=true，不增强现场字段
+        if (!isOnsiteRouteContext) {
+            String parkName = firstNotBlank(
+                    routeRequest.getParkNameText(),
+                    "景区"
+            );
+            String areaCode = firstNotBlank(
+                    routeRequest.getAreaCodeText(),
+                    routeRequest.getParkIdText(),
+                    areaId == null ? "" : String.valueOf(areaId)
+            );
+
+            body.put("route", true);
+            body.put("enable_personalization", true);
+            if (areaId != null) {
+                body.put("area_id", areaId);
+            }
+            putIfHasText(body, "area_code", areaCode);
+            putIfHasText(body, "park_id", firstNotBlank(routeRequest.getParkIdText(), areaCode));
+            putIfHasText(body, "park_name", parkName);
+            body.put("route_start_type", "park_entrance");
+            // 非现场不传 candidate_spots / current_spot / current_location
+            body.put("candidate_spots", new ArrayList<>());
+            // 明确清除可能被 buildAiRequestBody 填入的现场字段
+            body.remove("current_spot_id");
+            body.remove("current_spot_name");
+            body.remove("current_location");
+            body.remove("route_start_location");
+            body.put("visit_status", firstNotBlank(chatRequest.getVisitStatus(), "NOT_IN_AREA"));
+            body.put("is_inside_area", chatRequest.getIsInsideArea() == null ? false : chatRequest.getIsInsideArea());
+
+            context.onsiteRoute = false;
+            context.areaId = areaId;
+            context.routeRequest = routeRequest;
+            context.aiRequestBody = new LinkedHashMap<>(body);
+
+            log.info("Chat非现场路线请求: userId={}, areaId={}, parkName={}, visitStatus={}, isInsideArea={}",
+                    userId, areaId, parkName,
+                    body.get("visit_status"),
+                    body.get("is_inside_area"));
+            return context;
+        }
+
+        // 以下为现场路线增强逻辑（仅 visit_status=IN_AREA 且 is_inside_area=true）
+        context.onsiteRoute = true;
         RouteAreaInfo areaInfo = areaId == null ? null : routePlanMapper.selectAreaInfoById(areaId);
         List<RouteSpotInfo> candidateSpots = areaId == null
                 ? new ArrayList<>()
@@ -311,11 +366,25 @@ public class RouteRecommendService {
         if (context == null || !context.routeIntent) {
             return null;
         }
+        // 非现场路线请求不保存路线计划到数据库
+        if (!context.onsiteRoute) {
+            log.info("非现场路线请求跳过路线计划标准化和入库。userId={}, sessionId={}",
+                    userId, sessionId);
+            return toRawRouteCard(extractRouteDataFromChatResponse(aiResponseBody));
+        }
 
         Map<String, Object> routeData = extractRouteDataFromChatResponse(aiResponseBody);
         if (routeData.isEmpty()) {
             log.info("ChatResponse 未包含结构化路线，尝试根据回答文本和候选景点生成路线卡片。userId={}, sessionId={}",
                     userId, sessionId);
+        }
+        if (shouldReturnRawRouteWithoutOnsitePlan(routeData)) {
+            log.info("ChatResponse route 明确不展示现场路线卡片，跳过路线计划标准化。userId={}, sessionId={}, routeMode={}, shouldShow={}",
+                    userId,
+                    sessionId,
+                    readString(routeData, "route_mode", "routeMode"),
+                    readBoolean(routeData, "should_show_route_card", "shouldShowRouteCard"));
+            return toRawRouteCard(routeData);
         }
 
         if (context.areaId == null || context.routeCandidateSpots == null || context.routeCandidateSpots.isEmpty()) {
@@ -375,7 +444,7 @@ public class RouteRecommendService {
                 plan,
                 resolvedNodes
         );
-        return toRouteCard(plan, resolvedNodes, roadResult);
+        return toRouteCard(plan, resolvedNodes, roadResult, routeData);
     }
 
     public void recordChatRouteRequestWithoutPlan(
@@ -385,6 +454,12 @@ public class RouteRecommendService {
             ChatRouteContext context
     ) {
         if (context == null || !context.routeIntent) {
+            return;
+        }
+        // 非现场路线请求不写 ROUTE_REQUEST 行为事件
+        if (!context.onsiteRoute) {
+            log.info("非现场路线请求跳过 ROUTE_REQUEST 行为事件记录。userId={}, sessionId={}",
+                    userId, sessionId);
             return;
         }
 
@@ -419,6 +494,21 @@ public class RouteRecommendService {
             log.warn("记录Chat路线请求行为失败，不影响问答返回。userId={}, sessionId={}, error={}",
                     userId, sessionId, e.getMessage(), e);
         }
+    }
+
+    /**
+     * 判断是否是真正的现场路线请求上下文。
+     * 只有 visit_status=IN_AREA 且 is_inside_area=true 且 route_start_type=current_spot
+     * 才允许执行现场动态路线增强（candidate_spots / current_location / 入库等）。
+     */
+    private boolean isOnsiteRouteRequest(GuideChatRequest request) {
+        if (request == null) {
+            return false;
+        }
+        String visitStatus = firstNotBlank(request.getVisitStatus());
+        Boolean isInsideArea = request.getIsInsideArea();
+        return "IN_AREA".equalsIgnoreCase(visitStatus)
+                && isInsideArea != null && isInsideArea;
     }
 
     public boolean isChatRouteIntent(GuideChatRequest request) {
@@ -1760,6 +1850,13 @@ public class RouteRecommendService {
     private RouteCardDto toRouteCard(TouristRoutePlan plan,
                                      List<ResolvedRouteNode> resolvedNodes,
                                      RouteRoadResult roadResult) {
+        return toRouteCard(plan, resolvedNodes, roadResult, null);
+    }
+
+    private RouteCardDto toRouteCard(TouristRoutePlan plan,
+                                     List<ResolvedRouteNode> resolvedNodes,
+                                     RouteRoadResult roadResult,
+                                     Map<String, Object> routeData) {
         RouteCardDto route = new RouteCardDto();
         List<ResolvedRouteNode> sortedNodes = sortedResolvedNodes(resolvedNodes);
         route.planId = plan.id == null ? plan.planNo : String.valueOf(plan.id);
@@ -1821,7 +1918,57 @@ public class RouteRecommendService {
             route.routeMapSource = "node_fallback";
         }
 
+        applyRouteDisplayFields(route, routeData);
         return route;
+    }
+
+    private boolean shouldReturnRawRouteWithoutOnsitePlan(Map<String, Object> routeData) {
+        if (routeData == null || routeData.isEmpty()) {
+            return false;
+        }
+
+        Boolean shouldShow = readBoolean(routeData, "should_show_route_card", "shouldShowRouteCard");
+        String routeMode = firstNotBlank(readString(routeData, "route_mode", "routeMode"));
+        Object spotsObj = readObject(routeData, "spots");
+        boolean explicitEmptySpots = spotsObj instanceof List<?> list && list.isEmpty();
+
+        return Boolean.FALSE.equals(shouldShow)
+                || "pretrip_template".equalsIgnoreCase(routeMode)
+                || explicitEmptySpots;
+    }
+
+    private RouteCardDto toRawRouteCard(Map<String, Object> routeData) {
+        RouteCardDto route = objectMapper.convertValue(routeData, RouteCardDto.class);
+        route.type = firstNotBlank(route.type, "route");
+        applyRouteDisplayFields(route, routeData);
+        return route;
+    }
+
+    @SuppressWarnings("unchecked")
+    private void applyRouteDisplayFields(RouteCardDto route, Map<String, Object> routeData) {
+        if (route == null || routeData == null || routeData.isEmpty()) {
+            return;
+        }
+
+        route.routeMode = firstNotBlank(readString(routeData, "route_mode", "routeMode"), route.routeMode);
+        route.visitStatus = firstNotBlank(readString(routeData, "visit_status", "visitStatus"), route.visitStatus);
+        Boolean isOfficialTemplate = readBoolean(routeData, "is_official_template", "isOfficialTemplate");
+        if (isOfficialTemplate != null) {
+            route.isOfficialTemplate = isOfficialTemplate;
+        }
+        Boolean shouldShowRouteCard = readBoolean(routeData, "should_show_route_card", "shouldShowRouteCard");
+        if (shouldShowRouteCard != null) {
+            route.shouldShowRouteCard = shouldShowRouteCard;
+        }
+
+        Object spots = readObject(routeData, "spots");
+        if (spots instanceof List<?> list) {
+            route.spots = new ArrayList<Object>(list);
+        }
+        Object templateSpotSequence = readObject(routeData, "template_spot_sequence", "templateSpotSequence");
+        if (templateSpotSequence instanceof List<?> list) {
+            route.templateSpotSequence = new ArrayList<Object>(list);
+        }
     }
 
     private List<Map<String, BigDecimal>> toPolylinePointMaps(List<RouteRoadPoint> points) {
@@ -2175,6 +2322,28 @@ public class RouteRecommendService {
         }
     }
 
+    private Boolean readBoolean(Map<String, Object> map, String... keys) {
+        Object value = readObject(map, keys);
+        if (value instanceof Boolean bool) {
+            return bool;
+        }
+        if (value instanceof Number number) {
+            return number.intValue() != 0;
+        }
+        if (value == null || String.valueOf(value).trim().isEmpty()) {
+            return null;
+        }
+
+        String text = String.valueOf(value).trim();
+        if ("true".equalsIgnoreCase(text) || "1".equals(text) || "yes".equalsIgnoreCase(text)) {
+            return true;
+        }
+        if ("false".equalsIgnoreCase(text) || "0".equals(text) || "no".equalsIgnoreCase(text)) {
+            return false;
+        }
+        return null;
+    }
+
     private BigDecimal readDecimal(Map<String, Object> map, String... keys) {
         Object value = readObject(map, keys);
         if (value instanceof BigDecimal decimal) {
@@ -2324,6 +2493,7 @@ public class RouteRecommendService {
 
     public static class ChatRouteContext {
         private boolean routeIntent;
+        private boolean onsiteRoute;
         private Long areaId;
         private RouteAreaInfo areaInfo;
         private List<RouteSpotInfo> candidateSpots = new ArrayList<>();

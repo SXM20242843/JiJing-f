@@ -362,7 +362,7 @@ function goAiExplain(item) {
   uni.setStorageSync('selectedScenicId', scenicId)
   uni.setStorageSync('aiContextType', 'scenic')
   uni.setStorageSync('aiContextName', scenicName)
-  uni.setStorageSync('aiAutoQuestion', `请为我讲解“${scenicName}”这个景点`)
+  uni.setStorageSync('aiAutoQuestion', `请为我讲解「${scenicName}」这个景点，重点介绍历史背景、看点特色和参观注意事项。`)
 
   trackEvent({
     event_type: 'CLICK',

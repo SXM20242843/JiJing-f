@@ -797,7 +797,7 @@ function openParkGuide() {
     currentSpotName: ''
   }))
 
-  uni.setStorageSync('aiAutoQuestion', `请为我讲解“${parkName}”这个景区`)
+  uni.setStorageSync('aiAutoQuestion', `请为我讲解「${parkName}」这个景区，重点介绍景区特色、文化背景、代表景点和参观注意事项。`)
 
   openNativeLive2DGuide({
     entry: 'map-park-guide',
@@ -812,7 +812,7 @@ function openParkGuide() {
     areaName: parkName,
     spotId: '',
     spotName: '',
-    autoQuestion: `请为我讲解“${parkName}”这个景区`,
+    autoQuestion: `请为我讲解「${parkName}」这个景区，重点介绍景区特色、文化背景、代表景点和参观注意事项。`,
     mode: 'normal',
     trigger: 'map',
     latitude: userLocation.value?.latitude || park.value.latitude || '',
@@ -846,7 +846,7 @@ function openScenicGuide(item) {
     currentSpotName: scenicName
   }))
 
-  uni.setStorageSync('aiAutoQuestion', `请为我讲解“${scenicName}”这个景点`)
+  uni.setStorageSync('aiAutoQuestion', `请为我讲解「${scenicName}」这个景点，重点介绍历史背景、看点特色和参观注意事项。`)
 
   openNativeLive2DGuide({
     entry: 'map-scenic-guide',
@@ -861,7 +861,7 @@ function openScenicGuide(item) {
     areaName: parkName,
     spotId: scenicId,
     spotName: scenicName,
-    autoQuestion: `请为我讲解“${scenicName}”这个景点`,
+    autoQuestion: `请为我讲解「${scenicName}」这个景点，重点介绍历史背景、看点特色和参观注意事项。`,
     mode: 'normal',
     trigger: 'map',
     latitude: userLocation.value?.latitude || item.latitude || park.value.latitude || '',

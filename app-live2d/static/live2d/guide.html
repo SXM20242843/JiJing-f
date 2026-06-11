@@ -173,6 +173,10 @@
       return map[question] || `已收到你的问题：“${question}”。当前为演示版本，后续这里将接入真实大模型与景区知识库服务。`;
     }
 
+    function isRouteQuestion(question) {
+      return /路线|规划|怎么走|游览顺序|推荐路线/.test(String(question || ''));
+    }
+
     async function sendQuestion() {
       const text = input.value.trim();
       if (!text || sending) return;
@@ -199,6 +203,15 @@
           enable_context: true,
           client_context: { page: 'guide', location_text: '' }
         };
+        if (isRouteQuestion(text)) {
+          payload.route = true;
+          payload.visit_status = 'UNKNOWN';
+          payload.is_inside_area = false;
+          payload.location_context = {
+            source: 'HTML_GUIDE',
+            status_reason: 'NO_GPS'
+          };
+        }
 
         const res = await fetch(CHAT_API, {
           method: 'POST',

@@ -2,6 +2,7 @@ package com.scenic.ai.modules.chat.service;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.scenic.ai.modules.app.route.dto.RouteCardDto;
 import com.scenic.ai.common.config.AiProperties;
 import com.scenic.ai.modules.app.route.service.RouteRecommendService;
 import com.scenic.ai.modules.app.visit.service.VisitService;
@@ -110,6 +111,27 @@ public class GuideChatService {
                     requestBody.get("request_type"),
                     candidateSpotCount,
                     requestBody.keySet());
+
+            String currentSpotId = stringValue(requestBody.get("current_spot_id"));
+            String currentSpotName = stringValue(requestBody.get("current_spot_name"));
+            String visitStatus = stringValue(requestBody.get("visit_status"));
+            Object isInsideAreaObj = requestBody.get("is_inside_area");
+            String isInsideArea = isInsideAreaObj == null ? "null" : String.valueOf(isInsideAreaObj);
+            String routeStartType = stringValue(requestBody.get("route_start_type"));
+            boolean willEnhanceOnsite = allowRoute
+                    && ("IN_AREA".equalsIgnoreCase(visitStatus)
+                        || ("true".equalsIgnoreCase(isInsideArea) && "current_spot".equalsIgnoreCase(routeStartType)));
+            log.info("[AI Route Forward] mode={}, requestType={}, routeEnabled={}, visitStatus={}, isInsideArea={}, routeStartType={}, currentSpotId={}, currentSpotName={}, candidateSpotsSize={}, willEnhanceOnsiteRoute={}",
+                    request.getMode(),
+                    requestBody.get("request_type"),
+                    requestBody.get("route_enabled"),
+                    visitStatus,
+                    isInsideArea,
+                    routeStartType,
+                    currentSpotId,
+                    currentSpotName,
+                    candidateSpotCount,
+                    willEnhanceOnsite);
 
             ResponseEntity<Map> response = restTemplate.exchange(url, HttpMethod.POST, entity, Map.class);
             if (response.getStatusCode() == HttpStatus.OK && response.getBody() != null) {
@@ -402,6 +424,19 @@ public class GuideChatService {
         putIfHasText(body, "area_name", areaName);
         putIfHasText(body, "current_spot_id", currentSpotId);
         putIfHasText(body, "current_spot_name", currentSpotName);
+        putIfHasText(body, "visit_status", request.getVisitStatus());
+        if (request.getIsInsideArea() != null) {
+            body.put("is_inside_area", request.getIsInsideArea());
+        }
+        if (request.getLatitude() != null) {
+            body.put("latitude", request.getLatitude());
+        }
+        if (request.getLongitude() != null) {
+            body.put("longitude", request.getLongitude());
+        }
+        if (request.getLocationContext() != null) {
+            body.put("location_context", request.getLocationContext());
+        }
         if (request.getRouteIntent() != null) {
             body.put("route_intent", request.getRouteIntent());
         }
@@ -438,6 +473,12 @@ public class GuideChatService {
             clientContext.put("suppressRoute", clientContext.containsKey("suppressRoute")
                     ? clientContext.get("suppressRoute")
                     : request.getSuppressRoute());
+        }
+        if (hasText(request.getVisitStatus()) && !clientContext.containsKey("visit_status")) {
+            clientContext.put("visit_status", request.getVisitStatus());
+        }
+        if (request.getIsInsideArea() != null && !clientContext.containsKey("is_inside_area")) {
+            clientContext.put("is_inside_area", request.getIsInsideArea());
         }
         if (hasText(request.getRequestType()) && !clientContext.containsKey("requestType")) {
             clientContext.put("requestType", request.getRequestType());
@@ -716,6 +757,13 @@ public class GuideChatService {
                 readString(responseBody, "avatar_id", "avatarId"),
                 readString(digitalHumanMap, "avatarId", "avatar_id")
         ));
+        result.setRoute(readRawRouteCard(dataMap, responseBody));
+        Object routeRecommendation = firstNonNull(
+                readObject(dataMap, "route_recommendation", "routeRecommendation"),
+                readObject(responseBody, "route_recommendation", "routeRecommendation")
+        );
+        result.setRouteRecommendation(routeRecommendation);
+        result.setRouteRecommendationSnake(routeRecommendation);
 
         result.setAudio(buildAudioPayload(result));
         result.setMouth(buildMouthPayload(result));
@@ -728,6 +776,17 @@ public class GuideChatService {
 
         logDigitalHumanDebug(audioMap, mouthMap, digitalHumanMap, responseBody, result);
         return result;
+    }
+
+    private RouteCardDto readRawRouteCard(Map<String, Object> dataMap, Map<String, Object> responseBody) {
+        Object routeObj = firstNonNull(
+                readObject(dataMap, "route"),
+                readObject(responseBody, "route")
+        );
+        if (routeObj instanceof Map<?, ?>) {
+            return objectMapper.convertValue(routeObj, RouteCardDto.class);
+        }
+        return null;
     }
 
     @SuppressWarnings("unchecked")

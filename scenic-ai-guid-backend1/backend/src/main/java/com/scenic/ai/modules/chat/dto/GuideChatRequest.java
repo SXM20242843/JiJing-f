@@ -106,6 +106,15 @@ public class GuideChatRequest {
     @JsonAlias({"route_start_type", "routeStartType"})
     private String routeStartType;
 
+    @JsonAlias({"visit_status", "visitStatus"})
+    private String visitStatus;
+
+    @JsonAlias({"is_inside_area", "isInsideArea"})
+    private Boolean isInsideArea;
+
+    @JsonAlias({"location_context", "locationContext"})
+    private Map<String, Object> locationContext;
+
     @JsonAlias({"preference_tags", "preferenceTags"})
     private List<String> preferenceTags;
 
@@ -142,7 +151,10 @@ public class GuideChatRequest {
     // ====================================
 
     // 可选：从请求中获取经纬度（如果需要）
+    @JsonAlias({"lat", "current_latitude", "currentLatitude"})
     private BigDecimal latitude;
+
+    @JsonAlias({"lng", "lon", "current_longitude", "currentLongitude"})
     private BigDecimal longitude;
 
     public String getEffectiveUserId() {

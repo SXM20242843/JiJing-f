@@ -530,7 +530,7 @@
     }
 
     function buildPayload(question) {
-      return {
+      const payload = {
         sessionId: 'visitor-demo-001',
         scenicName: currentScenicName || '',
         needVoice: false,
@@ -544,6 +544,22 @@
           location_text: currentScenicName || ''
         }
       }
+
+      if (isRouteQuestion(question)) {
+        payload.route = true
+        payload.visit_status = 'UNKNOWN'
+        payload.is_inside_area = false
+        payload.location_context = {
+          source: 'HTML_GUIDE',
+          status_reason: 'NO_GPS'
+        }
+      }
+
+      return payload
+    }
+
+    function isRouteQuestion(question) {
+      return /路线|规划|怎么走|游览顺序|推荐路线/.test(`${question || ''}`)
     }
 
     function buildMockReply(question) {

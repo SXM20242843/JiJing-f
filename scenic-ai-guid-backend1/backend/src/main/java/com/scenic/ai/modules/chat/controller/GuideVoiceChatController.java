@@ -87,6 +87,21 @@ public class GuideVoiceChatController {
             @RequestParam(value = "routeStartType", required = false) String routeStartTypeCamel,
             @RequestParam(value = "route_start_type", required = false) String routeStartTypeSnake,
             @RequestParam(value = "mode", required = false) String mode,
+            @RequestParam(value = "visitStatus", required = false) String visitStatusCamel,
+            @RequestParam(value = "visit_status", required = false) String visitStatusSnake,
+            @RequestParam(value = "isInsideArea", required = false) Boolean isInsideAreaCamel,
+            @RequestParam(value = "is_inside_area", required = false) Boolean isInsideAreaSnake,
+            @RequestParam(value = "latitude", required = false) String latitude,
+            @RequestParam(value = "lat", required = false) String lat,
+            @RequestParam(value = "currentLatitude", required = false) String currentLatitudeCamel,
+            @RequestParam(value = "current_latitude", required = false) String currentLatitudeSnake,
+            @RequestParam(value = "longitude", required = false) String longitude,
+            @RequestParam(value = "lng", required = false) String lng,
+            @RequestParam(value = "lon", required = false) String lon,
+            @RequestParam(value = "currentLongitude", required = false) String currentLongitudeCamel,
+            @RequestParam(value = "current_longitude", required = false) String currentLongitudeSnake,
+            @RequestParam(value = "locationContext", required = false) String locationContextCamel,
+            @RequestParam(value = "location_context", required = false) String locationContextSnake,
 
             // ========== 新增三个表单字段 ==========
             @RequestParam(value = "groupSize", required = false) String groupSize,
@@ -127,6 +142,11 @@ public class GuideVoiceChatController {
         String finalAvatarId = firstNotBlank(avatarIdCamel, avatarIdSnake);
         String finalRouteStartType = firstNotBlank(routeStartTypeCamel, routeStartTypeSnake);
         String finalMode = firstNotBlank(mode);
+        String finalVisitStatus = firstNotBlank(visitStatusCamel, visitStatusSnake);
+        Boolean finalIsInsideArea = firstBoolean(isInsideAreaCamel, isInsideAreaSnake);
+        String finalLatitude = firstNotBlank(latitude, lat, currentLatitudeCamel, currentLatitudeSnake);
+        String finalLongitude = firstNotBlank(longitude, lng, lon, currentLongitudeCamel, currentLongitudeSnake);
+        String finalLocationContext = firstNotBlank(locationContextCamel, locationContextSnake);
 
         // 解析三个新字段
         String finalGroupSize = firstNotBlank(groupSize, groupSizeSnake);
@@ -172,7 +192,12 @@ public class GuideVoiceChatController {
                 finalVoiceId,
                 finalAvatarId,
                 finalRouteStartType,
-                finalMode
+                finalMode,
+                finalVisitStatus,
+                finalIsInsideArea,
+                finalLatitude,
+                finalLongitude,
+                finalLocationContext
         );
 
         return ApiResponse.success(response);

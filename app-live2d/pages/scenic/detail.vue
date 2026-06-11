@@ -105,6 +105,7 @@ import { onLoad } from '@dcloudio/uni-app'
 import { API_BASE, NATIVE_LIVE2D_SOURCE } from '../../utils/api'
 import { resolveImageUrl } from '../../utils/image'
 import { openNativeLive2DGuide } from '../../utils/openNativeLive2D.js'
+import { resolveRouteVisitLocationStatus } from '../../common/location-utils.js'
 import TripInfoPopup from '@/components/TripInfoPopup.vue'
 import {
   addFavorite,
@@ -503,7 +504,7 @@ function trackScenicView() {
   })
 }
 
-function setScenicAiContext(autoQuestion, entry, extraOptions = {}) {
+async function setScenicAiContext(autoQuestion, entry, extraOptions = {}) {
   const scenicName = scenic.value.name || '当前景点'
   const scenicId = scenic.value.id || scenic.value.sceneCode || scenic.value.scene_code || ''
   const sceneCode = scenic.value.scene_code || scenic.value.sceneCode || scenicId
@@ -522,6 +523,9 @@ function setScenicAiContext(autoQuestion, entry, extraOptions = {}) {
   const digitalHumanConfig = getScenicDigitalHumanConfig()
   const guideMode = extraOptions.mode || 'spot_explain'
   const trigger = extraOptions.trigger || 'spot-detail-ai-explain'
+  const routeLocationStatus = extraOptions.routeVisitStatus
+    ? await resolveRouteVisitLocationStatus()
+    : {}
 
   uni.removeStorageSync(GUIDE_CONVERSATION_ID_KEY)
 
@@ -578,7 +582,8 @@ function setScenicAiContext(autoQuestion, entry, extraOptions = {}) {
     mode: guideMode,
     trigger,
     allowEndVisit: extraOptions.allowEndVisit === true,
-    startVisitGuide: extraOptions.startVisitGuide === true
+    startVisitGuide: extraOptions.startVisitGuide === true,
+    ...routeLocationStatus
   })
 }
 
@@ -586,7 +591,7 @@ function openAiExplain() {
   const scenicName = scenic.value.name || '当前景点'
 
   setScenicAiContext(
-    `请为我讲解“${scenicName}”这个景点`,
+    `请为我讲解「${scenicName}」这个景点，重点介绍历史背景、看点特色和参观注意事项。`,
     'scenic-detail-explain',
     {
       mode: 'spot_explain',
@@ -625,7 +630,8 @@ function openRecommendRoute() {
       mode: 'route_planning',
       trigger: 'route-planning',
       allowEndVisit: false,
-      startVisitGuide: false
+      startVisitGuide: false,
+      routeVisitStatus: true
     }
   )
 }
