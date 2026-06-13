@@ -12,6 +12,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
         "com.scenic.ai.modules.app.route.mapper",
         "com.scenic.ai.modules.app.payment.mapper",
         "com.scenic.ai.modules.app.location.mapper",
+        "com.scenic.ai.modules.app.offline.mapper",
         "com.scenic.ai.modules.chat.mapper"
 })
 public class ScenicAiApplication {

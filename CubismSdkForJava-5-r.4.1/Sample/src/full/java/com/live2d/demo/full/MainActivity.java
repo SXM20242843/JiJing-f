@@ -13,6 +13,7 @@ import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
@@ -118,6 +119,10 @@ public class MainActivity extends Activity {
     private static final String DEMO_TRIGGER = "route-node-demo";
     private static final String ROUTE_EVENT_SOURCE = "android_live2d";
     private static final long SPEAKING_MOTION_INTERVAL_MS = 6500L;
+    private static final long OFFLINE_PACKAGE_CHECK_INTERVAL_MS = 10L * 60L * 1000L;
+    private static final String OFFLINE_PACKAGE_PREFS = "offline_package_check";
+    private static final String PREF_LAST_OFFLINE_PACKAGE_CHECK_AREA_ID = "lastOfflinePackageCheckAreaId";
+    private static final String PREF_LAST_OFFLINE_PACKAGE_CHECK_AT = "lastOfflinePackageCheckAt";
 
     private static final int REQUEST_RECORD_AUDIO_PERMISSION = 2001;
 
@@ -443,6 +448,7 @@ public class MainActivity extends Activity {
 
         // ==================== NFC / Offline Guide 初始化 ====================
         initNfcOfflineGuide();
+        tryUpdateOfflinePackageIfNeeded();
     }
 
     private void addTopStatusBar(FrameLayout rootLayout) {
@@ -9977,6 +9983,117 @@ public class MainActivity extends Activity {
     }
 
     // ==================== NFC / Offline Guide 方法 ====================
+
+    private void tryUpdateOfflinePackageIfNeeded() {
+        if (!nfcOfflineGuideEnabled) {
+            return;
+        }
+
+        final String apiBaseUrl = firstNotEmpty(
+                behaviorBackendBaseUrl,
+                getBaseUrlFromFullUrl(GUIDE_CHAT_URL)
+        );
+        if (apiBaseUrl.length() == 0) {
+            return;
+        }
+
+        final String offlineAreaId = resolveOfflinePackageAreaIdText();
+        if (offlineAreaId.length() == 0) {
+            return;
+        }
+
+        NetworkLevel networkLevel = networkStateHelper != null
+                ? networkStateHelper.getNetworkLevel()
+                : NetworkLevel.NORMAL;
+        if (networkLevel == NetworkLevel.OFFLINE) {
+            return;
+        }
+
+        if (isOfflinePackageCheckThrottled(offlineAreaId)) {
+            Log.d(TAG, "[OfflinePackage] check latest throttled areaId=" + offlineAreaId);
+            return;
+        }
+        markOfflinePackageCheck(offlineAreaId);
+
+        Log.d(TAG, "[OfflinePackage] check latest areaId=" + offlineAreaId);
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    OfflinePackageClient client = new OfflinePackageClient(
+                            MainActivity.this,
+                            apiBaseUrl,
+                            authToken
+                    );
+                    OfflinePackageInfo latest = client.fetchLatest(offlineAreaId);
+                    if (latest == null || latest.packageUrl == null
+                            || latest.packageUrl.trim().length() == 0) {
+                        return;
+                    }
+
+                    String localVersion = client.getLocalPackageVersion(offlineAreaId);
+                    Log.d(TAG, "[OfflinePackage] server version=" + latest.packageVersion
+                            + ", local version=" + localVersion);
+
+                    boolean downloaded = client.downloadManifest(latest, offlineAreaId);
+                    if (downloaded && offlinePackageManager != null) {
+                        int areaIdInt = parsePositiveInt(offlineAreaId, 0);
+                        if (areaIdInt > 0) {
+                            offlinePackageManager.reloadPackage(areaIdInt);
+                        }
+                    } else if (!downloaded) {
+                        showToast("离线包更新失败，已继续使用本地缓存。");
+                    }
+                } catch (Exception e) {
+                    Log.w(TAG, "[OfflinePackage] update failed: " + e.getMessage(), e);
+                    showToast("离线包更新失败，已继续使用本地缓存。");
+                }
+            }
+        }).start();
+    }
+
+    private boolean isOfflinePackageCheckThrottled(String areaIdText) {
+        try {
+            SharedPreferences prefs = getSharedPreferences(OFFLINE_PACKAGE_PREFS, MODE_PRIVATE);
+            String lastAreaId = prefs.getString(PREF_LAST_OFFLINE_PACKAGE_CHECK_AREA_ID, "");
+            long lastAt = prefs.getLong(PREF_LAST_OFFLINE_PACKAGE_CHECK_AT, 0L);
+            long now = System.currentTimeMillis();
+            return areaIdText.equals(lastAreaId)
+                    && lastAt > 0L
+                    && now - lastAt >= 0L
+                    && now - lastAt < OFFLINE_PACKAGE_CHECK_INTERVAL_MS;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private void markOfflinePackageCheck(String areaIdText) {
+        try {
+            SharedPreferences prefs = getSharedPreferences(OFFLINE_PACKAGE_PREFS, MODE_PRIVATE);
+            prefs.edit()
+                    .putString(PREF_LAST_OFFLINE_PACKAGE_CHECK_AREA_ID, areaIdText)
+                    .putLong(PREF_LAST_OFFLINE_PACKAGE_CHECK_AT, System.currentTimeMillis())
+                    .apply();
+        } catch (Exception ignored) {}
+    }
+
+    private String resolveOfflinePackageAreaIdText() {
+        String value = firstNotEmpty(areaId, guideContext.scenicId, scenicId, parkId, guideContext.parkId, areaCode);
+        int parsed = parsePositiveInt(value, 0);
+        return parsed > 0 ? String.valueOf(parsed) : "";
+    }
+
+    private int parsePositiveInt(String value, int fallback) {
+        if (value == null || value.trim().length() == 0) {
+            return fallback;
+        }
+        try {
+            int parsed = Integer.parseInt(value.trim());
+            return parsed > 0 ? parsed : fallback;
+        } catch (Exception e) {
+            return fallback;
+        }
+    }
 
     /**
      * 初始化 NFC 离线导览能力。

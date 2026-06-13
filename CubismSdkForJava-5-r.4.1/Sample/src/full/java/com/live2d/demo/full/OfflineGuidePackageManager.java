@@ -13,9 +13,12 @@ package com.live2d.demo.full;
 import android.content.Context;
 import android.util.Log;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
@@ -160,23 +163,172 @@ public class OfflineGuidePackageManager {
 
     private OfflineGuidePackage loadPackage(int areaId) {
         String path = String.format(MANIFEST_PATH_TEMPLATE, areaId);
+        File localManifest = new File(context.getFilesDir(), path);
+        OfflineGuidePackage localPackage = loadPackageFromLocalFile(localManifest);
+        if (localPackage != null) {
+            return localPackage;
+        }
+
+        Log.d(TAG, "[OfflinePackage] local manifest missing, try assets path="
+                + localManifest.getAbsolutePath());
+        return loadPackageFromAssets(path);
+    }
+
+    public OfflineGuidePackage reloadPackage(int areaId) {
+        OfflineGuidePackage pkg = loadPackage(areaId);
+        if (pkg != null) {
+            packageCache.put(areaId, pkg);
+            packagesLoaded = true;
+            loadAttempted = true;
+            Log.d(TAG, "[OfflinePackage] reload package success area=" + areaId);
+        }
+        return pkg;
+    }
+
+    private OfflineGuidePackage loadPackageFromLocalFile(File manifestFile) {
+        if (manifestFile == null || !manifestFile.exists() || !manifestFile.isFile()) {
+            return null;
+        }
+
+        Log.d(TAG, "[OfflinePackage] load local manifest: " + manifestFile.getAbsolutePath());
+        try {
+            InputStream is = new FileInputStream(manifestFile);
+            OfflineGuidePackage pkg = readPackageFromStream(is);
+            if (pkg != null) {
+                Log.d(TAG, "[OfflinePackage] local manifest loaded: area=" + pkg.areaId
+                        + ", version=" + pkg.version
+                        + ", markers=" + pkg.nfcMarkers.size());
+            }
+            return pkg;
+        } catch (Exception e) {
+            Log.w(TAG, "[OfflinePackage] load local manifest failed: "
+                    + manifestFile.getAbsolutePath(), e);
+            return null;
+        }
+    }
+
+    private OfflineGuidePackage loadPackageFromAssets(String path) {
         try {
             InputStream is = context.getAssets().open(path);
-            BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
-            StringBuilder sb = new StringBuilder();
-            String line;
-            while ((line = reader.readLine()) != null) {
-                sb.append(line);
+            OfflineGuidePackage pkg = readPackageFromStream(is);
+            if (pkg != null) {
+                Log.d(TAG, "[OfflinePackage] assets manifest loaded: area=" + pkg.areaId
+                        + ", version=" + pkg.version
+                        + ", markers=" + pkg.nfcMarkers.size());
             }
-            reader.close();
-            is.close();
-
-            JSONObject json = new JSONObject(sb.toString());
-            return OfflineGuidePackage.fromJson(json);
+            return pkg;
         } catch (Exception e) {
             Log.w(TAG, "Could not load manifest from assets: " + path, e);
             return null;
         }
+    }
+
+    private OfflineGuidePackage readPackageFromStream(InputStream is) throws Exception {
+        BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
+        StringBuilder sb = new StringBuilder();
+        String line;
+        try {
+            while ((line = reader.readLine()) != null) {
+                sb.append(line);
+            }
+        } finally {
+            try { reader.close(); } catch (Exception ignored) {}
+            try { is.close(); } catch (Exception ignored) {}
+        }
+
+        JSONObject json = new JSONObject(sb.toString());
+        normalizeManifestJson(json);
+        return OfflineGuidePackage.fromJson(json);
+    }
+
+    private void normalizeManifestJson(JSONObject json) {
+        if (json == null) {
+            return;
+        }
+
+        putIfMissing(json, "version", firstJsonText(json, "package_version", "packageVersion", "version"));
+        if (!json.has("nfc_markers") && json.has("nfcMarkers")) {
+            try {
+                json.put("nfc_markers", json.optJSONArray("nfcMarkers"));
+            } catch (Exception ignored) {}
+        }
+
+        JSONArray spots = json.optJSONArray("spots");
+        if (spots != null) {
+            for (int i = 0; i < spots.length(); i++) {
+                JSONObject spot = spots.optJSONObject(i);
+                if (spot == null) continue;
+                putIfMissing(spot, "spot_id", firstJsonText(
+                        spot,
+                        "spot_id",
+                        "spotId",
+                        "id"
+                ));
+                putIfMissing(spot, "name", firstJsonText(
+                        spot,
+                        "name",
+                        "spot_name",
+                        "spotName",
+                        "target_name",
+                        "targetName",
+                        "guide_title",
+                        "guideTitle",
+                        "title"
+                ));
+                putIfMissing(spot, "short_intro", firstJsonText(
+                        spot,
+                        "short_intro",
+                        "shortIntro",
+                        "guide_summary",
+                        "guideSummary",
+                        "summary"
+                ));
+                putIfMissing(spot, "guide_text", firstJsonText(
+                        spot,
+                        "guide_text",
+                        "guideText",
+                        "description",
+                        "intro",
+                        "guide_summary",
+                        "guideSummary",
+                        "summary"
+                ));
+            }
+        }
+
+        JSONArray markers = json.optJSONArray("nfc_markers");
+        if (markers != null) {
+            for (int i = 0; i < markers.length(); i++) {
+                JSONObject marker = markers.optJSONObject(i);
+                if (marker == null) continue;
+                putIfMissing(marker, "marker_code", firstJsonText(marker, "marker_code", "markerCode"));
+                putIfMissing(marker, "target_type", firstJsonText(marker, "target_type", "targetType"));
+                putIfMissing(marker, "target_id", firstJsonText(marker, "target_id", "targetId", "spot_id", "spotId", "id"));
+                putIfMissing(marker, "target_name", firstJsonText(marker, "target_name", "targetName", "spot_name", "spotName", "name"));
+            }
+        }
+    }
+
+    private void putIfMissing(JSONObject json, String key, String value) {
+        if (json == null || key == null || value == null || value.length() == 0 || json.has(key)) {
+            return;
+        }
+        try {
+            json.put(key, value);
+        } catch (Exception ignored) {}
+    }
+
+    private String firstJsonText(JSONObject json, String... keys) {
+        if (json == null || keys == null) {
+            return "";
+        }
+        for (String key : keys) {
+            String value = json.optString(key, "");
+            if (value != null && value.trim().length() > 0) {
+                return value.trim();
+            }
+        }
+        return "";
     }
 
     /**
