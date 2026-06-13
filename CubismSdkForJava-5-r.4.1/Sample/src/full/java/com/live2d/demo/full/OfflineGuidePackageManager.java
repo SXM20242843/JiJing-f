@@ -69,7 +69,7 @@ public class OfflineGuidePackageManager {
         // Find the spot by target_id
         if ("SPOT".equalsIgnoreCase(marker.targetType)) {
             for (OfflineSpot spot : pkg.spots) {
-                if (spot.spotId == marker.targetId) {
+                if (isOfflineSpotMatch(spot, marker)) {
                     Log.d(TAG, "[NFC] Offline marker matched: " + markerCode + " -> " + spot.name
                             + " (spotId=" + spot.spotId + ")");
                     return spot;
@@ -79,6 +79,21 @@ public class OfflineGuidePackageManager {
 
         Log.d(TAG, "Spot not found for targetId=" + marker.targetId + " in area " + areaId);
         return null;
+    }
+
+    private boolean isOfflineSpotMatch(OfflineSpot spot, OfflineNfcMarker marker) {
+        if (spot == null || marker == null) {
+            return false;
+        }
+        if (marker.targetId > 0 && spot.spotId == marker.targetId) {
+            return true;
+        }
+        if (marker.sceneCode != null && marker.sceneCode.length() > 0
+                && marker.sceneCode.equals(spot.sceneCode)) {
+            return true;
+        }
+        return marker.targetName != null && marker.targetName.length() > 0
+                && marker.targetName.equals(spot.name);
     }
 
     /**
@@ -193,7 +208,7 @@ public class OfflineGuidePackageManager {
         Log.d(TAG, "[OfflinePackage] load local manifest: " + manifestFile.getAbsolutePath());
         try {
             InputStream is = new FileInputStream(manifestFile);
-            OfflineGuidePackage pkg = readPackageFromStream(is);
+            OfflineGuidePackage pkg = readPackageFromStream(is, getAreaIdFromManifestPath(manifestFile));
             if (pkg != null) {
                 Log.d(TAG, "[OfflinePackage] local manifest loaded: area=" + pkg.areaId
                         + ", version=" + pkg.version
@@ -210,7 +225,7 @@ public class OfflineGuidePackageManager {
     private OfflineGuidePackage loadPackageFromAssets(String path) {
         try {
             InputStream is = context.getAssets().open(path);
-            OfflineGuidePackage pkg = readPackageFromStream(is);
+            OfflineGuidePackage pkg = readPackageFromStream(is, getAreaIdFromAssetPath(path));
             if (pkg != null) {
                 Log.d(TAG, "[OfflinePackage] assets manifest loaded: area=" + pkg.areaId
                         + ", version=" + pkg.version
@@ -223,7 +238,7 @@ public class OfflineGuidePackageManager {
         }
     }
 
-    private OfflineGuidePackage readPackageFromStream(InputStream is) throws Exception {
+    private OfflineGuidePackage readPackageFromStream(InputStream is, int fallbackAreaId) throws Exception {
         BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
         StringBuilder sb = new StringBuilder();
         String line;
@@ -237,15 +252,22 @@ public class OfflineGuidePackageManager {
         }
 
         JSONObject json = new JSONObject(sb.toString());
-        normalizeManifestJson(json);
+        normalizeManifestJson(json, fallbackAreaId);
         return OfflineGuidePackage.fromJson(json);
     }
 
-    private void normalizeManifestJson(JSONObject json) {
+    private void normalizeManifestJson(JSONObject json, int fallbackAreaId) {
         if (json == null) {
             return;
         }
 
+        String areaIdText = firstJsonText(json, "area_id", "areaId", "scenic_id", "scenicId", "park_id", "parkId");
+        if (parsePositiveInt(areaIdText, 0) <= 0 && fallbackAreaId > 0) {
+            areaIdText = String.valueOf(fallbackAreaId);
+        }
+        if (parsePositiveInt(areaIdText, 0) > 0) {
+            putOrReplace(json, "area_id", areaIdText);
+        }
         putIfMissing(json, "version", firstJsonText(json, "package_version", "packageVersion", "version"));
         if (!json.has("nfc_markers") && json.has("nfcMarkers")) {
             try {
@@ -262,6 +284,8 @@ public class OfflineGuidePackageManager {
                         spot,
                         "spot_id",
                         "spotId",
+                        "target_id",
+                        "targetId",
                         "id"
                 ));
                 putIfMissing(spot, "name", firstJsonText(
@@ -302,6 +326,7 @@ public class OfflineGuidePackageManager {
                 JSONObject marker = markers.optJSONObject(i);
                 if (marker == null) continue;
                 putIfMissing(marker, "marker_code", firstJsonText(marker, "marker_code", "markerCode"));
+                putIfMissing(marker, "marker_code", firstJsonText(marker, "code", "nfc_code", "nfcCode"));
                 putIfMissing(marker, "target_type", firstJsonText(marker, "target_type", "targetType"));
                 putIfMissing(marker, "target_id", firstJsonText(marker, "target_id", "targetId", "spot_id", "spotId", "id"));
                 putIfMissing(marker, "target_name", firstJsonText(marker, "target_name", "targetName", "spot_name", "spotName", "name"));
@@ -310,12 +335,73 @@ public class OfflineGuidePackageManager {
     }
 
     private void putIfMissing(JSONObject json, String key, String value) {
-        if (json == null || key == null || value == null || value.length() == 0 || json.has(key)) {
+        if (json == null || key == null || value == null || value.length() == 0) {
+            return;
+        }
+        if (json.has(key) && json.optString(key, "").trim().length() > 0) {
             return;
         }
         try {
             json.put(key, value);
         } catch (Exception ignored) {}
+    }
+
+    private void putOrReplace(JSONObject json, String key, String value) {
+        if (json == null || key == null || value == null || value.length() == 0) {
+            return;
+        }
+        try {
+            json.put(key, value);
+        } catch (Exception ignored) {}
+    }
+
+    private int getAreaIdFromManifestPath(File manifestFile) {
+        if (manifestFile == null) {
+            return 0;
+        }
+        return parseAreaIdFromText(manifestFile.getAbsolutePath());
+    }
+
+    private int getAreaIdFromAssetPath(String path) {
+        return parseAreaIdFromText(path);
+    }
+
+    private int parseAreaIdFromText(String text) {
+        if (text == null) {
+            return 0;
+        }
+        String marker = "area_";
+        int index = text.indexOf(marker);
+        while (index >= 0) {
+            int start = index + marker.length();
+            StringBuilder builder = new StringBuilder();
+            for (int i = start; i < text.length(); i++) {
+                char c = text.charAt(i);
+                if (c >= '0' && c <= '9') {
+                    builder.append(c);
+                } else {
+                    break;
+                }
+            }
+            int parsed = parsePositiveInt(builder.toString(), 0);
+            if (parsed > 0) {
+                return parsed;
+            }
+            index = text.indexOf(marker, start);
+        }
+        return 0;
+    }
+
+    private int parsePositiveInt(String value, int fallback) {
+        if (value == null || value.trim().length() == 0) {
+            return fallback;
+        }
+        try {
+            int parsed = Integer.parseInt(value.trim());
+            return parsed > 0 ? parsed : fallback;
+        } catch (Exception e) {
+            return fallback;
+        }
     }
 
     private String firstJsonText(JSONObject json, String... keys) {

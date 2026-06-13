@@ -10392,6 +10392,7 @@ public class MainActivity extends Activity {
                 handleNfcWeak(markerCode, offlineSpot, currentUserId, areaIdInt);
             } else {
                 handleNfcOffline(markerCode, offlineSpot, currentUserId, areaIdInt);
+                return;
             }
         } else {
             // 本地没有找到 — 根据网络状态处理
@@ -10418,30 +10419,20 @@ public class MainActivity extends Activity {
         showToast("已识别当前位置：" + spot.name + "。我将为你展示这里的讲解内容。");
 
         // 先调用后端 checkin
-        nfcCheckinAndGuide(markerCode, userId, areaId);
+        nfcCheckinAndGuide(markerCode, userId, areaId, spot, "CHECKIN_FAILED", "NORMAL");
 
         // 同时使用本地数据兜底
         updateNfcSpotContext(spot);
     }
 
     /**
-     * 网络 WEAK：展示离线 guide_text → 异步尝试 AI
+     * 网络 WEAK：先尝试后端 checkin，失败或超时再使用本地文字兜底。
      */
     private void handleNfcWeak(String markerCode, OfflineSpot spot,
                                 String userId, int areaId) {
-        showToast("当前网络较弱，已优先展示本地讲解内容，语音和 AI 深度讲解将在网络恢复后继续加载。");
-
-        // 展示离线讲解内容
-        displayOfflineGuideText(spot);
-
-        // 写入本地行为队列
-        queueNfcCheckinEvent(userId, spot, areaId, markerCode);
-
-        // 更新景点上下文
+        showToast("当前网络较弱，正在尝试识别点位信息...");
         updateNfcSpotContext(spot);
-
-        // 异步尝试 AI 讲解（非阻塞）
-        nfcCheckinAndGuideAsync(markerCode, userId, areaId);
+        nfcCheckinAndGuide(markerCode, userId, areaId, spot, "CHECKIN_FAILED", "WEAK");
     }
 
     /**
@@ -10449,22 +10440,24 @@ public class MainActivity extends Activity {
      */
     private void handleNfcOffline(String markerCode, OfflineSpot spot,
                                    String userId, int areaId) {
-        showToast("当前处于离线导览模式，你仍可以查看地图、景点介绍，并通过 NFC 获取对应讲解。");
-
-        // 展示离线讲解内容
-        displayOfflineGuideText(spot);
-
-        // 写入本地行为队列
-        queueNfcCheckinEvent(userId, spot, areaId, markerCode);
-
-        // 更新景点上下文
-        updateNfcSpotContext(spot);
+        handleOfflineNfcGuide(markerCode, spot, "OFFLINE");
     }
 
     /**
      * 调用后端 NFC checkin 接口，成功后触发 AI 讲解。
      */
     private void nfcCheckinAndGuide(final String markerCode, final String userId, final int areaId) {
+        nfcCheckinAndGuide(markerCode, userId, areaId, null, "", "NORMAL");
+    }
+
+    private void nfcCheckinAndGuide(
+            final String markerCode,
+            final String userId,
+            final int areaId,
+            final OfflineSpot fallbackSpot,
+            final String fallbackReason,
+            final String networkStatus
+    ) {
         new Thread(new Runnable() {
             @Override
             public void run() {
@@ -10481,7 +10474,7 @@ public class MainActivity extends Activity {
                     req.areaId = (long) areaId;
                     req.markerCode = markerCode;
                     req.clientTime = getCurrentIsoTimeForNfc();
-                    req.networkStatus = "NORMAL";
+                    req.networkStatus = firstNotEmpty(networkStatus, "NORMAL");
 
                     final NfcCheckinResponseData data = client.checkin(req);
                     if (data != null) {
@@ -10522,13 +10515,29 @@ public class MainActivity extends Activity {
                         mainHandler.post(new Runnable() {
                             @Override
                             public void run() {
-                                Log.w(TAG, "[NFC] Backend checkin failed, no local data available");
-                                showToast("已读取到 NFC 标签，但暂时无法获取点位信息，请稍后重试。");
+                                if (fallbackSpot != null) {
+                                    Log.w(TAG, "[NFC] Backend checkin failed, using offline fallback: "
+                                            + markerCode);
+                                    handleOfflineNfcGuide(markerCode, fallbackSpot,
+                                            firstNotEmpty(fallbackReason, "CHECKIN_FAILED"));
+                                } else {
+                                    Log.w(TAG, "[NFC] Backend checkin failed, no local data available");
+                                    showToast("已读取到 NFC 标签，但暂时无法获取点位信息，请稍后重试。");
+                                }
                             }
                         });
                     }
                 } catch (Exception e) {
                     Log.w(TAG, "[NFC] nfcCheckinAndGuide failed", e);
+                    if (fallbackSpot != null) {
+                        mainHandler.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                handleOfflineNfcGuide(markerCode, fallbackSpot,
+                                        firstNotEmpty(fallbackReason, "CHECKIN_FAILED"));
+                            }
+                        });
+                    }
                 }
             }
         }).start();
@@ -10706,6 +10715,81 @@ public class MainActivity extends Activity {
         }
         String current = String.valueOf(lastQuestionText.getText()).trim();
         return current.equals("游客提问：" + safeString(question).trim());
+    }
+
+    private void handleOfflineNfcGuide(
+            final String markerCode,
+            final OfflineSpot offlineSpot,
+            final String reason
+    ) {
+        if (offlineSpot == null) {
+            return;
+        }
+        if (requesting) {
+            Log.d(TAG, "[NFC][OfflineFallback] skip because guide/chat requesting markerCode=" + markerCode);
+            return;
+        }
+
+        Log.d(TAG, "[NFC][OfflineFallback] start markerCode=" + markerCode
+                + ", reason=" + firstNotEmpty(reason, "OFFLINE"));
+        Log.d(TAG, "[NFC][OfflineFallback] spot=" + offlineSpot.name
+                + ", spotId=" + offlineSpot.spotId
+                + ", sceneCode=" + offlineSpot.sceneCode);
+
+        mainHandler.post(new Runnable() {
+            @Override
+            public void run() {
+                if (requesting) {
+                    Log.d(TAG, "[NFC][OfflineFallback] skip on UI because guide/chat requesting markerCode="
+                            + markerCode);
+                    return;
+                }
+
+                String spotLabel = firstNotEmpty(offlineSpot.name, offlineSpot.sceneCode, markerCode, "当前位置");
+                nfcCurrentMarkerCode = firstNotEmpty(markerCode, nfcCurrentMarkerCode);
+                updateNfcSpotContext(offlineSpot);
+                spotId = offlineSpot.spotId > 0 ? String.valueOf(offlineSpot.spotId) : spotId;
+                spotName = spotLabel;
+                scenicId = firstNotEmpty(offlineSpot.sceneCode, scenicId);
+                scenicName = spotLabel;
+                rememberOfflineNfcFallbackGuide(offlineSpot);
+
+                showToast("已通过离线包识别当前位置：" + spotLabel);
+                appendSystemMessage("已通过离线导览包识别当前位置：" + spotLabel);
+
+                String guideText = buildOfflineGuideText(offlineSpot, spotLabel);
+                Log.d(TAG, "[NFC][OfflineFallback] guide text ready length=" + guideText.length());
+                appendAiMessage("【离线导览】" + spotLabel + "讲解\n\n" + guideText);
+
+                if (guideStateText != null) {
+                    guideStateText.setText("离线导览：" + spotLabel);
+                }
+                if (offlineSpot.localAudio != null && offlineSpot.localAudio.length() > 0) {
+                    Log.d(TAG, "[NFC][OfflineFallback] localAudio exists, TODO play later: "
+                            + offlineSpot.localAudio);
+                }
+                Log.d(TAG, "[NFC][OfflineFallback] complete markerCode=" + markerCode);
+            }
+        });
+    }
+
+    private String buildOfflineGuideText(OfflineSpot spot, String spotLabel) {
+        if (spot == null) {
+            return "你已到达" + firstNotEmpty(spotLabel, "当前位置")
+                    + "。当前处于离线导览模式，已根据本地离线包为你识别当前位置。";
+        }
+
+        String guideText = firstNotEmpty(
+                spot.guideText,
+                spot.shortIntro,
+                spot.name
+        );
+        if (guideText.length() > 0 && !guideText.equals(spot.name)) {
+            return guideText;
+        }
+
+        return "你已到达" + firstNotEmpty(spotLabel, spot.name, "当前位置")
+                + "。当前处于离线导览模式，已根据本地离线包为你识别当前位置。";
     }
 
     /**
