@@ -610,6 +610,12 @@ export async function openNativeLive2DGuide(options = {}) {
     intent.putExtra('location_context', safeString(locationContextText))
     intent.putExtra('locationContext', safeString(locationContextText))
 
+    // NFC / 离线导览开关
+    const nfcOfflineGuideEnabled = getOption(options, 'nfcOfflineGuideEnabled',
+      getOption(options, 'nfc_offline_guide_enabled', true))
+    intent.putExtra('nfcOfflineGuideEnabled', nfcOfflineGuideEnabled ? 'true' : 'false')
+    intent.putExtra('nfc_offline_guide_enabled', nfcOfflineGuideEnabled ? 'true' : 'false')
+
     const extras = {
       entry: safeString(entry),
 
@@ -710,6 +716,8 @@ export async function openNativeLive2DGuide(options = {}) {
       longitude: safeString(longitude),
       location_context: safeString(locationContextText),
       locationContext: safeString(locationContextText),
+      nfcOfflineGuideEnabled: nfcOfflineGuideEnabled ? 'true' : 'false',
+      nfc_offline_guide_enabled: nfcOfflineGuideEnabled ? 'true' : 'false',
 
       avatarId: safeString(avatarId),
       avatar_id: safeString(avatarId),

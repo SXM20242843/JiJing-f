@@ -24,7 +24,7 @@ public interface BehaviorEventMapper {
     Long selectSpotIdBySceneCode(@Param("sceneCode") String sceneCode);
 
     @Insert("""
-        INSERT INTO tourist_behavior_event (
+        INSERT IGNORE INTO tourist_behavior_event (
           event_id,
           user_id,
           session_id,

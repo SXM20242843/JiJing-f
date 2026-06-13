@@ -115,6 +115,9 @@ public class GuideChatRequest {
     @JsonAlias({"location_context", "locationContext"})
     private Map<String, Object> locationContext;
 
+    @JsonAlias({"network_context", "networkContext"})
+    private Map<String, Object> networkContext;
+
     @JsonAlias({"preference_tags", "preferenceTags"})
     private List<String> preferenceTags;
 

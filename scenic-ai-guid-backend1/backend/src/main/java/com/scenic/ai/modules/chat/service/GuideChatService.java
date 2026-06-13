@@ -437,6 +437,9 @@ public class GuideChatService {
         if (request.getLocationContext() != null) {
             body.put("location_context", request.getLocationContext());
         }
+        if (request.getNetworkContext() != null) {
+            body.put("network_context", request.getNetworkContext());
+        }
         if (request.getRouteIntent() != null) {
             body.put("route_intent", request.getRouteIntent());
         }

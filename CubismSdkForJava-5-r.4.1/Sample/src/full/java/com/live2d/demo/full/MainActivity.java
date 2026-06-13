@@ -9,8 +9,10 @@ package com.live2d.demo.full;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
@@ -22,6 +24,9 @@ import android.media.AudioManager;
 import android.media.MediaPlayer;
 import android.media.MediaRecorder;
 import android.net.Uri;
+import android.nfc.NfcAdapter;
+import android.nfc.Tag;
+import android.nfc.NdefMessage;
 import android.opengl.GLSurfaceView;
 import android.os.Build;
 import android.os.Bundle;
@@ -100,10 +105,10 @@ public class MainActivity extends Activity {
     private static final String GUIDE_SOURCE = "native-live2d-guide";
 
     // 改成你当前小后端电脑的真实 IPv4 地址
-    private static final String GUIDE_CHAT_URL = "http://10.120.215.131:8080/api/guide/chat";
-    private static final String GUIDE_VOICE_CHAT_URL = "http://10.120.215.131:8080/api/guide/voice/chat";
+    private static final String GUIDE_CHAT_URL = "http://10.75.131.131:8080/api/guide/chat";
+    private static final String GUIDE_VOICE_CHAT_URL = "http://10.75.131.131:8080/api/guide/voice/chat";
     // 旧路线推荐接口保留常量但不再主动调用；路线问题统一走 Chat 接口。
-    private static final String GUIDE_ROUTE_RECOMMEND_URL = "http://10.120.215.131:8080/api/guide/route/recommend";
+    private static final String GUIDE_ROUTE_RECOMMEND_URL = "http://10.75.131.131:8080/api/guide/route/recommend";
     private static final String DEFAULT_BEHAVIOR_EVENT_PATH = "/api/app/behavior/event";
     private static final String DEFAULT_SPOT_ENTER_PATH = "/api/visit/spot/enter";
     private static final String DEFAULT_SPOT_LEAVE_PATH = "/api/visit/spot/leave";
@@ -326,10 +331,42 @@ public class MainActivity extends Activity {
     private FrameLayout endVisitDialogOverlay;
     private final GuideContext guideContext = new GuideContext();
 
+    // ==================== NFC / Offline Guide ====================
+    private boolean nfcOfflineGuideEnabled = true;
+    private boolean nfcInitialized = false;
+    private NfcAdapter nfcAdapter;
+    private PendingIntent nfcPendingIntent;
+    private IntentFilter[] nfcIntentFilters;
+    private String[][] nfcTechLists;
+    private boolean nfcReaderModeActive = false;
+
+    private OfflineGuidePackageManager offlinePackageManager;
+    private OfflineBehaviorQueue offlineBehaviorQueue;
+    private NetworkStateHelper networkStateHelper;
+
+    // NFC 识别后的当前景点上下文
+    private String nfcCurrentSpotId = "";
+    private String nfcCurrentSpotName = "";
+    private String nfcSceneCode = "";
+    private String nfcCurrentMarkerCode = "";
+    private String nfcFallbackGuideTitle = "";
+    private String nfcFallbackGuideSummary = "";
+    private boolean nfcLocationActive = false;
+
+    // NFC ReaderMode 去重
+    private String lastNfcMarkerCode = "";
+    private long lastNfcHandledAt = 0L;
+    private static final long NFC_DEDUP_WINDOW_MS = 1500L;
+    private String lastNfcGuideMarkerCode = "";
+    private long lastNfcGuideTriggeredAt = 0L;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         mainHandler = new Handler(Looper.getMainLooper());
+
+        Log.d(TAG, "[NFC] MainActivity loaded, package=" + getPackageName()
+                + ", nfcOfflineGuideEnabled=" + nfcOfflineGuideEnabled);
 
         handleGuideIntent(getIntent());
         resetSession();
@@ -403,6 +440,9 @@ public class MainActivity extends Activity {
         }
 
         hideSystemBars();
+
+        // ==================== NFC / Offline Guide 初始化 ====================
+        initNfcOfflineGuide();
     }
 
     private void addTopStatusBar(FrameLayout rootLayout) {
@@ -1175,6 +1215,7 @@ public class MainActivity extends Activity {
 
                 try {
                     URL url = new URL(getGuideTextRequestUrl(question));
+                    String requestUrl = url.toString();
                     connection = (HttpURLConnection) url.openConnection();
                     connection.setRequestMethod("POST");
                     connection.setConnectTimeout(8000);
@@ -1188,6 +1229,8 @@ public class MainActivity extends Activity {
                     JSONObject requestJson = buildRequestJson(question, suppressRoute, routeRequestSource);
 
                     logRouteContext(requestJson, question, allowRouteResponse);
+                    Log.d(TAG, "[GuideChat] request url=" + requestUrl);
+                    Log.d(TAG, "[GuideChat] request body=" + sanitizeGuideChatRequestBody(requestJson));
 
                     OutputStream outputStream = connection.getOutputStream();
                     BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(outputStream, StandardCharsets.UTF_8));
@@ -1199,9 +1242,12 @@ public class MainActivity extends Activity {
                     int responseCode = connection.getResponseCode();
                     InputStream inputStream = responseCode >= 200 && responseCode < 300 ? connection.getInputStream() : connection.getErrorStream();
                     String responseText = readStream(inputStream);
+                    Log.d(TAG, "[GuideChat] httpStatus=" + responseCode);
+                    Log.d(TAG, "[GuideChat] responseBody=" + responseText);
 
-                    if (responseCode >= 200 && responseCode < 300) {
-                        final GuideResponse guideResponse = parseGuideResponse(responseText);
+                    final GuideResponse guideResponse = parseGuideResponse(responseText, responseCode);
+
+                    if (guideResponse.success) {
                         runOnUiThread(new Runnable() {
                             @Override
                             public void run() {
@@ -1231,8 +1277,15 @@ public class MainActivity extends Activity {
                             }
                         });
                     } else {
-                        final String errorText = formatBackendErrorMessage(responseText, "请求失败，请稍后重试");
-                        Log.e(TAG, "文本问答 HTTP 失败 code=" + responseCode + ", response=" + responseText);
+                        final boolean useNfcFallback = shouldUseNfcGuideFallback(question);
+                        final String errorText = useNfcFallback
+                                ? nfcFallbackGuideSummary.trim()
+                                : firstNotEmpty(guideResponse.answer, formatBackendErrorMessage(responseText, "请求失败，请稍后重试"));
+                        Log.e(TAG, "[GuideChat] request failed" + (useNfcFallback ? " with fallback" : "")
+                                + ": httpStatus=" + responseCode
+                                + ", businessCode=" + guideResponse.businessCode
+                                + ", msg=" + safeString(guideResponse.businessMsg)
+                                + ", response=" + responseText);
                         runOnUiThread(new Runnable() {
                             @Override
                             public void run() {
@@ -1242,15 +1295,21 @@ public class MainActivity extends Activity {
                                 requesting = false;
                                 voiceFlowActive = false;
                                 updateSimulatedSpotButton();
-                                guideStateText.setText("请求失败");
+                                guideStateText.setText(useNfcFallback ? "基础讲解" : "请求失败");
                                 voiceMainButton.setText("🎙 长按说话");
                                 showGuideAnswer(errorText);
+                                if (useNfcFallback) {
+                                    showToast("网络讲解暂时失败，已先展示 NFC 点位基础讲解。");
+                                }
                                 returnDigitalHumanToIdle();
                             }
                         });
                     }
 
                 } catch (final Exception e) {
+                    final boolean useNfcFallback = shouldUseNfcGuideFallback(question);
+                    Log.e(TAG, "[GuideChat] request failed" + (useNfcFallback ? " with fallback" : "")
+                            + ": " + e.getMessage(), e);
                     runOnUiThread(new Runnable() {
                         @Override
                         public void run() {
@@ -1260,13 +1319,17 @@ public class MainActivity extends Activity {
                             requesting = false;
                             voiceFlowActive = false;
                             updateSimulatedSpotButton();
-                            guideStateText.setText("连接异常");
+                            guideStateText.setText(useNfcFallback ? "基础讲解" : "连接异常");
                             voiceMainButton.setText("🎙 长按说话");
-                            showGuideAnswer("暂时无法连接后端服务。\n\n请检查：\n1. 小后端是否正在运行\n2. 手机和电脑是否在同一个局域网\n3. GUIDE_CHAT_URL 是否是当前电脑 IPv4 地址\n4. AndroidManifest 是否允许 HTTP 网络请求");
+                            if (useNfcFallback) {
+                                showGuideAnswer(nfcFallbackGuideSummary.trim());
+                                showToast("网络讲解暂时失败，已先展示 NFC 点位基础讲解。");
+                            } else {
+                                showGuideAnswer("暂时无法连接后端服务。\n\n请检查：\n1. 小后端是否正在运行\n2. 手机和电脑是否在同一个局域网\n3. GUIDE_CHAT_URL 是否是当前电脑 IPv4 地址\n4. AndroidManifest 是否允许 HTTP 网络请求");
+                            }
                             returnDigitalHumanToIdle();
                         }
                     });
-                    Log.e(TAG, "文本问答失败", e);
                 } finally {
                     if (connection != null) {
                         connection.disconnect();
@@ -1568,6 +1631,86 @@ public class MainActivity extends Activity {
         if (!routeIntent) {
             requestJson.put("latitude", safeString(latitude));
             requestJson.put("longitude", safeString(longitude));
+        }
+
+        // ==================== NFC 位置上下文 & 网络上下文 ====================
+        if (nfcLocationActive && !routeIntent) {
+            // 如果问题为"给我讲讲这里"且 NFC 已识别景点，携带 NFC location_context
+            String nfcSpotId = nfcCurrentSpotId;
+            String nfcSpotName = nfcCurrentSpotName;
+            String nfcScene = nfcSceneCode;
+            long nfcAreaId = 1L;
+            String nfcAreaCode = "AREA_0001";
+            String nfcAreaName = firstNotEmpty(areaName, "灵山胜境");
+
+            requestJson.put("areaId", nfcAreaId);
+            requestJson.put("area_id", nfcAreaId);
+            requestJson.put("areaCode", nfcAreaCode);
+            requestJson.put("area_code", nfcAreaCode);
+            requestJson.put("areaName", safeString(nfcAreaName));
+            requestJson.put("area_name", safeString(nfcAreaName));
+
+            if (!nfcSpotId.isEmpty() || !nfcScene.isEmpty()) {
+                JSONObject locCtx = new JSONObject();
+                locCtx.put("source", "NFC");
+                locCtx.put("confidence", 0.98);
+                locCtx.put("confidence_level", "HIGH");
+                locCtx.put("area_id", nfcAreaId);
+                locCtx.put("areaId", nfcAreaId);
+                locCtx.put("area_name", safeString(nfcAreaName));
+                locCtx.put("areaName", safeString(nfcAreaName));
+                putLongOrString(locCtx, "current_spot_id", nfcSpotId);
+                putLongOrString(locCtx, "currentSpotId", nfcSpotId);
+                locCtx.put("current_spot_name", safeString(nfcSpotName));
+                locCtx.put("currentSpotName", safeString(nfcSpotName));
+                locCtx.put("scene_code", safeString(nfcScene));
+                locCtx.put("sceneCode", safeString(nfcScene));
+                requestJson.put("location_context", locCtx);
+                requestJson.put("locationContext", locCtx);
+
+                // 更新 current_spot 为 NFC 识别的景点
+                requestJson.put("currentSpotId", safeString(nfcSpotId));
+                requestJson.put("current_spot_id", safeString(nfcSpotId));
+                requestJson.put("currentSpotName", safeString(nfcSpotName));
+                requestJson.put("current_spot_name", safeString(nfcSpotName));
+                requestJson.put("sceneCode", safeString(nfcScene));
+                requestJson.put("scene_code", safeString(nfcScene));
+
+                Log.d(TAG, "[NFC] location_context injected: spot=" + nfcSpotName + ", scene=" + nfcScene);
+            }
+
+            // 网络上下文
+            NetworkLevel level = networkStateHelper != null
+                    ? networkStateHelper.getNetworkLevel()
+                    : NetworkLevel.NORMAL;
+            JSONObject netCtx = new JSONObject();
+            netCtx.put("network_level", level.name());
+            netCtx.put("networkLevel", level.name());
+            if (level == NetworkLevel.WEAK) {
+                netCtx.put("prefer_text_first", true);
+                netCtx.put("preferTextFirst", true);
+                netCtx.put("tts_async", true);
+                netCtx.put("ttsAsync", true);
+            } else {
+                netCtx.put("prefer_text_first", false);
+                netCtx.put("preferTextFirst", false);
+                netCtx.put("tts_async", false);
+                netCtx.put("ttsAsync", false);
+            }
+            netCtx.put("allow_offline_fallback", true);
+            netCtx.put("allowOfflineFallback", true);
+            requestJson.put("network_context", netCtx);
+            requestJson.put("networkContext", netCtx);
+            Log.d(TAG, "[NFC] network_context injected: level=" + level.name());
+            Object locationContextSnake = requestJson.opt("location_context");
+            Object locationContextCamel = requestJson.opt("locationContext");
+            Object networkContextSnake = requestJson.opt("network_context");
+            Object networkContextCamel = requestJson.opt("networkContext");
+            Log.d(TAG, "[GuideChat] context field types: location_context="
+                    + (locationContextSnake == null ? "null" : locationContextSnake.getClass().getSimpleName())
+                    + ", locationContext=" + (locationContextCamel == null ? "null" : locationContextCamel.getClass().getSimpleName())
+                    + ", network_context=" + (networkContextSnake == null ? "null" : networkContextSnake.getClass().getSimpleName())
+                    + ", networkContext=" + (networkContextCamel == null ? "null" : networkContextCamel.getClass().getSimpleName()));
         }
 
         Log.d(TAG, "文本问答真实身份参数 realUserId=" + realUserId
@@ -2258,29 +2401,51 @@ public class MainActivity extends Activity {
     }
 
     private GuideResponse parseGuideResponse(String responseText) {
+        return parseGuideResponse(responseText, 200, false);
+    }
+
+    private GuideResponse parseGuideResponse(String responseText, int httpStatus) {
+        return parseGuideResponse(responseText, httpStatus, true);
+    }
+
+    private GuideResponse parseGuideResponse(String responseText, int httpStatus, boolean requireBusinessCode) {
         GuideResponse result = new GuideResponse();
+        result.success = false;
+        result.httpStatus = httpStatus;
 
         try {
             JSONObject root = new JSONObject(responseText);
             JSONObject data = null;
+            String dataText = "";
             if (root.has("data") && !root.isNull("data")) {
                 Object dataObj = root.get("data");
                 if (dataObj instanceof JSONObject) {
                     data = (JSONObject) dataObj;
+                } else if (!(dataObj instanceof JSONArray)) {
+                    dataText = String.valueOf(dataObj).trim();
                 }
             }
 
             JSONObject source = data != null ? data : root;
             JSONObject audioJson = getJsonObject(source, "audio");
+            JSONObject rootAudioJson = getJsonObject(root, "audio");
             JSONObject mouthJson = getJsonObject(source, "mouth");
+            JSONObject rootMouthJson = getJsonObject(root, "mouth");
             JSONObject digitalHumanJson = getJsonObject(source, "digitalHuman", "digital_human");
 
-            int businessCode = root.optInt("code", 200);
+            int businessCode = root.optInt("code", -1);
             String businessMsg = firstNotEmpty(
                     root.optString("msg", ""),
                     root.optString("message", "")
             );
-            if (!(businessCode == 0 || businessCode == 200) && data == null) {
+            result.businessCode = businessCode;
+            result.businessMsg = businessMsg;
+            Log.d(TAG, "[GuideChat] businessCode=" + businessCode + " msg=" + businessMsg);
+
+            boolean httpOk = httpStatus >= 200 && httpStatus < 300;
+            boolean businessOk = businessCode == 0 || businessCode == 200
+                    || (!requireBusinessCode && businessCode == -1);
+            if (!httpOk || !businessOk) {
                 if (businessMsg.contains("用户不存在")
                         || businessMsg.contains("登录")
                         || businessMsg.contains("token")
@@ -2289,11 +2454,13 @@ public class MainActivity extends Activity {
                 } else {
                     result.answer = businessMsg.length() > 0 ? businessMsg : "请求失败，请稍后重试";
                 }
-                Log.e(TAG, "AI 接口业务失败 code=" + businessCode
+                Log.e(TAG, "[GuideChat] parse failed: httpStatus=" + httpStatus
+                        + ", businessCode=" + businessCode
                         + ", msg=" + businessMsg
                         + ", response=" + responseText);
                 return result;
             }
+            result.success = true;
 
             result.questionText = source.optString("questionText", "");
             if (result.questionText == null || result.questionText.trim().length() == 0) {
@@ -2306,26 +2473,35 @@ public class MainActivity extends Activity {
                 result.questionText = "";
             }
 
-            result.answer = source.optString("answer", "");
-            if (result.answer == null || result.answer.trim().length() == 0) {
-                result.answer = source.optString("content", "");
-            }
+            result.answer = firstNotEmpty(
+                    getJsonText(data, "answer", "reply", "content"),
+                    dataText,
+                    getJsonText(root, "answer", "reply", "content")
+            );
 
             result.audioUrl = firstNotEmpty(
-                    getJsonText(source, "audioUrl", "audio_url"),
-                    getJsonText(audioJson, "url", "audioUrl", "audio_url")
+                    getJsonText(data, "audioUrl", "audio_url"),
+                    getJsonText(root, "audioUrl", "audio_url"),
+                    getJsonText(audioJson, "url", "audioUrl", "audio_url"),
+                    getJsonText(rootAudioJson, "url", "audioUrl", "audio_url")
             );
             result.audioStatus = firstNotEmpty(
                     getJsonText(source, "audioStatus", "audio_status"),
-                    getJsonText(audioJson, "status", "audioStatus", "audio_status")
+                    getJsonText(root, "audioStatus", "audio_status"),
+                    getJsonText(audioJson, "status", "audioStatus", "audio_status"),
+                    getJsonText(rootAudioJson, "status", "audioStatus", "audio_status")
             );
             result.ttsTaskId = firstNotEmpty(
                     getJsonText(source, "ttsTaskId", "tts_task_id", "taskId", "task_id"),
-                    getJsonText(audioJson, "taskId", "task_id")
+                    getJsonText(root, "ttsTaskId", "tts_task_id", "taskId", "task_id"),
+                    getJsonText(audioJson, "taskId", "task_id"),
+                    getJsonText(rootAudioJson, "taskId", "task_id")
             );
             result.audioDurationMs = parseLongOrDefault(firstNotEmpty(
                     getJsonText(source, "audioDurationMs", "audio_duration_ms", "durationMs", "duration_ms"),
-                    getJsonText(audioJson, "audioDurationMs", "audio_duration_ms", "durationMs", "duration_ms", "duration")
+                    getJsonText(root, "audioDurationMs", "audio_duration_ms", "durationMs", "duration_ms"),
+                    getJsonText(audioJson, "audioDurationMs", "audio_duration_ms", "durationMs", "duration_ms", "duration"),
+                    getJsonText(rootAudioJson, "audioDurationMs", "audio_duration_ms", "durationMs", "duration_ms", "duration")
             ), 0L);
             result.action = getJsonText(source, "action");
             result.actionCode = firstNotEmpty(
@@ -2370,11 +2546,20 @@ public class MainActivity extends Activity {
             }
 
             JSONArray mouthFramesArray = getJsonArray(source, "mouthFrames", "mouth_frames");
+            if (mouthFramesArray == null && source != root) {
+                mouthFramesArray = getJsonArray(root, "mouthFrames", "mouth_frames");
+            }
             if (mouthFramesArray == null) {
                 mouthFramesArray = getJsonArray(mouthJson, "frames", "mouthFrames", "mouth_frames");
             }
             if (mouthFramesArray == null) {
-                mouthFramesArray = getJsonArray(audioJson, "frames", "mouthFrames", "mouth_frames", "mouthFrames");
+                mouthFramesArray = getJsonArray(rootMouthJson, "frames", "mouthFrames", "mouth_frames");
+            }
+            if (mouthFramesArray == null) {
+                mouthFramesArray = getJsonArray(audioJson, "frames", "mouthFrames", "mouth_frames");
+            }
+            if (mouthFramesArray == null) {
+                mouthFramesArray = getJsonArray(rootAudioJson, "frames", "mouthFrames", "mouth_frames");
             }
             if (mouthFramesArray != null) {
                 for (int i = 0; i < mouthFramesArray.length(); i++) {
@@ -2464,9 +2649,17 @@ public class MainActivity extends Activity {
                 }
             }
 
+            Log.d(TAG, "[GuideChat] parsed success=true, answerLength=" + safeString(result.answer).length()
+                    + ", hasAudioUrl=" + (safeString(result.audioUrl).length() > 0)
+                    + ", mouthFrames=" + result.mouthFrames.size());
+
             return result;
         } catch (Exception e) {
-            result.answer = responseText;
+            result.success = false;
+            result.answer = firstNotEmpty(responseText, "请求失败，请稍后重试");
+            Log.e(TAG, "[GuideChat] parse failed: " + e.getMessage()
+                    + ", httpStatus=" + httpStatus
+                    + ", response=" + responseText, e);
             return result;
         }
     }
@@ -7491,6 +7684,64 @@ public class MainActivity extends Activity {
         }
     }
 
+    private String sanitizeGuideChatRequestBody(JSONObject requestJson) {
+        if (requestJson == null) {
+            return "";
+        }
+        try {
+            Object sanitized = sanitizeGuideChatLogValue(requestJson, "");
+            return sanitized == null ? "" : sanitized.toString();
+        } catch (Exception e) {
+            Log.w(TAG, "[GuideChat] request body sanitize failed: " + e.getMessage());
+            return requestJson.toString();
+        }
+    }
+
+    private Object sanitizeGuideChatLogValue(Object value, String key) throws Exception {
+        if (isSensitiveGuideChatLogKey(key)) {
+            return "***";
+        }
+        if (value instanceof JSONObject) {
+            JSONObject source = (JSONObject) value;
+            JSONObject copy = new JSONObject();
+            JSONArray names = source.names();
+            if (names == null) {
+                return copy;
+            }
+            for (int i = 0; i < names.length(); i++) {
+                String childKey = names.optString(i, "");
+                if (childKey.length() == 0) {
+                    continue;
+                }
+                copy.put(childKey, sanitizeGuideChatLogValue(source.opt(childKey), childKey));
+            }
+            return copy;
+        }
+        if (value instanceof JSONArray) {
+            JSONArray source = (JSONArray) value;
+            JSONArray copy = new JSONArray();
+            for (int i = 0; i < source.length(); i++) {
+                copy.put(sanitizeGuideChatLogValue(source.opt(i), key));
+            }
+            return copy;
+        }
+        return value;
+    }
+
+    private boolean isSensitiveGuideChatLogKey(String key) {
+        String text = safeString(key).toLowerCase(Locale.ROOT);
+        return text.contains("token")
+                || text.contains("authorization")
+                || text.contains("authsession");
+    }
+
+    private boolean shouldUseNfcGuideFallback(String question) {
+        return nfcLocationActive
+                && "给我讲讲这里".equals(safeString(question).trim())
+                && nfcFallbackGuideSummary != null
+                && nfcFallbackGuideSummary.trim().length() > 0;
+    }
+
     private void updateQuickButtons(List<String> suggestions) {
         if (suggestions == null || suggestions.size() == 0) {
             return;
@@ -7861,6 +8112,18 @@ public class MainActivity extends Activity {
                 visitEndPath,
                 DEFAULT_VISIT_END_PATH
         );
+
+        // ==================== NFC / 离线导览开关 ====================
+        String nfcFlag = firstNotEmpty(
+                getSafeExtra(intent, "nfcOfflineGuideEnabled"),
+                getSafeExtra(intent, "nfc_offline_guide_enabled")
+        );
+        if (nfcFlag.length() > 0) {
+            nfcOfflineGuideEnabled = parseBooleanLike(nfcFlag);
+        } else {
+            nfcOfflineGuideEnabled = true; // 默认开启
+        }
+        Log.d(TAG, "nfcOfflineGuideEnabled = " + nfcOfflineGuideEnabled);
 
         resetRouteStartSelection();
         updateGuideContext();
@@ -9464,6 +9727,15 @@ public class MainActivity extends Activity {
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
+
+        Log.d(TAG, "[NFC] onNewIntent action=" + (intent != null ? intent.getAction() : "null"));
+
+        // ==================== NFC 标签处理 ====================
+        if (tryHandleNfcIntent(intent)) {
+            // NFC tag was processed — don't re-run full guide intent logic
+            return;
+        }
+
         setIntent(intent);
         handleGuideIntent(intent);
         resetSession();
@@ -9522,11 +9794,15 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        Log.d(TAG, "[NFC] onResume, nfcInitialized=" + nfcInitialized
+                + ", nfcOfflineGuideEnabled=" + nfcOfflineGuideEnabled);
         if (routeMapView != null) {
             routeMapView.onResume();
         }
         forceRenderLive2D();
         hideSystemBars();
+        enableNfcReaderMode();
+        trySyncPendingBehaviors();
     }
 
     @Override
@@ -9535,6 +9811,7 @@ public class MainActivity extends Activity {
         if (routeMapView != null) {
             routeMapView.onPause();
         }
+        disableNfcReaderMode();
         if (voiceFlowActive || recording) {
             Log.d(TAG, "语音流程中，跳过 Live2D onPause，避免黑屏");
             return;
@@ -9585,6 +9862,10 @@ public class MainActivity extends Activity {
     }
 
     private static class GuideResponse {
+        boolean success = true;
+        int httpStatus = 200;
+        int businessCode = -1;
+        String businessMsg = "";
         String questionText = "";
         String answer = "";
         String audioUrl = "";
@@ -9694,4 +9975,754 @@ public class MainActivity extends Activity {
         String contextType = "";
         String autoQuestion = "";
     }
+
+    // ==================== NFC / Offline Guide 方法 ====================
+
+    /**
+     * 初始化 NFC 离线导览能力。
+     * 如果初始化失败，自动降级为 no-op，不影响原有数字人页面。
+     */
+    private void initNfcOfflineGuide() {
+        Log.d(TAG, "[NFC] initNfc start, nfcOfflineGuideEnabled=" + nfcOfflineGuideEnabled);
+
+        if (!nfcOfflineGuideEnabled) {
+            Log.d(TAG, "[NFC] nfcOfflineGuideEnabled=false, skip init");
+            return;
+        }
+
+        try {
+            // 初始化离线包管理器
+            offlinePackageManager = new OfflineGuidePackageManager(this);
+            Log.d(TAG, "[NFC] OfflineGuidePackageManager initialized, hasPackage="
+                    + offlinePackageManager.hasAnyPackage());
+
+            // 初始化行为队列
+            offlineBehaviorQueue = new OfflineBehaviorQueue(this);
+
+            // 初始化网络状态检测
+            networkStateHelper = new NetworkStateHelper(this);
+
+            // 初始化 NFC 适配器
+            nfcAdapter = NfcAdapter.getDefaultAdapter(this);
+            if (nfcAdapter == null) {
+                Log.d(TAG, "[NFC] Device does not support NFC, disabling NFC features");
+                nfcInitialized = false;
+                return;
+            }
+
+            // 创建 NFC PendingIntent（用于前台分发）
+            // Android 12+ 必须使用 FLAG_MUTABLE，否则 NFC Intent 数据无法传递
+            Intent intent = new Intent(this, MainActivity.class);
+            intent.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            int flags;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                flags = PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_MUTABLE;
+            } else {
+                flags = PendingIntent.FLAG_UPDATE_CURRENT;
+            }
+            nfcPendingIntent = PendingIntent.getActivity(this, 0, intent, flags);
+            Log.d(TAG, "[NFC] PendingIntent created: flags=" + flags
+                    + ", FLAG_ACTIVITY_SINGLE_TOP set, SDK=" + Build.VERSION.SDK_INT);
+
+            // NFC Intent 过滤器（匹配所有 NDEF 标签）
+            IntentFilter ndefFilter = new IntentFilter(NfcAdapter.ACTION_NDEF_DISCOVERED);
+            try {
+                ndefFilter.addDataType("*/*");
+            } catch (IntentFilter.MalformedMimeTypeException e) {
+                Log.w(TAG, "[NFC] Failed to add MIME type filter", e);
+            }
+            nfcIntentFilters = new IntentFilter[]{ndefFilter};
+
+            // 技术列表（匹配所有 NFC 技术）
+            nfcTechLists = new String[][]{new String[]{
+                    android.nfc.tech.Ndef.class.getName(),
+                    android.nfc.tech.NdefFormatable.class.getName()
+            }};
+
+            nfcInitialized = true;
+            Log.d(TAG, "[NFC] initNfc done: adapter="
+                    + (nfcAdapter != null ? "present" : "null")
+                    + ", enabled=" + (nfcAdapter != null && nfcAdapter.isEnabled())
+                    + ", initialized=" + nfcInitialized);
+        } catch (Exception e) {
+            Log.w(TAG, "[NFC] initNfcOfflineGuide failed, degrading to no-op", e);
+            nfcOfflineGuideEnabled = false;
+            nfcInitialized = false;
+        }
+    }
+
+    /**
+     * 在 onResume 中启用 NFC ReaderMode（主方案）。
+     * ReaderMode 直接回调 tag，不走 Intent/PendingIntent，不触发 BAL_BLOCK。
+     */
+    private void enableNfcReaderMode() {
+        if (!nfcInitialized || nfcAdapter == null) return;
+        if (!nfcAdapter.isEnabled()) {
+            Log.d(TAG, "[NFC] NFC adapter disabled, skip reader mode");
+            return;
+        }
+        if (nfcReaderModeActive) {
+            Log.d(TAG, "[NFC] ReaderMode already active, skip");
+            return;
+        }
+        try {
+            Log.d(TAG, "[NFC] onResume, enableReaderMode start");
+            final int readerFlags = NfcAdapter.FLAG_READER_NFC_A
+                    | NfcAdapter.FLAG_READER_NFC_B
+                    | NfcAdapter.FLAG_READER_NFC_F
+                    | NfcAdapter.FLAG_READER_NFC_V;
+            nfcAdapter.enableReaderMode(
+                    MainActivity.this,
+                    new NfcAdapter.ReaderCallback() {
+                        @Override
+                        public void onTagDiscovered(final Tag tag) {
+                            Log.d(TAG, "[NFC] readerMode tag discovered: " + tag);
+                            try {
+                                final String markerCode = NfcMarkerReader.extractMarkerCodeFromTag(tag);
+                                Log.d(TAG, "[NFC] readerMode extracted marker_code: "
+                                        + (markerCode != null && !markerCode.isEmpty() ? markerCode : "(empty)"));
+                                if (markerCode != null && !markerCode.isEmpty()) {
+                                    mainHandler.post(new Runnable() {
+                                        @Override
+                                        public void run() {
+                                            handleNfcMarkerCodeDeduped(markerCode);
+                                        }
+                                    });
+                                } else {
+                                    mainHandler.post(new Runnable() {
+                                        @Override
+                                        public void run() {
+                                            showToast("已读取到 NFC 标签，但无法识别点位编码。");
+                                        }
+                                    });
+                                }
+                            } catch (Exception e) {
+                                Log.w(TAG, "[NFC] readerMode tag handling failed", e);
+                                mainHandler.post(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        showToast("已读取到 NFC 标签，但无法识别点位编码。");
+                                    }
+                                });
+                            }
+                        }
+                    },
+                    readerFlags,
+                    null
+            );
+            nfcReaderModeActive = true;
+            Log.d(TAG, "[NFC] enableReaderMode success");
+        } catch (Exception e) {
+            Log.w(TAG, "[NFC] Failed to enable reader mode, falling back to foreground dispatch", e);
+            nfcReaderModeActive = false;
+            enableNfcForegroundDispatchFallback();
+        }
+    }
+
+    /**
+     * 在 onPause 中禁用 NFC ReaderMode。
+     */
+    private void disableNfcReaderMode() {
+        if (!nfcInitialized || nfcAdapter == null) return;
+        try {
+            if (nfcReaderModeActive) {
+                nfcAdapter.disableReaderMode(this);
+                nfcReaderModeActive = false;
+                Log.d(TAG, "[NFC] disableReaderMode success");
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "[NFC] Failed to disable reader mode", e);
+        }
+    }
+
+    /**
+     * ForegroundDispatch 降级方案（ReaderMode 不可用时）。
+     * 某些设备 MIUI/HyperOS 可能拦截 ReaderMode，此时退回原方案。
+     */
+    private void enableNfcForegroundDispatchFallback() {
+        if (!nfcInitialized || nfcAdapter == null) return;
+        if (nfcPendingIntent == null || nfcIntentFilters == null) return;
+        try {
+            nfcAdapter.enableForegroundDispatch(
+                    this,
+                    nfcPendingIntent,
+                    nfcIntentFilters,
+                    nfcTechLists
+            );
+            Log.d(TAG, "[NFC] enableForegroundDispatch (fallback) success");
+        } catch (Exception e) {
+            Log.w(TAG, "[NFC] Failed to enable foreground dispatch fallback", e);
+        }
+    }
+
+    /**
+     * 去重包装：同一 markerCode 在 NFC_DEDUP_WINDOW_MS 内不重复处理。
+     * ReaderMode 可能对同一张卡连续回调多次。
+     */
+    private void handleNfcMarkerCodeDeduped(String markerCode) {
+        if (markerCode == null || markerCode.isEmpty()) return;
+        long now = System.currentTimeMillis();
+        if (markerCode.equals(lastNfcMarkerCode)
+                && (now - lastNfcHandledAt) < NFC_DEDUP_WINDOW_MS) {
+            Log.d(TAG, "[NFC] Duplicate marker_code within dedup window, skipped: " + markerCode);
+            return;
+        }
+        lastNfcMarkerCode = markerCode;
+        lastNfcHandledAt = now;
+        handleNfcMarkerCode(markerCode);
+    }
+
+    /**
+     * 尝试处理 NFC Intent。
+     * 返回 true 表示已处理 NFC 标签（不再走普通 Intent 流程）。
+     */
+    private boolean tryHandleNfcIntent(Intent intent) {
+        Log.d(TAG, "[NFC] tryHandleNfcIntent action=" + (intent != null ? intent.getAction() : "null")
+                + ", nfcOfflineGuideEnabled=" + nfcOfflineGuideEnabled
+                + ", nfcInitialized=" + nfcInitialized);
+
+        if (!nfcOfflineGuideEnabled || !nfcInitialized) return false;
+        if (intent == null) return false;
+
+        String action = intent.getAction();
+        if (action == null) {
+            Log.d(TAG, "[NFC] tryHandleNfcIntent: intent action is null, returning false");
+            return false;
+        }
+
+        // 检查是否是 NFC 相关 Action
+        if (!NfcAdapter.ACTION_NDEF_DISCOVERED.equals(action)
+                && !NfcAdapter.ACTION_TAG_DISCOVERED.equals(action)
+                && !NfcAdapter.ACTION_TECH_DISCOVERED.equals(action)) {
+            Log.d(TAG, "[NFC] tryHandleNfcIntent: non-NFC action=" + action + ", returning false");
+            return false;
+        }
+
+        Log.d(TAG, "[NFC] NFC tag detected, action=" + action);
+
+        try {
+            // 从 Intent 中提取 NDEF 消息
+            android.os.Parcelable[] rawMsgs = intent.getParcelableArrayExtra(NfcAdapter.EXTRA_NDEF_MESSAGES);
+            if (rawMsgs == null || rawMsgs.length == 0) {
+                showToast("已读取到 NFC 标签，但无法识别点位编码。");
+                Log.w(TAG, "[NFC] No NDEF messages in intent");
+                return true;
+            }
+
+            NdefMessage ndefMessage = (NdefMessage) rawMsgs[0];
+            String markerCode = NfcMarkerReader.extractMarkerCode(ndefMessage);
+
+            if (markerCode.isEmpty()) {
+                showToast("已读取到 NFC 标签，但无法识别点位编码。");
+                Log.w(TAG, "[NFC] Empty marker_code extracted");
+                return true;
+            }
+
+            Log.d(TAG, "[NFC] Extracted marker_code: " + markerCode);
+            handleNfcMarkerCode(markerCode);
+        } catch (Exception e) {
+            Log.w(TAG, "[NFC] Failed to process NFC tag", e);
+            showToast("已读取到 NFC 标签，但无法识别点位编码。");
+        }
+
+        return true;
+    }
+
+    /**
+     * 处理从 NFC 标签中提取的 marker_code。
+     * 完整的分流逻辑：
+     *   1. 检查开关
+     *   2. 尝试离线包查找
+     *   3. 根据网络状态分 NORMAL / WEAK / OFFLINE 处理
+     */
+    private void handleNfcMarkerCode(String markerCode) {
+        if (!nfcOfflineGuideEnabled) return;
+        if (markerCode == null || markerCode.isEmpty()) return;
+
+        Log.d(TAG, "[NFC] handleNfcMarkerCode: " + markerCode);
+        nfcCurrentMarkerCode = markerCode;
+
+        // 获取当前上下文
+        String currentUserId = firstNotEmpty(userId, appUserId, loginUserId);
+        int areaIdInt = 1; // 默认灵山胜境
+        try { areaIdInt = Integer.parseInt(areaId); } catch (Exception ignored) {}
+
+        // 1. 尝试从离线包查找
+        OfflineSpot offlineSpot = null;
+        if (offlinePackageManager != null) {
+            offlineSpot = offlinePackageManager.findSpotByMarkerCode(markerCode, areaIdInt);
+        }
+
+        // 2. 判断网络状态
+        NetworkLevel networkLevel = networkStateHelper != null
+                ? networkStateHelper.getNetworkLevel()
+                : NetworkLevel.NORMAL;
+
+        Log.d(TAG, "[NFC] markerCode=" + markerCode + ", networkLevel=" + networkLevel
+                + ", offlineSpot=" + (offlineSpot != null ? offlineSpot.name : "null"));
+
+        if (offlineSpot != null) {
+            // 本地找到了景点 — 更新上下文
+            nfcCurrentSpotId = String.valueOf(offlineSpot.spotId);
+            nfcCurrentSpotName = offlineSpot.name;
+            nfcSceneCode = offlineSpot.sceneCode;
+            nfcLocationActive = true;
+            rememberOfflineNfcFallbackGuide(offlineSpot);
+
+            if (networkLevel == NetworkLevel.NORMAL) {
+                handleNfcNormal(markerCode, offlineSpot, currentUserId, areaIdInt);
+            } else if (networkLevel == NetworkLevel.WEAK) {
+                handleNfcWeak(markerCode, offlineSpot, currentUserId, areaIdInt);
+            } else {
+                handleNfcOffline(markerCode, offlineSpot, currentUserId, areaIdInt);
+            }
+        } else {
+            // 本地没有找到 — 根据网络状态处理
+            if (networkLevel == NetworkLevel.NORMAL) {
+                // 有网：尝试后端 checkin
+                showToast("已读取到 NFC 标签，正在联网查找点位信息...");
+                nfcCheckinAndGuide(markerCode, currentUserId, areaIdInt);
+            } else if (networkLevel == NetworkLevel.WEAK) {
+                // 弱网：尝试 checkin 但短超时
+                showToast("已读取到 NFC 标签，但当前离线包中没有该点位信息，请联网更新离线包。");
+                nfcCheckinBrief(markerCode, currentUserId, areaIdInt);
+            } else {
+                // 无网：直接提示
+                showToast("已读取到 NFC 标签，但当前离线包中没有该点位信息，请联网更新离线包。");
+            }
+        }
+    }
+
+    /**
+     * 网络 NORMAL：NFC checkin → 复用现有 /api/guide/chat 链路
+     */
+    private void handleNfcNormal(String markerCode, OfflineSpot spot,
+                                  String userId, int areaId) {
+        showToast("已识别当前位置：" + spot.name + "。我将为你展示这里的讲解内容。");
+
+        // 先调用后端 checkin
+        nfcCheckinAndGuide(markerCode, userId, areaId);
+
+        // 同时使用本地数据兜底
+        updateNfcSpotContext(spot);
+    }
+
+    /**
+     * 网络 WEAK：展示离线 guide_text → 异步尝试 AI
+     */
+    private void handleNfcWeak(String markerCode, OfflineSpot spot,
+                                String userId, int areaId) {
+        showToast("当前网络较弱，已优先展示本地讲解内容，语音和 AI 深度讲解将在网络恢复后继续加载。");
+
+        // 展示离线讲解内容
+        displayOfflineGuideText(spot);
+
+        // 写入本地行为队列
+        queueNfcCheckinEvent(userId, spot, areaId, markerCode);
+
+        // 更新景点上下文
+        updateNfcSpotContext(spot);
+
+        // 异步尝试 AI 讲解（非阻塞）
+        nfcCheckinAndGuideAsync(markerCode, userId, areaId);
+    }
+
+    /**
+     * 网络 OFFLINE：展示离线 guide_text，不请求任何接口
+     */
+    private void handleNfcOffline(String markerCode, OfflineSpot spot,
+                                   String userId, int areaId) {
+        showToast("当前处于离线导览模式，你仍可以查看地图、景点介绍，并通过 NFC 获取对应讲解。");
+
+        // 展示离线讲解内容
+        displayOfflineGuideText(spot);
+
+        // 写入本地行为队列
+        queueNfcCheckinEvent(userId, spot, areaId, markerCode);
+
+        // 更新景点上下文
+        updateNfcSpotContext(spot);
+    }
+
+    /**
+     * 调用后端 NFC checkin 接口，成功后触发 AI 讲解。
+     */
+    private void nfcCheckinAndGuide(final String markerCode, final String userId, final int areaId) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    String baseUrl = behaviorBackendBaseUrl;
+                    if (baseUrl.isEmpty()) {
+                        baseUrl = getBaseUrlFromFullUrl(GUIDE_CHAT_URL);
+                    }
+
+                    NfcCheckinClient client = new NfcCheckinClient(baseUrl, authToken);
+                    NfcCheckinRequest req = new NfcCheckinRequest();
+                    req.userId = userId;
+                    req.visitId = visitId;
+                    req.areaId = (long) areaId;
+                    req.markerCode = markerCode;
+                    req.clientTime = getCurrentIsoTimeForNfc();
+                    req.networkStatus = "NORMAL";
+
+                    final NfcCheckinResponseData data = client.checkin(req);
+                    if (data != null) {
+                        Log.d(TAG, "[NFC] checkin success callback: spotName=" + data.spotName);
+                        mainHandler.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                // 使用后端返回的上下文覆盖
+                                if (data.spotId != null) {
+                                    nfcCurrentSpotId = String.valueOf(data.spotId);
+                                }
+                                if (data.spotName != null && !data.spotName.isEmpty()) {
+                                    nfcCurrentSpotName = data.spotName;
+                                } else if (data.targetName != null && !data.targetName.isEmpty()) {
+                                    nfcCurrentSpotName = data.targetName;
+                                }
+                                if (data.sceneCode != null && !data.sceneCode.isEmpty()) {
+                                    nfcSceneCode = data.sceneCode;
+                                }
+                                if (data.areaId != null) {
+                                    MainActivity.this.areaId = String.valueOf(data.areaId);
+                                }
+                                if (data.areaName != null && !data.areaName.isEmpty()) {
+                                    areaName = data.areaName;
+                                }
+                                nfcCurrentMarkerCode = firstNotEmpty(data.markerCode, markerCode);
+                                rememberNfcCheckinGuideFallback(data);
+                                nfcLocationActive = true;
+
+                                // 提示成功并触发 AI 讲解
+                                String spotLabel = nfcCurrentSpotName.isEmpty()
+                                        ? data.markerCode : nfcCurrentSpotName;
+                                showToast("已识别当前位置：" + spotLabel + "。我将为你展示这里的讲解内容。");
+                                triggerNfcAiGuide();
+                            }
+                        });
+                    } else {
+                        mainHandler.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                Log.w(TAG, "[NFC] Backend checkin failed, no local data available");
+                                showToast("已读取到 NFC 标签，但暂时无法获取点位信息，请稍后重试。");
+                            }
+                        });
+                    }
+                } catch (Exception e) {
+                    Log.w(TAG, "[NFC] nfcCheckinAndGuide failed", e);
+                }
+            }
+        }).start();
+    }
+
+    /**
+     * 弱网时异步尝试 NFC checkin（短超时）
+     */
+    private void nfcCheckinAndGuideAsync(final String markerCode, final String userId, final int areaId) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    String baseUrl = behaviorBackendBaseUrl;
+                    if (baseUrl.isEmpty()) {
+                        baseUrl = getBaseUrlFromFullUrl(GUIDE_CHAT_URL);
+                    }
+
+                    NfcCheckinClient client = new NfcCheckinClient(baseUrl, authToken);
+                    NfcCheckinRequest req = new NfcCheckinRequest();
+                    req.userId = userId;
+                    req.visitId = visitId;
+                    req.areaId = (long) areaId;
+                    req.markerCode = markerCode;
+                    req.clientTime = getCurrentIsoTimeForNfc();
+                    req.networkStatus = "WEAK";
+
+                    final NfcCheckinResponseData data = client.checkin(req);
+                    if (data != null) {
+                        mainHandler.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                if (data.spotId != null) nfcCurrentSpotId = String.valueOf(data.spotId);
+                                if (data.spotName != null && !data.spotName.isEmpty()) {
+                                    nfcCurrentSpotName = data.spotName;
+                                } else if (data.targetName != null && !data.targetName.isEmpty()) {
+                                    nfcCurrentSpotName = data.targetName;
+                                }
+                                if (data.sceneCode != null && !data.sceneCode.isEmpty()) nfcSceneCode = data.sceneCode;
+                                if (data.areaId != null) MainActivity.this.areaId = String.valueOf(data.areaId);
+                                if (data.areaName != null && !data.areaName.isEmpty()) areaName = data.areaName;
+                                nfcCurrentMarkerCode = firstNotEmpty(data.markerCode, markerCode);
+                                rememberNfcCheckinGuideFallback(data);
+                                nfcLocationActive = true;
+
+                                // AI 成功返回则展示更自然的讲解
+                                String label = nfcCurrentSpotName.isEmpty() ? data.markerCode : nfcCurrentSpotName;
+                                showToast("已识别当前位置：" + label + "。");
+                                triggerNfcAiGuide();
+                            }
+                        });
+                    }
+                } catch (Exception e) {
+                    Log.w(TAG, "[NFC] async checkin failed (weak network, expected)", e);
+                }
+            }
+        }).start();
+    }
+
+    /**
+     * 简短的 NFC checkin（弱网或无本地数据时）
+     */
+    private void nfcCheckinBrief(final String markerCode, final String userId, final int areaId) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    String baseUrl = behaviorBackendBaseUrl;
+                    if (baseUrl.isEmpty()) {
+                        baseUrl = getBaseUrlFromFullUrl(GUIDE_CHAT_URL);
+                    }
+
+                    NfcCheckinClient client = new NfcCheckinClient(baseUrl, authToken);
+                    NfcCheckinRequest req = new NfcCheckinRequest();
+                    req.userId = userId;
+                    req.visitId = visitId;
+                    req.areaId = (long) areaId;
+                    req.markerCode = markerCode;
+                    req.clientTime = getCurrentIsoTimeForNfc();
+                    req.networkStatus = "WEAK";
+
+                    final NfcCheckinResponseData data = client.checkin(req);
+                    final boolean hasName = (data != null && data.spotName != null && !data.spotName.isEmpty())
+                            || (data != null && data.targetName != null && !data.targetName.isEmpty());
+                    if (hasName) {
+                        mainHandler.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                nfcCurrentSpotId = data.spotId != null ? String.valueOf(data.spotId) : "";
+                                if (data.spotName != null && !data.spotName.isEmpty()) {
+                                    nfcCurrentSpotName = data.spotName;
+                                } else {
+                                    nfcCurrentSpotName = data.targetName;
+                                }
+                                nfcSceneCode = data.sceneCode;
+                                if (data.areaId != null) MainActivity.this.areaId = String.valueOf(data.areaId);
+                                if (data.areaName != null && !data.areaName.isEmpty()) areaName = data.areaName;
+                                nfcCurrentMarkerCode = firstNotEmpty(data.markerCode, markerCode);
+                                rememberNfcCheckinGuideFallback(data);
+                                nfcLocationActive = true;
+                                showToast("已识别当前位置：" + nfcCurrentSpotName + "。");
+                                triggerNfcAiGuide();
+                            }
+                        });
+                    }
+                } catch (Exception e) {
+                    Log.w(TAG, "[NFC] Brief checkin failed", e);
+                }
+            }
+        }).start();
+    }
+
+    private void rememberNfcCheckinGuideFallback(NfcCheckinResponseData data) {
+        String title = "";
+        String summary = "";
+        if (data != null && data.guide != null) {
+            title = safeString(data.guide.title);
+            summary = safeString(data.guide.summary);
+        }
+        nfcFallbackGuideTitle = title;
+        nfcFallbackGuideSummary = summary;
+        Log.d(TAG, "[NFC] fallback guide saved: title=" + safeLogText(nfcFallbackGuideTitle)
+                + ", summaryLength=" + nfcFallbackGuideSummary.length());
+    }
+
+    private void rememberOfflineNfcFallbackGuide(OfflineSpot spot) {
+        if (spot == null) {
+            return;
+        }
+        nfcFallbackGuideTitle = firstNotEmpty(spot.name + "讲解", nfcFallbackGuideTitle);
+        nfcFallbackGuideSummary = firstNotEmpty(spot.guideText, spot.shortIntro, nfcFallbackGuideSummary);
+        Log.d(TAG, "[NFC] offline fallback guide saved: title=" + safeLogText(nfcFallbackGuideTitle)
+                + ", summaryLength=" + nfcFallbackGuideSummary.length());
+    }
+
+    /**
+     * 触发基于 NFC 位置的 AI 讲解。
+     * 复用现有 /api/guide/chat 链路，不直连 AI。
+     */
+    private void triggerNfcAiGuide() {
+        if (questionInput == null) return;
+
+        String question = "给我讲讲这里";
+        if (requesting) {
+            Log.d(TAG, "[GuideChat] duplicate NFC guide skipped: guide/chat requesting");
+            return;
+        }
+
+        String markerKey = firstNotEmpty(nfcCurrentMarkerCode, nfcSceneCode, nfcCurrentSpotId);
+        long now = System.currentTimeMillis();
+        if (markerKey.length() > 0
+                && markerKey.equals(lastNfcGuideMarkerCode)
+                && now - lastNfcGuideTriggeredAt < NFC_DEDUP_WINDOW_MS) {
+            Log.d(TAG, "[GuideChat] duplicate NFC guide skipped: markerCode=" + markerKey);
+            return;
+        }
+        lastNfcGuideMarkerCode = markerKey;
+        lastNfcGuideTriggeredAt = now;
+
+        boolean appendUserToChat = !isNfcAutoGuideQuestionAlreadyDisplayed(question);
+        questionInput.setText(question);
+
+        // 构建 location_context 和 network_context 将作为额外字段添加到
+        // 现有的 askGuide 请求体中。MainActivity 的现有 askGuide 方法会
+        // 发送请求到 /api/guide/chat，其中网络状态信息通过此上下文传递。
+        //
+        // 注意：现有 askGuide 方法体量巨大且脆弱，这里通过
+        // nfcLocationActive 标志让 buildChatRequestBody 方法感知 NFC 上下文。
+        askGuideInternal(question, appendUserToChat, true, "nfc");
+    }
+
+    private boolean isNfcAutoGuideQuestionAlreadyDisplayed(String question) {
+        if (lastQuestionText == null) {
+            return false;
+        }
+        String current = String.valueOf(lastQuestionText.getText()).trim();
+        return current.equals("游客提问：" + safeString(question).trim());
+    }
+
+    /**
+     * 展示离线 guide_text（替换或追加到 answerText）。
+     */
+    private void displayOfflineGuideText(final OfflineSpot spot) {
+        if (spot == null || answerText == null) return;
+
+        final String guideText = spot.guideText != null && !spot.guideText.isEmpty()
+                ? spot.guideText
+                : spot.shortIntro;
+
+        if (guideText.isEmpty()) return;
+
+        mainHandler.post(new Runnable() {
+            @Override
+            public void run() {
+                if (answerText != null) {
+                    answerText.setText("【离线讲解】" + spot.name + "\n\n" + guideText);
+                }
+                if (guideStateText != null) {
+                    guideStateText.setText("离线讲解中：" + spot.name);
+                }
+                if (answerScrollView != null) {
+                    answerScrollView.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            answerScrollView.fullScroll(View.FOCUS_DOWN);
+                        }
+                    });
+                }
+            }
+        });
+    }
+
+    /**
+     * 更新 NFC 景点上下文（当前景点名、ID 等）
+     */
+    private void updateNfcSpotContext(OfflineSpot spot) {
+        if (spot == null) return;
+
+        nfcCurrentSpotId = String.valueOf(spot.spotId);
+        nfcCurrentSpotName = spot.name;
+        nfcSceneCode = spot.sceneCode;
+        nfcLocationActive = true;
+
+        // 更新页面顶部标题
+        if (targetText != null) {
+            targetText.post(new Runnable() {
+                @Override
+                public void run() {
+                    targetText.setText("📍 NFC识别：" + nfcCurrentSpotName);
+                }
+            });
+        }
+    }
+
+    /**
+     * 将 NFC_CHECKIN 事件写入本地行为队列。
+     */
+    private void queueNfcCheckinEvent(String userId, OfflineSpot spot, int areaId, String markerCode) {
+        if (offlineBehaviorQueue == null) return;
+
+        try {
+            String eventId = offlineBehaviorQueue.addPendingEvent(
+                    userId,
+                    visitId,
+                    (long) areaId,
+                    (long) spot.spotId,
+                    spot.sceneCode,
+                    spot.name,
+                    markerCode
+            );
+            Log.d(TAG, "[NFC] Queued offline event: " + eventId + " for " + spot.name
+                    + " marker=" + markerCode);
+        } catch (Exception e) {
+            Log.w(TAG, "[NFC] Failed to queue offline event", e);
+        }
+    }
+
+    /**
+     * 网络恢复时尝试补传 PENDING 行为事件。
+     */
+    private void trySyncPendingBehaviors() {
+        if (offlineBehaviorQueue == null || networkStateHelper == null) return;
+        if (networkStateHelper.getNetworkLevel() != NetworkLevel.NORMAL) return;
+        if (!nfcOfflineGuideEnabled) return;
+
+        final List<BehaviorEventItem> pending = offlineBehaviorQueue.listPendingEvents();
+        if (pending.isEmpty()) return;
+
+        Log.d(TAG, "[NFC] Found " + pending.size() + " pending events, attempting sync");
+
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    String baseUrl = behaviorBackendBaseUrl;
+                    if (baseUrl.isEmpty()) {
+                        baseUrl = getBaseUrlFromFullUrl(GUIDE_CHAT_URL);
+                    }
+
+                    BehaviorSyncClient client = new BehaviorSyncClient(baseUrl, authToken);
+                    BehaviorBatchSyncRequest req = new BehaviorBatchSyncRequest();
+
+                    String syncUserId = firstNotEmpty(userId, appUserId, loginUserId);
+                    req.userId = syncUserId.isEmpty() ? "" : syncUserId;
+                    req.events = pending;
+
+                    final BehaviorBatchSyncResponseData result = client.batchSync(req);
+                    if (result != null && result.success > 0) {
+                        // Remove synced events
+                        final List<String> syncedIds = new ArrayList<>();
+                        for (BehaviorEventItem item : pending) {
+                            syncedIds.add(item.eventId);
+                        }
+                        offlineBehaviorQueue.removeEvents(syncedIds);
+                        Log.d(TAG, "[NFC] Batch sync successful: " + result.success + " events");
+                    }
+                } catch (Exception e) {
+                    Log.w(TAG, "[NFC] Batch sync failed, will retry later", e);
+                }
+            }
+        }).start();
+    }
+
+    private String getCurrentIsoTimeForNfc() {
+        try {
+            java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US);
+            sdf.setTimeZone(java.util.TimeZone.getDefault());
+            return sdf.format(new java.util.Date());
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
 }
