@@ -110,6 +110,86 @@ public class NfcCheckinClient {
         }
     }
 
+    public SilentSyncResult silentSync(OfflineNfcEventQueue.OfflineNfcEvent event) {
+        SilentSyncResult result = new SilentSyncResult();
+        if (event == null) {
+            result.error = "event is null";
+            return result;
+        }
+
+        String url = backendBaseUrl + "/api/app/location/nfc-checkin";
+        try {
+            JSONObject body = buildSilentSyncBody(event, true);
+            int[] httpStatusHolder = new int[1];
+            httpStatusHolder[0] = -1;
+            String response = httpPost(url, body.toString(), httpStatusHolder);
+            result.httpStatus = httpStatusHolder[0];
+            result.responseBody = response;
+
+            if ((response == null || response.length() == 0) && result.httpStatus == 400) {
+                JSONObject compatBody = buildSilentSyncBody(event, false);
+                httpStatusHolder[0] = -1;
+                response = httpPost(url, compatBody.toString(), httpStatusHolder);
+                result.httpStatus = httpStatusHolder[0];
+                result.responseBody = response;
+            }
+
+            if (response == null || response.length() == 0) {
+                result.error = "empty response httpStatus=" + result.httpStatus;
+                return result;
+            }
+
+            JSONObject root = new JSONObject(response);
+            result.businessCode = root.optInt("code", -1);
+            result.message = root.optString("msg", "");
+            Log.d(TAG, "[NFC][OfflineSync] response code=" + result.businessCode);
+
+            result.success = result.httpStatus == 200
+                    && (result.businessCode == 200 || result.businessCode == 0);
+            if (!result.success) {
+                result.error = "httpStatus=" + result.httpStatus
+                        + ", code=" + result.businessCode
+                        + ", msg=" + result.message;
+            }
+            return result;
+        } catch (Exception e) {
+            result.error = e.getMessage();
+            Log.w(TAG, "[NFC][OfflineSync] silent sync failed", e);
+            return result;
+        }
+    }
+
+    private JSONObject buildSilentSyncBody(
+            OfflineNfcEventQueue.OfflineNfcEvent event,
+            boolean includeOfflineFields
+    ) throws Exception {
+        JSONObject body = new JSONObject();
+        body.put("user_id", event.userId);
+        if (event.visitId != null && event.visitId.length() > 0) {
+            body.put("visit_id", event.visitId);
+        }
+        if (event.areaId > 0) {
+            body.put("area_id", event.areaId);
+        }
+        body.put("marker_code", event.markerCode);
+        body.put("client_time", event.clientTime);
+        body.put("network_status", includeOfflineFields ? "RECOVERED_SYNC" : "NORMAL");
+        if (includeOfflineFields) {
+            body.put("offline_sync", true);
+            body.put("offline_reason", event.offlineReason);
+        }
+        return body;
+    }
+
+    public static class SilentSyncResult {
+        public boolean success = false;
+        public int httpStatus = -1;
+        public int businessCode = -1;
+        public String message = "";
+        public String responseBody = "";
+        public String error = "";
+    }
+
     /**
      * HTTP POST with JSON body.
      * Writes the HTTP status code into outHttpStatus[0] on every call (success or error).

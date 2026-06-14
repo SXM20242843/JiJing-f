@@ -123,6 +123,7 @@ public class MainActivity extends Activity {
     private static final String OFFLINE_PACKAGE_PREFS = "offline_package_check";
     private static final String PREF_LAST_OFFLINE_PACKAGE_CHECK_AREA_ID = "lastOfflinePackageCheckAreaId";
     private static final String PREF_LAST_OFFLINE_PACKAGE_CHECK_AT = "lastOfflinePackageCheckAt";
+    private static final long OFFLINE_NFC_SYNC_INTERVAL_MS = 30L * 1000L;
 
     private static final int REQUEST_RECORD_AUDIO_PERMISSION = 2001;
 
@@ -347,7 +348,9 @@ public class MainActivity extends Activity {
 
     private OfflineGuidePackageManager offlinePackageManager;
     private OfflineBehaviorQueue offlineBehaviorQueue;
+    private OfflineNfcEventQueue offlineNfcEventQueue;
     private NetworkStateHelper networkStateHelper;
+    private long lastOfflineNfcSyncAt = 0L;
 
     // NFC 识别后的当前景点上下文
     private String nfcCurrentSpotId = "";
@@ -9809,6 +9812,7 @@ public class MainActivity extends Activity {
         hideSystemBars();
         enableNfcReaderMode();
         trySyncPendingBehaviors();
+        trySyncPendingOfflineNfcEvents();
     }
 
     @Override
@@ -10115,9 +10119,11 @@ public class MainActivity extends Activity {
 
             // 初始化行为队列
             offlineBehaviorQueue = new OfflineBehaviorQueue(this);
+            offlineNfcEventQueue = new OfflineNfcEventQueue(this);
 
             // 初始化网络状态检测
             networkStateHelper = new NetworkStateHelper(this);
+            trySyncPendingOfflineNfcEvents();
 
             // 初始化 NFC 适配器
             nfcAdapter = NfcAdapter.getDefaultAdapter(this);
@@ -10509,6 +10515,7 @@ public class MainActivity extends Activity {
                                         ? data.markerCode : nfcCurrentSpotName;
                                 showToast("已识别当前位置：" + spotLabel + "。我将为你展示这里的讲解内容。");
                                 triggerNfcAiGuide();
+                                trySyncPendingOfflineNfcEvents();
                             }
                         });
                     } else {
@@ -10587,6 +10594,7 @@ public class MainActivity extends Activity {
                                 String label = nfcCurrentSpotName.isEmpty() ? data.markerCode : nfcCurrentSpotName;
                                 showToast("已识别当前位置：" + label + "。");
                                 triggerNfcAiGuide();
+                                trySyncPendingOfflineNfcEvents();
                             }
                         });
                     }
@@ -10640,6 +10648,7 @@ public class MainActivity extends Activity {
                                 nfcLocationActive = true;
                                 showToast("已识别当前位置：" + nfcCurrentSpotName + "。");
                                 triggerNfcAiGuide();
+                                trySyncPendingOfflineNfcEvents();
                             }
                         });
                     }
@@ -10768,9 +10777,33 @@ public class MainActivity extends Activity {
                     Log.d(TAG, "[NFC][OfflineFallback] localAudio exists, TODO play later: "
                             + offlineSpot.localAudio);
                 }
+                enqueueOfflineNfcEvent(markerCode, offlineSpot, firstNotEmpty(reason, "OFFLINE"));
                 Log.d(TAG, "[NFC][OfflineFallback] complete markerCode=" + markerCode);
             }
         });
+    }
+
+    private void enqueueOfflineNfcEvent(String markerCode, OfflineSpot offlineSpot, String reason) {
+        if (offlineNfcEventQueue == null || offlineSpot == null) {
+            return;
+        }
+        String queueUserId = firstNotEmpty(userId, appUserId, loginUserId);
+        int queueAreaId = resolveOfflineNfcAreaId();
+        offlineNfcEventQueue.enqueueOfflineNfcEvent(
+                queueUserId,
+                visitId,
+                queueAreaId,
+                markerCode,
+                offlineSpot,
+                reason,
+                getCurrentIsoTimeForNfc()
+        );
+    }
+
+    private int resolveOfflineNfcAreaId() {
+        String areaIdText = firstNotEmpty(areaId, guideContext.scenicId, scenicId, parkId, guideContext.parkId, areaCode);
+        int parsed = parsePositiveInt(areaIdText, 0);
+        return parsed > 0 ? parsed : 1;
     }
 
     private String buildOfflineGuideText(OfflineSpot spot, String spotLabel) {
@@ -10868,6 +10901,76 @@ public class MainActivity extends Activity {
         } catch (Exception e) {
             Log.w(TAG, "[NFC] Failed to queue offline event", e);
         }
+    }
+
+    private void trySyncPendingOfflineNfcEvents() {
+        if (offlineNfcEventQueue == null || networkStateHelper == null) {
+            return;
+        }
+        if (networkStateHelper.getNetworkLevel() != NetworkLevel.NORMAL) {
+            Log.d(TAG, "[NFC][OfflineSync] network not normal, skip");
+            return;
+        }
+
+        final List<OfflineNfcEventQueue.OfflineNfcEvent> pending =
+                offlineNfcEventQueue.loadPendingEvents();
+        if (pending.isEmpty()) {
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+        if (lastOfflineNfcSyncAt > 0L
+                && now - lastOfflineNfcSyncAt >= 0L
+                && now - lastOfflineNfcSyncAt < OFFLINE_NFC_SYNC_INTERVAL_MS) {
+            Log.d(TAG, "[NFC][OfflineSync] skip throttled");
+            return;
+        }
+        lastOfflineNfcSyncAt = now;
+
+        Log.d(TAG, "[NFC][OfflineSync] start pendingCount=" + pending.size());
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                int success = 0;
+                int failed = 0;
+                try {
+                    String baseUrl = behaviorBackendBaseUrl;
+                    if (baseUrl.isEmpty()) {
+                        baseUrl = getBaseUrlFromFullUrl(GUIDE_CHAT_URL);
+                    }
+
+                    NfcCheckinClient client = new NfcCheckinClient(baseUrl, authToken);
+                    for (int i = 0; i < pending.size(); i++) {
+                        OfflineNfcEventQueue.OfflineNfcEvent event = pending.get(i);
+                        if (event.retryCount >= 5) {
+                            Log.d(TAG, "[NFC][OfflineSync] retry limit reached localId=" + event.localId);
+                            failed++;
+                            continue;
+                        }
+
+                        Log.d(TAG, "[NFC][OfflineSync] syncing localId=" + event.localId
+                                + ", markerCode=" + event.markerCode);
+                        NfcCheckinClient.SilentSyncResult result = client.silentSync(event);
+                        if (result != null && result.success) {
+                            offlineNfcEventQueue.markSynced(event.localId);
+                            success++;
+                            Log.d(TAG, "[NFC][OfflineSync] synced localId=" + event.localId
+                                    + ", markerCode=" + event.markerCode
+                                    + ", spotName=" + event.spotName);
+                        } else {
+                            failed++;
+                            String error = result == null ? "sync result null" : result.error;
+                            offlineNfcEventQueue.markFailed(event.localId, error);
+                        }
+                    }
+                } catch (Exception e) {
+                    failed = pending.size() - success;
+                    Log.w(TAG, "[NFC][OfflineSync] sync failed", e);
+                }
+                Log.d(TAG, "[NFC][OfflineSync] complete success=" + success
+                        + ", failed=" + failed);
+            }
+        }).start();
     }
 
     /**
