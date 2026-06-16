@@ -19,6 +19,7 @@ import com.scenic.ai.modules.app.user.dto.BehaviorEventRequest;
 import com.scenic.ai.modules.app.user.service.BehaviorEventService;
 import com.scenic.ai.modules.app.user.service.UserProfileService;
 import com.scenic.ai.modules.chat.dto.GuideChatRequest;
+import com.scenic.ai.modules.chat.service.GuideVisitContextResolver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpEntity;
@@ -132,7 +133,7 @@ public class RouteRecommendService {
         Map<String, Object> rawResponse = aiResult.responseBody;
         Map<String, Object> routeData = unwrapData(rawResponse);
         String answer = buildAnswer(rawResponse, routeData);
-        List<ResolvedRouteNode> resolvedNodes = resolveRouteNodes(routeData, answer, routeCandidateSpots);
+        List<ResolvedRouteNode> resolvedNodes = resolveRouteNodes(routeData, answer, candidateSpots);
         RouteMetrics metrics = applyDistanceAndDuration(resolvedNodes, routeStartLocation);
         RouteRoadResult roadResult = buildAmapWalkingRoute(resolvedNodes, routeStartLocation);
         applyRoadMetrics(metrics, roadResult);
@@ -214,18 +215,22 @@ public class RouteRecommendService {
                 body.put("area_id", areaId);
             }
             putIfHasText(body, "area_code", areaCode);
-            putIfHasText(body, "park_id", firstNotBlank(routeRequest.getParkIdText(), areaCode));
-            putIfHasText(body, "park_name", parkName);
-            body.put("route_start_type", "park_entrance");
-            // 非现场不传 candidate_spots / current_spot / current_location
-            body.put("candidate_spots", new ArrayList<>());
+            putIfHasText(body, "area_name", parkName);
             // 明确清除可能被 buildAiRequestBody 填入的现场字段
+            body.remove("visit_id");
             body.remove("current_spot_id");
             body.remove("current_spot_name");
             body.remove("current_location");
+            body.remove("location");
+            body.remove("location_context");
+            body.remove("candidate_spots");
+            body.remove("route_start");
+            body.remove("route_start_type");
             body.remove("route_start_location");
-            body.put("visit_status", firstNotBlank(chatRequest.getVisitStatus(), "NOT_IN_AREA"));
-            body.put("is_inside_area", chatRequest.getIsInsideArea() == null ? false : chatRequest.getIsInsideArea());
+            body.remove("latitude");
+            body.remove("longitude");
+            body.remove("is_inside_area");
+            body.put("visit_status", "NOT_ARRIVED");
 
             context.onsiteRoute = false;
             context.areaId = areaId;
@@ -235,11 +240,11 @@ public class RouteRecommendService {
             log.info("Chat非现场路线请求: userId={}, areaId={}, parkName={}, visitStatus={}, isInsideArea={}",
                     userId, areaId, parkName,
                     body.get("visit_status"),
-                    body.get("is_inside_area"));
+                    false);
             return context;
         }
 
-        // 以下为现场路线增强逻辑（仅 visit_status=IN_AREA 且 is_inside_area=true）
+        // 以下为现场路线增强逻辑（仅 visit_status=IN_PARK/IN_AREA 且 is_inside_area=true）
         context.onsiteRoute = true;
         RouteAreaInfo areaInfo = areaId == null ? null : routePlanMapper.selectAreaInfoById(areaId);
         List<RouteSpotInfo> candidateSpots = areaId == null
@@ -283,20 +288,24 @@ public class RouteRecommendService {
         putIfHasText(body, "park_name", parkName);
         body.put("preference_tags", mergedPreferenceTags);
         body.put("candidate_spots", toAiCandidateSpots(routeCandidateSpots));
-        body.put("route_start_type", routeStartLocation.type);
-        body.put("route_start_location", startLocationMap);
         body.put("current_location", startLocationMap);
         if ("current_spot".equals(routeStartLocation.type)) {
             body.put("current_spot_id", routeStartLocation.spotId == null ? "" : String.valueOf(routeStartLocation.spotId));
             body.put("current_spot_name", routeStartLocation.name);
         } else {
-            body.put("current_spot_id", "park_entrance");
-            body.put("current_spot_name", parkName + "入口/中心点");
+            body.remove("current_spot_id");
+            body.remove("current_spot_name");
         }
         Integer availableMinutes = routeRequest.getAvailableMinutesValue();
         if (availableMinutes != null) {
             body.put("available_minutes", availableMinutes);
         }
+        log.info("[RouteContext] onsite route start spotId={}, spotName={}, lng={}, lat={}, availableMinutes={}",
+                body.get("current_spot_id"),
+                body.get("current_spot_name"),
+                routeStartLocation.longitude,
+                routeStartLocation.latitude,
+                availableMinutes);
         Object userProfile = profileContext != null && profileContext.getProfile() != null
                 ? profileContext.getProfile()
                 : routeRequest.getUserProfileValue();
@@ -398,7 +407,10 @@ public class RouteRecommendService {
                 buildAnswer(aiResponseBody, routeData),
                 "已为你生成一条适合当前景区的游览路线。"
         );
-        List<ResolvedRouteNode> resolvedNodes = resolveRouteNodes(routeData, routeAnswer, context.routeCandidateSpots);
+        List<RouteSpotInfo> enrichCandidateSpots = context.candidateSpots == null || context.candidateSpots.isEmpty()
+                ? context.routeCandidateSpots
+                : context.candidateSpots;
+        List<ResolvedRouteNode> resolvedNodes = resolveRouteNodes(routeData, routeAnswer, enrichCandidateSpots);
         if (resolvedNodes.isEmpty()) {
             log.warn("ChatResponse 路线结构未能匹配到真实景点，无法生成路线卡片。userId={}, areaId={}",
                     userId, context.areaId);
@@ -498,17 +510,23 @@ public class RouteRecommendService {
 
     /**
      * 判断是否是真正的现场路线请求上下文。
-     * 只有 visit_status=IN_AREA 且 is_inside_area=true 且 route_start_type=current_spot
+     * 只有 visit_status=IN_PARK/IN_AREA 且 is_inside_area=true
      * 才允许执行现场动态路线增强（candidate_spots / current_location / 入库等）。
      */
     private boolean isOnsiteRouteRequest(GuideChatRequest request) {
         if (request == null) {
             return false;
         }
-        String visitStatus = firstNotBlank(request.getVisitStatus());
-        Boolean isInsideArea = request.getIsInsideArea();
-        return "IN_AREA".equalsIgnoreCase(visitStatus)
-                && isInsideArea != null && isInsideArea;
+        return GuideVisitContextResolver.resolveVisitContext(request).isInPark();
+    }
+
+    private boolean isInParkVisitStatus(String visitStatus) {
+        String normalized = normalizeVisitStatus(visitStatus);
+        return "IN_PARK".equals(normalized);
+    }
+
+    private String normalizeVisitStatus(String visitStatus) {
+        return GuideVisitContextResolver.normalizeVisitStatus(visitStatus);
     }
 
     public boolean isChatRouteIntent(GuideChatRequest request) {
@@ -519,15 +537,7 @@ public class RouteRecommendService {
             return true;
         }
 
-        String question = firstNotBlank(request.getQuestion());
-        if (question.isEmpty()) {
-            return false;
-        }
-        return question.contains("路线")
-                || question.contains("推荐路线")
-                || question.contains("怎么逛")
-                || question.contains("游览顺序")
-                || question.contains("怎么走");
+        return GuideVisitContextResolver.hasRouteIntentText(request.getQuestion());
     }
 
     private Long resolveAreaId(RouteRecommendRequest request) {
@@ -556,10 +566,14 @@ public class RouteRecommendService {
     ) {
         String requestedStartType = firstNotBlank(request.getRouteStartTypeText());
         String currentSpotId = request.getCurrentSpotIdText();
+        String currentSpotName = request.getCurrentSpotNameText();
         RouteSpotInfo currentSpot = null;
 
-        if ("current_spot".equalsIgnoreCase(requestedStartType) && !currentSpotId.isEmpty()) {
-            currentSpot = matchSpotByIdOrName(currentSpotId, request.getCurrentSpotNameText(), candidateSpots);
+        boolean preferCurrentSpot = "current_spot".equalsIgnoreCase(requestedStartType)
+                || (!"park_entrance".equalsIgnoreCase(requestedStartType)
+                && (!currentSpotId.isEmpty() || !currentSpotName.isEmpty()));
+        if (preferCurrentSpot) {
+            currentSpot = matchSpotByIdOrName(currentSpotId, currentSpotName, candidateSpots);
         }
 
         if (currentSpot != null && currentSpot.latitude != null && currentSpot.longitude != null) {
@@ -570,6 +584,15 @@ public class RouteRecommendService {
             start.name = currentSpot.spotName;
             start.latitude = currentSpot.latitude;
             start.longitude = currentSpot.longitude;
+            return start;
+        }
+
+        if (request.getStartLatitudeValue() != null && request.getStartLongitudeValue() != null) {
+            RouteStartLocation start = new RouteStartLocation();
+            start.type = "current_location";
+            start.name = firstNotBlank(request.getCurrentSpotNameText(), "当前位置");
+            start.latitude = request.getStartLatitudeValue();
+            start.longitude = request.getStartLongitudeValue();
             return start;
         }
 
@@ -698,6 +721,8 @@ public class RouteRecommendService {
         request.currentSpotName = chatRequest.getEffectiveCurrentSpotName();
         request.spotId = chatRequest.getEffectiveCurrentSpotId();
         request.spotName = chatRequest.getEffectiveCurrentSpotName();
+        request.startLongitude = chatRequest.getLongitude();
+        request.startLatitude = chatRequest.getLatitude();
         request.question = chatRequest.getQuestion();
         request.preferenceTags = chatRequest.getPreferenceTags();
         request.availableMinutes = chatRequest.getAvailableMinutes();
@@ -1160,15 +1185,17 @@ public class RouteRecommendService {
     ) {
         List<ResolvedRouteNode> result = new ArrayList<>();
         Set<Long> usedSpotIds = new HashSet<>();
+        List<RouteSpotInfo> safeCandidateSpots = candidateSpots == null ? new ArrayList<>() : candidateSpots;
 
         for (Map<String, Object> nodeMap : readNodeMaps(routeData)) {
-            RouteSpotInfo spot = matchSpot(nodeMap, candidateSpots);
+            RouteSpotInfo spot = matchSpot(nodeMap, safeCandidateSpots);
             if (spot == null || usedSpotIds.contains(spot.spotId)) {
                 continue;
             }
 
             ResolvedRouteNode node = new ResolvedRouteNode();
             node.spot = spot;
+            node.coordinateSource = hasOriginalCoordinate(nodeMap) ? "original" : "candidate";
             node.guideText = firstNotBlank(
                     readString(nodeMap, "guide_text", "guideText", "reason", "description", "intro"),
                     spot.intro,
@@ -1184,15 +1211,16 @@ public class RouteRecommendService {
         }
 
         if (result.isEmpty()) {
-            result.addAll(resolveNodesFromAnswer(answer, candidateSpots, usedSpotIds));
+            result.addAll(resolveNodesFromAnswer(answer, safeCandidateSpots, usedSpotIds));
         }
 
         if (result.isEmpty()) {
-            int max = Math.min(5, candidateSpots.size());
+            int max = Math.min(5, safeCandidateSpots.size());
             for (int i = 0; i < max; i++) {
-                RouteSpotInfo spot = candidateSpots.get(i);
+                RouteSpotInfo spot = safeCandidateSpots.get(i);
                 ResolvedRouteNode node = new ResolvedRouteNode();
                 node.spot = spot;
+                node.coordinateSource = "candidate";
                 node.guideText = firstNotBlank(spot.intro, spot.spotName);
                 node.recommendedStayMin = firstInteger(spot.recommendedDurationMin, DEFAULT_STAY_MIN);
                 result.add(node);
@@ -1202,7 +1230,36 @@ public class RouteRecommendService {
         for (int i = 0; i < result.size(); i++) {
             result.get(i).order = i + 1;
         }
+        logRouteNodeEnrichment(result);
         return result;
+    }
+
+    private boolean hasOriginalCoordinate(Map<String, Object> nodeMap) {
+        return readDecimal(nodeMap, "latitude", "lat") != null
+                && readDecimal(nodeMap, "longitude", "lng", "lon") != null;
+    }
+
+    private void logRouteNodeEnrichment(List<ResolvedRouteNode> nodes) {
+        int total = nodes == null ? 0 : nodes.size();
+        int withCoords = 0;
+        if (nodes != null) {
+            for (ResolvedRouteNode node : nodes) {
+                RouteSpotInfo spot = node == null ? null : node.spot;
+                boolean hasCoords = spot != null && spot.longitude != null && spot.latitude != null;
+                if (hasCoords) {
+                    withCoords++;
+                }
+                log.info("[RouteEnrich] node spotId={}, sceneCode={}, name={}, lng={}, lat={}, source={}",
+                        spot == null ? null : spot.spotId,
+                        spot == null ? "" : spot.sceneCode,
+                        spot == null ? "" : spot.spotName,
+                        spot == null ? null : spot.longitude,
+                        spot == null ? null : spot.latitude,
+                        firstNotBlank(node == null ? "" : node.coordinateSource, "candidate"));
+            }
+        }
+        log.info("[RouteEnrich] route nodes total={}, withCoords={}, missingCoords={}",
+                total, withCoords, Math.max(0, total - withCoords));
     }
 
     @SuppressWarnings("unchecked")
@@ -1349,6 +1406,7 @@ public class RouteRecommendService {
         for (AnswerSpotMatch match : matches) {
             ResolvedRouteNode node = new ResolvedRouteNode();
             node.spot = match.spot;
+            node.coordinateSource = "candidate";
             node.guideText = firstNotBlank(match.spot.intro, match.spot.spotName);
             node.recommendedStayMin = firstInteger(match.spot.recommendedDurationMin, DEFAULT_STAY_MIN);
             result.add(node);
@@ -1490,7 +1548,7 @@ public class RouteRecommendService {
 
         String amapKey = firstNotBlank(aiProperties.getAmapWebKey());
         if (amapKey.isEmpty()) {
-            log.warn("未配置 ai.amap-web-key，无法调用高德 WebService 步行规划，已退回节点连线。");
+            log.warn("未配置 ai.amap-web-key，无法调用高德 WebService 步行规划，已保留节点顺序。");
             return RouteRoadResult.fallback(points, "未配置高德 WebService Key，暂按推荐节点顺序展示");
         }
 
@@ -1520,7 +1578,7 @@ public class RouteRecommendService {
             result.totalDistanceM = result.totalDistanceM.add(segment.distanceM);
             result.durationSecond += segment.durationSecond;
 
-            if (segment.points != null) {
+            if (!segment.fallback && segment.points != null) {
                 for (RouteRoadPoint point : segment.points) {
                     appendRoadPointDedup(result.points, point);
                 }
@@ -1539,7 +1597,7 @@ public class RouteRecommendService {
             result.source = "node_fallback";
             result.message = "高德路线暂不可用，已按推荐节点顺序展示";
         } else if (hasFallback) {
-            result.message = "部分路段未获取到高德路线，已按节点顺序补齐";
+            result.message = "部分路段未获取到高德路线，已显示成功路段";
         }
 
         if (result.points.size() < 2) {
@@ -1861,13 +1919,20 @@ public class RouteRecommendService {
         List<ResolvedRouteNode> sortedNodes = sortedResolvedNodes(resolvedNodes);
         route.planId = plan.id == null ? plan.planNo : String.valueOf(plan.id);
         route.routePlanId = plan.id;
+        route.routeId = firstNotBlank(readString(routeData, "routeId", "route_id"), route.planId, plan.planNo);
         route.routeName = plan.routeName;
         route.title = plan.routeName;
         route.reason = plan.reason;
+        route.recommendReason = firstNotBlank(
+                readString(routeData, "recommendReason", "recommend_reason", "reason"),
+                plan.reason
+        );
+        route.profileVersion = readLong(routeData, "profileVersion", "profile_version");
         route.summary = buildRouteNodeSummary(sortedNodes);
         route.totalDistanceM = plan.totalDistanceM;
         route.distanceText = formatDistanceText(plan.totalDistanceM);
         route.estimatedDurationMin = plan.estimatedDurationMin;
+        route.estimatedDurationMinutes = plan.estimatedDurationMin;
         route.durationText = formatDurationText(plan.estimatedDurationMin);
         route.spotCount = sortedNodes.size();
 
@@ -1883,6 +1948,9 @@ public class RouteRecommendService {
             dto.spotId = node.spot.spotId;
             dto.scenicName = node.spot.spotName;
             dto.spotName = node.spot.spotName;
+            dto.displayName = node.spot.spotName;
+            dto.sceneCode = node.spot.sceneCode;
+            dto.nodeName = node.spot.spotName;
             dto.latitude = node.spot.latitude;
             dto.longitude = node.spot.longitude;
             dto.guideText = node.guideText;
@@ -1897,7 +1965,7 @@ public class RouteRecommendService {
 
         route.nodePolyline.addAll(nodePolyline);
 
-        if (roadResult != null && roadResult.points != null && roadResult.points.size() >= 2) {
+        if (roadResult != null && !roadResult.allFallback && roadResult.points != null && roadResult.points.size() >= 2) {
             List<Map<String, BigDecimal>> roadPolyline = toPolylinePointMaps(roadResult.points);
             route.polyline.addAll(roadPolyline);
             route.routePolyline.addAll(roadPolyline);
@@ -1910,11 +1978,10 @@ public class RouteRecommendService {
                     roadResult.allFallback ? "高德路线暂不可用，已按推荐节点顺序展示" : "已生成高德步行路线");
             route.routeMapSource = roadResult.source;
         } else {
-            route.polyline.addAll(nodePolyline);
             route.routeMapReady = false;
             route.mapReady = false;
             route.partialFallback = true;
-            route.routeMapMessage = "高德路线暂不可用，已按推荐节点顺序展示";
+            route.routeMapMessage = "步行路线暂未生成，已保留节点顺序";
             route.routeMapSource = "node_fallback";
         }
 
@@ -1934,6 +2001,8 @@ public class RouteRecommendService {
 
         return Boolean.FALSE.equals(shouldShow)
                 || "pretrip_template".equalsIgnoreCase(routeMode)
+                || "official_template".equalsIgnoreCase(routeMode)
+                || "OFFICIAL_TEMPLATE".equalsIgnoreCase(routeMode)
                 || explicitEmptySpots;
     }
 
@@ -1952,6 +2021,32 @@ public class RouteRecommendService {
 
         route.routeMode = firstNotBlank(readString(routeData, "route_mode", "routeMode"), route.routeMode);
         route.visitStatus = firstNotBlank(readString(routeData, "visit_status", "visitStatus"), route.visitStatus);
+        route.schemaVersion = firstNotBlank(readString(routeData, "schemaVersion", "schema_version"), route.schemaVersion);
+        route.algorithmVersion = firstNotBlank(readString(routeData, "algorithmVersion", "algorithm_version"), route.algorithmVersion);
+        route.routeName = firstNotBlank(readString(routeData, "routeName", "route_name", "name", "title"), route.routeName);
+        Integer durationMinutes = readInteger(routeData, "estimatedDurationMinutes", "estimated_duration_minutes");
+        if (durationMinutes != null) {
+            route.estimatedDurationMinutes = durationMinutes;
+        } else if (route.estimatedDurationMinutes == null) {
+            route.estimatedDurationMinutes = route.estimatedDurationMin;
+        }
+        route.routeId = firstNotBlank(readString(routeData, "routeId", "route_id"), route.routeId, route.planId);
+        route.recommendReason = firstNotBlank(
+                readString(routeData, "recommendReason", "recommend_reason"),
+                route.recommendReason,
+                route.reason
+        );
+        if (!firstNotBlank(route.recommendReason).isEmpty() && firstNotBlank(route.reason).isEmpty()) {
+            route.reason = route.recommendReason;
+        }
+        Long profileVersion = readLong(routeData, "profileVersion", "profile_version");
+        if (profileVersion != null) {
+            route.profileVersion = profileVersion;
+        }
+        Object matchedTags = readObject(routeData, "matchedTags", "matched_tags");
+        if (matchedTags instanceof List<?> list) {
+            route.matchedTags = new ArrayList<Object>(list);
+        }
         Boolean isOfficialTemplate = readBoolean(routeData, "is_official_template", "isOfficialTemplate");
         if (isOfficialTemplate != null) {
             route.isOfficialTemplate = isOfficialTemplate;
@@ -1968,6 +2063,18 @@ public class RouteRecommendService {
         Object templateSpotSequence = readObject(routeData, "template_spot_sequence", "templateSpotSequence");
         if (templateSpotSequence instanceof List<?> list) {
             route.templateSpotSequence = new ArrayList<Object>(list);
+        }
+        Object narrationFocus = readObject(routeData, "narrationFocus", "narration_focus");
+        if (narrationFocus instanceof List<?> list) {
+            route.narrationFocus = new ArrayList<Object>(list);
+        }
+        Object experiencePoints = readObject(routeData, "experiencePoints", "experience_points");
+        if (experiencePoints instanceof List<?> list) {
+            route.experiencePoints = new ArrayList<Object>(list);
+        }
+        Object warnings = readObject(routeData, "warnings");
+        if (warnings instanceof List<?> list) {
+            route.warnings = new ArrayList<Object>(list);
         }
     }
 
@@ -2506,6 +2613,7 @@ public class RouteRecommendService {
 
     private static class ResolvedRouteNode {
         private RouteSpotInfo spot;
+        private String coordinateSource = "";
         private String guideText;
         private Integer recommendedStayMin;
         private Integer order;

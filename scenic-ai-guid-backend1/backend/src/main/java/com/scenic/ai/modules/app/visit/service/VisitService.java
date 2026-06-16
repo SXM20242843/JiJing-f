@@ -351,7 +351,13 @@ public class VisitService {
 
         Long areaId = resolveAreaIdText(areaIdText);
         VisitStatusResponse response = touristVisitSessionMapper.selectLatestVisitStatus(userId, areaId);
-        return response == null ? null : normalizeVisitStatusResponse(response);
+        VisitStatusResponse normalized = response == null ? null : normalizeVisitStatusResponse(response);
+        if (isStaleRunningVisitStatus(normalized, LocalDateTime.now())) {
+            log.warn("[VisitStatus] ignore stale running visit userId={}, areaId={}, visitId={}, startTime={}",
+                    userId, areaId, normalized.visitId, normalized.rawStartTime);
+            return null;
+        }
+        return normalized;
     }
 
     public VisitStatusResponse getVisitOverview(String userId, String areaIdText) {
@@ -363,10 +369,18 @@ public class VisitService {
         VisitStatusResponse running = touristVisitSessionMapper.selectRunningVisitStatus(userId, areaId);
         VisitStatusResponse lastReport = touristVisitSessionMapper.selectLastCompletedVisitStatus(userId, areaId);
 
-        VisitStatusResponse response = running == null ? new VisitStatusResponse() : normalizeVisitStatusResponse(running);
+        VisitStatusResponse normalizedRunning = running == null ? null : normalizeVisitStatusResponse(running);
+        if (isStaleRunningVisitStatus(normalizedRunning, LocalDateTime.now())) {
+            log.warn("[VisitOverview] ignore stale running visit userId={}, areaId={}, visitId={}, startTime={}",
+                    userId, areaId, normalizedRunning.visitId, normalizedRunning.rawStartTime);
+            normalizedRunning = null;
+            running = null;
+        }
+
+        VisitStatusResponse response = normalizedRunning == null ? new VisitStatusResponse() : normalizedRunning;
         response.userId = userId;
-        response.hasRunningVisit = running != null;
-        if (running != null) {
+        response.hasRunningVisit = normalizedRunning != null;
+        if (normalizedRunning != null) {
             response.status = STATUS_ACTIVE_COMPAT;
             response.startedAt = response.startTime;
         }
@@ -379,7 +393,7 @@ public class VisitService {
             response.lastFinishedAt = normalizedReport.endTime;
         }
 
-        if (running == null) {
+        if (normalizedRunning == null) {
             response.visitId = null;
             response.areaId = areaId == null ? null : String.valueOf(areaId);
             response.areaName = null;
@@ -417,10 +431,29 @@ public class VisitService {
     }
 
     private boolean isStaleActiveVisit(TouristVisitSession session, LocalDateTime now) {
-        if (session == null || session.startTime == null || now == null) {
+        if (session == null || now == null) {
             return false;
         }
+        if (session.endTime != null || !isRunningStatus(session.visitStatus, session.endTime)) {
+            return false;
+        }
+        if (session.startTime == null) {
+            return true;
+        }
         return Duration.between(session.startTime, now).toHours() >= STALE_ACTIVE_VISIT_HOURS;
+    }
+
+    private boolean isStaleRunningVisitStatus(VisitStatusResponse response, LocalDateTime now) {
+        if (response == null || now == null) {
+            return false;
+        }
+        if (!isRunningStatus(firstNotBlank(response.rawStatus, response.status), response.rawEndTime)) {
+            return false;
+        }
+        if (response.rawStartTime == null) {
+            return true;
+        }
+        return Duration.between(response.rawStartTime, now).toHours() >= STALE_ACTIVE_VISIT_HOURS;
     }
 
     private void closeStaleActiveVisit(

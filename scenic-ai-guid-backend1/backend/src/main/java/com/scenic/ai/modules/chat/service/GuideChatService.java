@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.scenic.ai.modules.app.route.dto.RouteCardDto;
 import com.scenic.ai.common.config.AiProperties;
+import com.scenic.ai.modules.app.route.client.ProfileContextClient;
 import com.scenic.ai.modules.app.route.service.RouteRecommendService;
 import com.scenic.ai.modules.app.visit.service.VisitService;
 import com.scenic.ai.modules.chat.dto.GuideChatRequest;
@@ -17,17 +18,26 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 @Slf4j
 @Service
@@ -36,6 +46,34 @@ public class GuideChatService {
     private static final long TTS_WAIT_TIMEOUT_MS = 4000L;
     private static final long TTS_WAIT_INTERVAL_MS = 500L;
     private static final int TTS_WAIT_MAX_ATTEMPTS = 8;
+    private static final Set<String> FINAL_AI_PAYLOAD_KEEP_KEYS = new HashSet<String>(Arrays.asList(
+            "question",
+            "user_id",
+            "session_id",
+            "area_id",
+            "area_code",
+            "area_name",
+            "visit_id",
+            "visit_status",
+            "current_spot_id",
+            "current_spot_name",
+            "current_location",
+            "location_context",
+            "route",
+            "user_profile",
+            "short_term_context",
+            "available_minutes",
+            "candidate_spots",
+            "enable_personalization",
+            "options",
+            "input_type",
+            "enable_tts",
+            "enable_context",
+            "voice",
+            "voice_id",
+            "avatar_id",
+            "digital_human_config"
+    ));
 
     private final RestTemplate restTemplate;
     private final AiProperties aiProperties;
@@ -44,6 +82,7 @@ public class GuideChatService {
     private final VisitService visitService;
     private final ChatPersistenceService chatPersistenceService;
     private final RouteRecommendService routeRecommendService;
+    private final ProfileContextClient profileContextClient;
 
     public GuideChatService(RestTemplate restTemplate,
                             AiProperties aiProperties,
@@ -51,7 +90,8 @@ public class GuideChatService {
                             AiQuestionBehaviorService aiQuestionBehaviorService,
                             VisitService visitService,
                             ChatPersistenceService chatPersistenceService,
-                            RouteRecommendService routeRecommendService) {
+                            RouteRecommendService routeRecommendService,
+                            ProfileContextClient profileContextClient) {
         this.restTemplate = restTemplate;
         this.aiProperties = aiProperties;
         this.objectMapper = objectMapper;
@@ -59,12 +99,17 @@ public class GuideChatService {
         this.visitService = visitService;
         this.chatPersistenceService = chatPersistenceService;
         this.routeRecommendService = routeRecommendService;
+        this.profileContextClient = profileContextClient;
     }
 
     public GuideChatResponse callAiService(GuideChatRequest request) {
         chatPersistenceService.ensureTextSessionId(request);
 
-        String visitId = ensureVisitSession(request);
+        GuideVisitContextResolver.VisitContext initialVisitContext = prepareVisitContext(request);
+        String visitId = initialVisitContext.isInPark() ? ensureVisitSession(request) : null;
+        if (!initialVisitContext.isInPark()) {
+            request.setVisitId(null);
+        }
         if (visitId != null && !visitId.isEmpty()) {
             request.setVisitId(visitId);
             visitService.bindChatSessionId(
@@ -91,20 +136,31 @@ public class GuideChatService {
                 }
             }
 
-            applyDigitalHumanOptions(requestBody);
+            applyDigitalHumanOptions(requestBody, request.getOptions());
             applyRoutePayload(requestBody, request, allowRoute);
+            applyUserProfileSnapshot(requestBody, request);
+            finalizeAiRequestBody(requestBody, request, allowRoute);
+            logRouteContextPayload(requestBody, allowRoute);
+            logRouteContractRequest(requestBody, allowRoute);
 
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
             HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
 
             String url = trimTrailingSlash(aiProperties.getBaseUrl()) + aiProperties.getTextChatEndpoint();
-            log.info("调用AI文本问答服务: {}", url);
+            log.info("[GuideChat] request url={}", url);
+            log.info("[GuideChat] request body={}", sanitizeBodyForLog(requestBody));
             Object candidateSpots = requestBody.get("candidate_spots");
             int candidateSpotCount = candidateSpots instanceof List<?> ? ((List<?>) candidateSpots).size() : 0;
-            log.info("AI文本问答请求字段: userId={}, sessionId={}, allowRoute={}, route={}, suppressRoute={}, requestType={}, candidate_spots={}, requestKeys={}",
+            log.info("[GuideChat] request fields: userId={}, sessionId={}, conversationId={}, areaCode={}, areaId={}, currentSpotId={}, currentSpotName={}, sceneCode={}, allowRoute={}, route={}, suppressRoute={}, requestType={}, candidate_spots={}, requestKeys={}",
                     request.getEffectiveUserId(),
                     request.getEffectiveSessionId(),
+                    request.getEffectiveConversationId(),
+                    requestBody.get("area_code"),
+                    requestBody.get("area_id"),
+                    requestBody.get("current_spot_id"),
+                    requestBody.get("current_spot_name"),
+                    requestBody.get("scene_code"),
                     allowRoute,
                     requestBody.get("route"),
                     requestBody.get("suppress_route"),
@@ -119,7 +175,7 @@ public class GuideChatService {
             String isInsideArea = isInsideAreaObj == null ? "null" : String.valueOf(isInsideAreaObj);
             String routeStartType = stringValue(requestBody.get("route_start_type"));
             boolean willEnhanceOnsite = allowRoute
-                    && ("IN_AREA".equalsIgnoreCase(visitStatus)
+                    && ("IN_PARK".equalsIgnoreCase(normalizeVisitStatus(visitStatus))
                         || ("true".equalsIgnoreCase(isInsideArea) && "current_spot".equalsIgnoreCase(routeStartType)));
             log.info("[AI Route Forward] mode={}, requestType={}, routeEnabled={}, visitStatus={}, isInsideArea={}, routeStartType={}, currentSpotId={}, currentSpotName={}, candidateSpotsSize={}, willEnhanceOnsiteRoute={}",
                     request.getMode(),
@@ -134,13 +190,18 @@ public class GuideChatService {
                     willEnhanceOnsite);
 
             ResponseEntity<Map> response = restTemplate.exchange(url, HttpMethod.POST, entity, Map.class);
+            log.info("[GuideChat] httpStatus={}", response.getStatusCode());
             if (response.getStatusCode() == HttpStatus.OK && response.getBody() != null) {
                 Map<String, Object> responseBody = response.getBody();
-                log.info("AI文本问答服务响应成功: status={}, responseKeys={}",
-                        response.getStatusCode(), responseBody.keySet());
+                log.info("[GuideChat] responseBody={}", sanitizeBodyForLog(responseBody));
+                logProfileDeltaIgnored(responseBody, request.getEffectiveUserId(), request.getEffectiveSessionId());
                 GuideChatResponse result = parseAiResponse(responseBody, true);
                 result = waitForTtsIfPending(result);
                 result.setVisitId(visitId);
+                log.info("[GuideChat] parsed answerStatus={}, interactionCategory={}, conversationId={}, success=true",
+                        result.getAnswerStatus(),
+                        result.getInteractionCategory(),
+                        result.getConversationId());
 
                 if (allowRoute && containsRoutePayload(responseBody) && !Boolean.TRUE.equals(request.getRoute())) {
                     request.setRoute(true);
@@ -178,6 +239,7 @@ public class GuideChatService {
                             request.getEffectiveSessionId(),
                             request.getRequestType());
                 }
+                logRouteContractResponse(result);
 
                 chatPersistenceService.saveTextExchangeSafely(
                         request,
@@ -207,6 +269,19 @@ public class GuideChatService {
                     request.getEffectiveUserId()
             );
             return errorResponse;
+        } catch (HttpStatusCodeException e) {
+            log.warn("[GuideChat] AI request failed, status={}, body={}",
+                    e.getStatusCode().value(),
+                    truncateAiErrorBody(e.getResponseBodyAsString()));
+            GuideChatResponse errorResponse = new GuideChatResponse();
+            errorResponse.setAnswer("抱歉，AI服务暂时不可用，请稍后再试。");
+            errorResponse.setVisitId(visitId);
+            chatPersistenceService.saveTextExchangeSafely(
+                    request,
+                    errorResponse,
+                    request.getEffectiveUserId()
+            );
+            return errorResponse;
         } catch (Exception e) {
             log.error("调用AI文本问答服务失败", e);
             GuideChatResponse errorResponse = new GuideChatResponse();
@@ -218,6 +293,118 @@ public class GuideChatService {
                     request.getEffectiveUserId()
             );
             return errorResponse;
+        }
+    }
+
+    public StreamingResponseBody streamAiService(GuideChatRequest request) {
+        return outputStream -> streamAiServiceToOutput(request, outputStream);
+    }
+
+    private void streamAiServiceToOutput(GuideChatRequest request, OutputStream outputStream) throws IOException {
+        chatPersistenceService.ensureTextSessionId(request);
+
+        GuideVisitContextResolver.VisitContext initialVisitContext = prepareVisitContext(request);
+        String visitId = initialVisitContext.isInPark() ? ensureVisitSession(request) : null;
+        if (!initialVisitContext.isInPark()) {
+            request.setVisitId(null);
+        }
+        if (visitId != null && !visitId.isEmpty()) {
+            request.setVisitId(visitId);
+            visitService.bindChatSessionId(
+                    parseLongOrNull(visitId),
+                    request.getEffectiveUserId(),
+                    request.getEffectiveSessionId()
+            );
+        }
+
+        HttpURLConnection connection = null;
+        boolean aiResponseStarted = false;
+        try {
+            Map<String, Object> requestBody = buildAiRequestBody(request);
+            boolean allowRoute = isExplicitRouteRequest(request);
+            if (allowRoute) {
+                try {
+                    routeRecommendService.enrichChatRouteRequest(
+                            request,
+                            request.getEffectiveUserId(),
+                            requestBody
+                    );
+                } catch (Exception e) {
+                    log.warn("SSE Chat 路线请求增强失败，继续普通流式问答。userId={}, sessionId={}",
+                            request.getEffectiveUserId(), request.getEffectiveSessionId(), e);
+                }
+            }
+
+            applyDigitalHumanOptions(requestBody, request.getOptions());
+            applyRoutePayload(requestBody, request, allowRoute);
+            applyUserProfileSnapshot(requestBody, request);
+            finalizeAiRequestBody(requestBody, request, allowRoute);
+            logRouteContextPayload(requestBody, allowRoute);
+            logRouteContractRequest(requestBody, allowRoute);
+
+            String url = buildTextChatUrl();
+            byte[] payload = objectMapper.writeValueAsBytes(requestBody);
+            log.info("[GuideChatSse] request url={}", url);
+            log.info("[GuideChatSse] request body={}", sanitizeBodyForLog(requestBody));
+
+            connection = (HttpURLConnection) URI.create(url).toURL().openConnection();
+            connection.setRequestMethod("POST");
+            connection.setDoOutput(true);
+            connection.setUseCaches(false);
+            connection.setRequestProperty("Content-Type", "application/json");
+            connection.setRequestProperty("Accept", "text/event-stream");
+            connection.setRequestProperty("Cache-Control", "no-cache");
+            connection.setConnectTimeout(10000);
+            connection.setReadTimeout(0);
+
+            try (OutputStream aiOutput = connection.getOutputStream()) {
+                aiOutput.write(payload);
+                aiOutput.flush();
+            }
+
+            int statusCode = connection.getResponseCode();
+            log.info("[GuideChatSse] httpStatus={}", statusCode);
+
+            InputStream aiInput = statusCode >= 400 ? connection.getErrorStream() : connection.getInputStream();
+            if (aiInput == null) {
+                writeSseError(outputStream, statusCode, "AI服务暂时不可用，请稍后再试。");
+                return;
+            }
+
+            if (statusCode >= 400) {
+                String errorBody = readSmallErrorBody(aiInput);
+                log.warn("[GuideChatSse] AI request failed, status={}, body={}",
+                        statusCode,
+                        truncateAiErrorBody(errorBody));
+                writeSseError(outputStream, statusCode, errorBody);
+                return;
+            }
+
+            try (InputStream input = aiInput) {
+                byte[] buffer = new byte[4096];
+                int read;
+                while ((read = input.read(buffer)) != -1) {
+                    aiResponseStarted = true;
+                    outputStream.write(buffer, 0, read);
+                    outputStream.flush();
+                }
+            }
+        } catch (IOException e) {
+            if (aiResponseStarted) {
+                log.info("[GuideChatSse] 客户端断开或 AI 流中断，已关闭 AI 连接。userId={}, sessionId={}, message={}",
+                        request.getEffectiveUserId(), request.getEffectiveSessionId(), e.getMessage());
+            } else {
+                log.warn("[GuideChatSse] 建立 AI 流式连接失败。userId={}, sessionId={}, message={}",
+                        request.getEffectiveUserId(), request.getEffectiveSessionId(), e.getMessage());
+                writeSseErrorQuietly(outputStream, 500, "抱歉，AI服务暂时不可用，请稍后再试。");
+            }
+        } catch (Exception e) {
+            log.error("[GuideChatSse] 调用 AI 流式问答服务失败", e);
+            writeSseErrorQuietly(outputStream, 500, "抱歉，AI服务暂时不可用，请稍后再试。");
+        } finally {
+            if (connection != null) {
+                connection.disconnect();
+            }
         }
     }
 
@@ -367,6 +554,15 @@ public class GuideChatService {
         return url.toString();
     }
 
+    private String buildTextChatUrl() {
+        String endpoint = firstNotBlank(aiProperties.getTextChatEndpoint(), "/api/chat");
+        String lowerEndpoint = endpoint.toLowerCase();
+        if (lowerEndpoint.startsWith("http://") || lowerEndpoint.startsWith("https://")) {
+            return endpoint;
+        }
+        return trimTrailingSlash(aiProperties.getBaseUrl()) + (endpoint.startsWith("/") ? endpoint : "/" + endpoint);
+    }
+
     private void appendQueryParam(StringBuilder url, String key, String value) {
         if (url == null || !hasText(key) || !hasText(value)) {
             return;
@@ -375,6 +571,50 @@ public class GuideChatService {
                 .append(URLEncoder.encode(key, StandardCharsets.UTF_8))
                 .append("=")
                 .append(URLEncoder.encode(value.trim(), StandardCharsets.UTF_8));
+    }
+
+    private void writeSseError(OutputStream outputStream, int code, String message) throws IOException {
+        String payload = "event: error\n"
+                + "data: {\"code\":" + code + ",\"message\":\"" + escapeJson(message) + "\"}\n\n";
+        outputStream.write(payload.getBytes(StandardCharsets.UTF_8));
+        outputStream.flush();
+    }
+
+    private void writeSseErrorQuietly(OutputStream outputStream, int code, String message) {
+        try {
+            writeSseError(outputStream, code, message);
+        } catch (IOException ignored) {
+            // 客户端已断开时无需再写错误事件。
+        }
+    }
+
+    private String readSmallErrorBody(InputStream errorStream) throws IOException {
+        if (errorStream == null) {
+            return "AI服务暂时不可用，请稍后再试。";
+        }
+        try (InputStream input = errorStream) {
+            String body = new String(input.readNBytes(4096), StandardCharsets.UTF_8).trim();
+            return hasText(body) ? body : "AI服务暂时不可用，请稍后再试。";
+        }
+    }
+
+    private String truncateAiErrorBody(String body) {
+        String text = body == null ? "" : body.trim();
+        if (text.length() <= 2000) {
+            return text;
+        }
+        return text.substring(0, 2000);
+    }
+
+    private String escapeJson(String value) {
+        if (value == null) {
+            return "";
+        }
+        return value
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\r", " ")
+                .replace("\n", " ");
     }
 
     /**
@@ -401,32 +641,81 @@ public class GuideChatService {
         String parkName = firstNotBlank(request.getParkName(), areaName, "");
         String currentSpotId = firstNotBlank(request.getEffectiveCurrentSpotId());
         String currentSpotName = firstNotBlank(request.getEffectiveCurrentSpotName());
+        String normalizedVisitStatus = normalizeVisitStatus(request.getVisitStatus());
+        boolean insideArea = request.getIsInsideArea() != null
+                ? request.getIsInsideArea()
+                : "IN_PARK".equals(normalizedVisitStatus);
 
+        body.put("userId", userId);
         body.put("user_id", userId);
-        body.put("question", request.getQuestion());
+        body.put("question", firstNotBlank(request.getQuestion(), request.getRawQuestion()));
+        putIfHasText(body, "rawQuestion", request.getRawQuestion());
+        putIfHasText(body, "raw_question", request.getRawQuestion());
+        body.put("inputType", firstNotBlank(request.getInputType(), "text"));
         body.put("input_type", firstNotBlank(request.getInputType(), "text"));
         body.put("voice", request.getEffectiveVoice());
+        body.put("enableTts", request.getEffectiveEnableTts());
         body.put("enable_tts", request.getEffectiveEnableTts());
+        body.put("ttsEnabled", request.getEffectiveEnableTts());
+        body.put("tts_enabled", request.getEffectiveEnableTts());
+        body.put("enableContext", request.getEffectiveEnableContext());
         body.put("enable_context", request.getEffectiveEnableContext());
 
+        putIfHasText(body, "sessionId", request.getEffectiveSessionId());
         putIfHasText(body, "session_id", request.getEffectiveSessionId());
-        putIfHasText(body, "conversation_id", request.getConversationId());
+        putIfHasText(body, "conversationId", request.getEffectiveConversationId());
+        putIfHasText(body, "conversation_id", request.getEffectiveConversationId());
+        putIfHasText(body, "visitId", request.getVisitId());
         putIfHasText(body, "visit_id", request.getVisitId());
+        putIfHasText(body, "visitNo", request.getVisitNo());
+        putIfHasText(body, "visit_no", request.getVisitNo());
         putIfHasText(body, "mode", request.getMode());
         if (request.getAreaId() != null) {
+            body.put("areaId", request.getAreaId());
             body.put("area_id", request.getAreaId());
         }
+        putIfHasText(body, "parkId", parkId);
         putIfHasText(body, "park_id", parkId);
+        putIfHasText(body, "parkName", parkName);
         putIfHasText(body, "park_name", parkName);
+        putIfHasText(body, "scenicId", currentSpotId);
         putIfHasText(body, "scenic_id", currentSpotId);
+        putIfHasText(body, "scenicName", currentSpotName);
         putIfHasText(body, "scenic_name", currentSpotName);
+        putIfHasText(body, "areaCode", areaCode);
         putIfHasText(body, "area_code", areaCode);
+        putIfHasText(body, "areaName", areaName);
         putIfHasText(body, "area_name", areaName);
+        putIfHasText(body, "currentSpotId", currentSpotId);
         putIfHasText(body, "current_spot_id", currentSpotId);
+        putIfHasText(body, "currentSpotName", currentSpotName);
         putIfHasText(body, "current_spot_name", currentSpotName);
-        putIfHasText(body, "visit_status", request.getVisitStatus());
-        if (request.getIsInsideArea() != null) {
-            body.put("is_inside_area", request.getIsInsideArea());
+        putIfHasText(body, "sceneCode", request.getSceneCode());
+        putIfHasText(body, "scene_code", request.getSceneCode());
+        body.put("visitStatus", normalizedVisitStatus);
+        body.put("visit_status", normalizedVisitStatus);
+        putIfHasText(body, "routeStartType", request.getRouteStartType());
+        putIfHasText(body, "route_start_type", request.getRouteStartType());
+        body.put("isInsideArea", insideArea);
+        body.put("is_inside_area", insideArea);
+        if (request.getAvailableMinutes() != null) {
+            body.put("availableMinutes", request.getAvailableMinutes());
+            body.put("available_minutes", request.getAvailableMinutes());
+        }
+        Integer remainingMinutes = request.getRemainingMinutes() == null
+                ? request.getAvailableMinutes()
+                : request.getRemainingMinutes();
+        if (remainingMinutes != null) {
+            body.put("remainingMinutes", remainingMinutes);
+            body.put("remaining_minutes", remainingMinutes);
+        }
+        Object travelParty = normalizeFlexibleObject(request.getTravelParty());
+        if (travelParty == null) {
+            travelParty = buildTravelParty(request.getGroupSize(), request.getTravelType(), request.getVisitPreference());
+        }
+        if (travelParty != null) {
+            body.put("travelParty", travelParty);
+            body.put("travel_party", travelParty);
         }
         if (request.getLatitude() != null) {
             body.put("latitude", request.getLatitude());
@@ -434,27 +723,65 @@ public class GuideChatService {
         if (request.getLongitude() != null) {
             body.put("longitude", request.getLongitude());
         }
-        if (request.getLocationContext() != null) {
-            body.put("location_context", request.getLocationContext());
+        Map<String, Object> location = buildRouteContractLocation(request);
+        if (!location.isEmpty()) {
+            body.put("location", location);
         }
-        if (request.getNetworkContext() != null) {
-            body.put("network_context", request.getNetworkContext());
+        Map<String, Object> currentSpot = buildRouteContractCurrentSpot(request, currentSpotId, currentSpotName);
+        if (!currentSpot.isEmpty()) {
+            body.put("currentSpot", currentSpot);
+            body.put("current_spot", currentSpot);
+        }
+        Object context = normalizeFlexibleObject(request.getContext());
+        if (context != null) {
+            body.put("context", context);
+        }
+        Object locationContext = normalizeFlexibleObject(request.getLocationContext());
+        if (locationContext != null) {
+            body.put("locationContext", locationContext);
+            body.put("location_context", locationContext);
+        }
+        Object networkContext = normalizeFlexibleObject(request.getNetworkContext());
+        if (networkContext != null) {
+            body.put("networkContext", networkContext);
+            body.put("network_context", networkContext);
         }
         if (request.getRouteIntent() != null) {
+            body.put("routeIntent", request.getRouteIntent());
             body.put("route_intent", request.getRouteIntent());
         }
         if (request.getSuppressRoute() != null) {
+            body.put("suppressRoute", request.getSuppressRoute());
             body.put("suppress_route", request.getSuppressRoute());
         }
+        putIfHasText(body, "requestType", request.getRequestType());
         putIfHasText(body, "request_type", request.getRequestType());
+        Object shortTermContext = normalizeFlexibleObject(request.getShortTermContext());
+        if (shortTermContext != null) {
+            body.put("shortTermContext", shortTermContext);
+            body.put("short_term_context", shortTermContext);
+        }
         putIfHasText(body, "trigger", resolveTrigger(request));
         if (request.getEffectiveProfile() != null) {
             body.put("profile", request.getEffectiveProfile());
         }
+        Object profileSnapshot = normalizeFlexibleObject(request.getProfileSnapshot());
+        if (profileSnapshot != null) {
+            body.put("profileSnapshot", profileSnapshot);
+            body.put("profile_snapshot", profileSnapshot);
+        }
+        Object currentVisitContext = normalizeFlexibleObject(request.getCurrentVisitContext());
+        if (currentVisitContext != null) {
+            body.put("currentVisitContext", currentVisitContext);
+            body.put("current_visit_context", currentVisitContext);
+        }
         if (request.getDigitalHumanConfig() != null) {
+            body.put("digitalHumanConfig", request.getDigitalHumanConfig());
             body.put("digital_human_config", request.getDigitalHumanConfig());
         }
+        putIfHasText(body, "voiceId", request.getVoiceId());
         putIfHasText(body, "voice_id", request.getVoiceId());
+        putIfHasText(body, "avatarId", request.getAvatarId());
         putIfHasText(body, "avatar_id", request.getAvatarId());
 
         Map<String, Object> clientContext = request.getClientContext();
@@ -477,11 +804,17 @@ public class GuideChatService {
                     ? clientContext.get("suppressRoute")
                     : request.getSuppressRoute());
         }
-        if (hasText(request.getVisitStatus()) && !clientContext.containsKey("visit_status")) {
-            clientContext.put("visit_status", request.getVisitStatus());
+        if (!clientContext.containsKey("visit_status")) {
+            clientContext.put("visit_status", normalizedVisitStatus);
         }
-        if (request.getIsInsideArea() != null && !clientContext.containsKey("is_inside_area")) {
-            clientContext.put("is_inside_area", request.getIsInsideArea());
+        if (!clientContext.containsKey("visitStatus")) {
+            clientContext.put("visitStatus", normalizedVisitStatus);
+        }
+        if (!clientContext.containsKey("is_inside_area")) {
+            clientContext.put("is_inside_area", insideArea);
+        }
+        if (!clientContext.containsKey("isInsideArea")) {
+            clientContext.put("isInsideArea", insideArea);
         }
         if (hasText(request.getRequestType()) && !clientContext.containsKey("requestType")) {
             clientContext.put("requestType", request.getRequestType());
@@ -491,19 +824,25 @@ public class GuideChatService {
         return body;
     }
 
-    private void applyDigitalHumanOptions(Map<String, Object> body) {
-        Map<String, Object> options = new LinkedHashMap<String, Object>();
-        options.put("responseMode", "digital_human");
-        options.put("enableTts", true);
-        options.put("ttsMode", "async");
-        options.put("includeMouthFrames", true);
-        options.put("includeSources", false);
-        options.put("includeDebug", false);
+    private void applyDigitalHumanOptions(Map<String, Object> body, Object requestOptions) {
+        Map<String, Object> options = asMutableMap(normalizeFlexibleObject(requestOptions));
+        if (options == null) {
+            options = new LinkedHashMap<String, Object>();
+        }
+        options.putIfAbsent("responseMode", "digital_human");
+        options.putIfAbsent("enableTts", true);
+        options.putIfAbsent("ttsMode", "async");
+        options.putIfAbsent("includeMouthFrames", true);
+        options.putIfAbsent("includeSources", false);
+        options.putIfAbsent("includeDebug", false);
         body.put("options", options);
     }
 
     private void applyRoutePayload(Map<String, Object> body, GuideChatRequest request, boolean allowRoute) {
-        Map<String, Object> routePayload = new LinkedHashMap<String, Object>();
+        Map<String, Object> routePayload = asMutableMap(normalizeFlexibleObject(request.getRoutePayload()));
+        if (routePayload == null) {
+            routePayload = new LinkedHashMap<String, Object>();
+        }
         routePayload.put("enabled", allowRoute);
 
         if (allowRoute) {
@@ -512,19 +851,454 @@ public class GuideChatService {
                 availableMinutes = readInteger(body.get("available_minutes"));
             }
             if (availableMinutes != null) {
-                routePayload.put("availableMinutes", availableMinutes);
+                routePayload.put("available_minutes", availableMinutes);
             }
-            routePayload.put("preferenceTags",
+            routePayload.put("preference_tags",
                     request.getPreferenceTags() == null ? new ArrayList<String>() : request.getPreferenceTags());
-            routePayload.put("avoidTags", new ArrayList<String>());
+            routePayload.put("avoid_tags", new ArrayList<String>());
+            routePayload.remove("availableMinutes");
+            routePayload.remove("preferenceTags");
+            routePayload.remove("avoidTags");
             body.put("route", routePayload);
-            body.put("route_enabled", true);
             return;
         }
 
         body.put("route", routePayload);
-        body.put("route_enabled", false);
-        body.put("suppress_route", true);
+    }
+
+    private GuideVisitContextResolver.VisitContext prepareVisitContext(GuideChatRequest request) {
+        GuideVisitContextResolver.VisitContext context = GuideVisitContextResolver.resolveVisitContext(request);
+        if (request != null) {
+            request.setVisitStatus(context.getVisitStatus());
+            request.setIsInsideArea(context.isInPark());
+        }
+        return context;
+    }
+
+    private void finalizeAiRequestBody(Map<String, Object> body, GuideChatRequest request, boolean allowRoute) {
+        if (body == null || request == null) {
+            return;
+        }
+
+        GuideVisitContextResolver.VisitContext visitContext = prepareVisitContext(request);
+        body.put("visit_status", visitContext.getVisitStatus());
+        putIfHasText(body, "user_id", request.getEffectiveUserId());
+        putIfHasText(body, "session_id", request.getEffectiveSessionId());
+        if (request.getAreaId() != null) {
+            body.put("area_id", request.getAreaId());
+        }
+        putIfHasText(body, "area_code", firstNotBlank(request.getAreaCode(), request.getParkId()));
+        putIfHasText(body, "area_name", firstNotBlank(request.getAreaName(), request.getScenicName(), request.getParkName()));
+
+        normalizeRoutePayloadForAi(body, request, allowRoute);
+        normalizeProfilePayloadForAi(body);
+        normalizeOperationalOptionsForAi(body);
+
+        if (visitContext.isInPark()) {
+            putIfHasText(body, "visit_id", request.getVisitId());
+            String currentSpotId = firstNotBlank(visitContext.getCurrentSpotId(), stringValue(body.get("current_spot_id")));
+            String currentSpotName = firstNotBlank(visitContext.getCurrentSpotName(), stringValue(body.get("current_spot_name")));
+            if (GuideVisitContextResolver.isUsableCurrentSpot(
+                    currentSpotId,
+                    currentSpotName,
+                    request.getAreaId(),
+                    firstNotBlank(request.getAreaCode(), request.getParkId()),
+                    firstNotBlank(request.getAreaName(), request.getParkName()),
+                    request.getParkId(),
+                    request.getParkName())) {
+                putIfHasText(body, "current_spot_id", currentSpotId);
+                putIfHasText(body, "current_spot_name", currentSpotName);
+            } else {
+                body.remove("current_spot_id");
+                body.remove("current_spot_name");
+            }
+
+            Map<String, Object> currentLocation = buildCurrentLocationForAi(body, request);
+            if (!currentLocation.isEmpty()) {
+                body.put("current_location", currentLocation);
+            } else {
+                body.remove("current_location");
+            }
+
+            Map<String, Object> locationContext = sanitizeLocationContextForAi(
+                    firstNonNull(body.get("location_context"), request.getLocationContext())
+            );
+            if (!locationContext.isEmpty()) {
+                body.put("location_context", locationContext);
+            } else if (!currentLocation.isEmpty()) {
+                Map<String, Object> fallbackContext = new LinkedHashMap<String, Object>();
+                fallbackContext.put("source", "SIMULATED");
+                fallbackContext.put("confidence_level", "HIGH");
+                body.put("location_context", fallbackContext);
+            } else {
+                body.remove("location_context");
+            }
+        } else {
+            body.remove("visit_id");
+            body.remove("current_spot_id");
+            body.remove("current_spot_name");
+            body.remove("current_location");
+            body.remove("location_context");
+            body.remove("candidate_spots");
+            body.remove("short_term_context");
+        }
+
+        removeDisallowedAiPayloadFields(body);
+    }
+
+    private void normalizeRoutePayloadForAi(Map<String, Object> body, GuideChatRequest request, boolean allowRoute) {
+        Map<String, Object> routePayload = asMutableMap(normalizeFlexibleObject(body.get("route")));
+        if (routePayload == null) {
+            routePayload = new LinkedHashMap<String, Object>();
+        }
+        routePayload.put("enabled", allowRoute);
+        Integer availableMinutes = request.getAvailableMinutes();
+        if (availableMinutes == null) {
+            availableMinutes = readInteger(firstNonNull(routePayload.get("available_minutes"), body.get("available_minutes")));
+        }
+        if (availableMinutes != null) {
+            routePayload.put("available_minutes", availableMinutes);
+            body.put("available_minutes", availableMinutes);
+        }
+        routePayload.remove("availableMinutes");
+        routePayload.remove("preferenceTags");
+        routePayload.remove("avoidTags");
+        body.put("route", routePayload);
+    }
+
+    private void normalizeProfilePayloadForAi(Map<String, Object> body) {
+        Object profile = firstNonNull(body.get("user_profile"), body.get("userProfile"), body.get("profileSnapshot"), body.get("profile_snapshot"));
+        if (profile != null) {
+            body.put("user_profile", profile);
+        }
+        Object personalization = firstNonNull(body.get("enable_personalization"), body.get("enablePersonalization"));
+        if (personalization != null) {
+            body.put("enable_personalization", personalization);
+        }
+        Object shortTermContext = firstNonNull(body.get("short_term_context"), body.get("shortTermContext"));
+        if (shortTermContext != null) {
+            body.put("short_term_context", shortTermContext);
+        }
+    }
+
+    private void normalizeOperationalOptionsForAi(Map<String, Object> body) {
+        Map<String, Object> options = asMutableMap(normalizeFlexibleObject(body.get("options")));
+        if (options == null) {
+            return;
+        }
+        moveOptionToSnake(options, "response_mode", "responseMode");
+        moveOptionToSnake(options, "enable_tts", "enableTts");
+        moveOptionToSnake(options, "tts_mode", "ttsMode");
+        moveOptionToSnake(options, "include_mouth_frames", "includeMouthFrames");
+        moveOptionToSnake(options, "include_sources", "includeSources");
+        moveOptionToSnake(options, "include_debug", "includeDebug");
+        options.remove("route");
+        body.put("options", options);
+    }
+
+    private void moveOptionToSnake(Map<String, Object> options, String snakeKey, String camelKey) {
+        if (options == null) {
+            return;
+        }
+        if (!options.containsKey(snakeKey) && options.containsKey(camelKey)) {
+            options.put(snakeKey, options.get(camelKey));
+        }
+        options.remove(camelKey);
+    }
+
+    private Map<String, Object> buildCurrentLocationForAi(Map<String, Object> body, GuideChatRequest request) {
+        Map<String, Object> location = asMutableMap(normalizeFlexibleObject(body.get("current_location")));
+        if (location == null || location.isEmpty()) {
+            location = asMutableMap(normalizeFlexibleObject(request.getLocation()));
+        }
+        if (location == null) {
+            location = new LinkedHashMap<String, Object>();
+        }
+
+        Object longitude = firstNonNull(location.get("longitude"), body.get("longitude"), request.getLongitude());
+        Object latitude = firstNonNull(location.get("latitude"), body.get("latitude"), request.getLatitude());
+        Map<String, Object> result = new LinkedHashMap<String, Object>();
+        if (longitude != null && latitude != null) {
+            result.put("longitude", longitude);
+            result.put("latitude", latitude);
+        }
+        return result;
+    }
+
+    private Map<String, Object> sanitizeLocationContextForAi(Object rawContext) {
+        Map<String, Object> source = asMutableMap(normalizeFlexibleObject(rawContext));
+        Map<String, Object> result = new LinkedHashMap<String, Object>();
+        if (source != null) {
+            putMapObjectIfPresent(result, "source", source.get("source"));
+            putMapObjectIfPresent(result, "confidence_level", firstNonNull(source.get("confidence_level"), source.get("confidenceLevel")));
+            putMapObjectIfPresent(result, "confidence", source.get("confidence"));
+        }
+        return result;
+    }
+
+    private void putMapObjectIfPresent(Map<String, Object> target, String key, Object value) {
+        if (target == null || key == null || value == null) {
+            return;
+        }
+        String text = String.valueOf(value).trim();
+        if (!text.isEmpty()) {
+            target.put(key, value);
+        }
+    }
+
+    private void removeDisallowedAiPayloadFields(Map<String, Object> body) {
+        List<String> keys = new ArrayList<String>(body.keySet());
+        for (String key : keys) {
+            if (key == null) {
+                continue;
+            }
+            if (containsUppercase(key) || !FINAL_AI_PAYLOAD_KEEP_KEYS.contains(key)) {
+                body.remove(key);
+            }
+        }
+        body.remove("location");
+        body.remove("latitude");
+        body.remove("longitude");
+        body.remove("is_inside_area");
+        body.remove("route_start");
+        body.remove("route_start_type");
+        body.remove("route_start_location");
+        body.remove("route_start_latitude");
+        body.remove("route_start_longitude");
+        body.remove("start_spot_id");
+        body.remove("start_spot_name");
+        body.remove("start_latitude");
+        body.remove("start_longitude");
+        body.remove("current_spot");
+        body.remove("route_enabled");
+        body.remove("route_intent");
+        body.remove("suppress_route");
+    }
+
+    private boolean containsUppercase(String value) {
+        if (value == null) {
+            return false;
+        }
+        for (int i = 0; i < value.length(); i++) {
+            if (Character.isUpperCase(value.charAt(i))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void applyUserProfileSnapshot(Map<String, Object> body, GuideChatRequest request) {
+        if (body == null || request == null) {
+            return;
+        }
+
+        Map<String, Object> snapshot = profileContextClient.getProfileSnapshotForAi(
+                request.getEffectiveUserId(),
+                request.getAreaId(),
+                firstNotBlank(request.getAreaCode(), request.getParkId()),
+                request.getEffectiveScenicId(),
+                request.getEffectiveParkName()
+        );
+
+        if (snapshot == null || snapshot.isEmpty()) {
+            body.put("enablePersonalization", false);
+            body.put("enable_personalization", false);
+            removeLegacyProfileFields(body);
+            body.remove("userProfile");
+            body.remove("user_profile");
+            body.remove("profileSnapshot");
+            body.remove("profile_snapshot");
+            log.info("[GuideChat] personalization disabled userId={}, areaCode={}, areaId={}",
+                    request.getEffectiveUserId(), firstNotBlank(request.getAreaCode(), request.getParkId()), request.getAreaId());
+            return;
+        }
+
+        body.put("enablePersonalization", true);
+        body.put("enable_personalization", true);
+        removeLegacyProfileFields(body);
+        body.put("userProfile", snapshot);
+        body.put("user_profile", snapshot);
+        body.put("profileSnapshot", snapshot);
+        body.put("profile_snapshot", snapshot);
+        log.info("[GuideChat] personalization enabled userId={}, areaCode={}, areaId={}, profileVersion={}, profileTags={}",
+                request.getEffectiveUserId(),
+                snapshot.get("areaCode"),
+                snapshot.get("areaId"),
+                snapshot.get("profileVersion"),
+                snapshot.get("profileTags") instanceof List<?> list ? list.size() : 0);
+    }
+
+    private void removeLegacyProfileFields(Map<String, Object> body) {
+        body.remove("profile");
+        body.remove("profile_tags");
+        body.remove("profileTags");
+        body.remove("short_term_context");
+        body.remove("shortTermContext");
+    }
+
+    private Map<String, Object> buildTravelParty(String groupSize, String travelType, String visitPreference) {
+        Map<String, Object> party = new LinkedHashMap<String, Object>();
+        Integer parsedGroupSize = parseGroupSize(groupSize);
+        if (parsedGroupSize != null) {
+            party.put("groupSize", parsedGroupSize);
+        }
+        String mergedText = firstNotBlank(groupSize) + " " + firstNotBlank(travelType) + " " + firstNotBlank(visitPreference);
+        if (hasText(mergedText)) {
+            party.put("withChildren", mergedText.contains("亲子") || mergedText.contains("儿童") || mergedText.contains("孩子"));
+            party.put("withElderly", mergedText.contains("老人") || mergedText.contains("长辈") || mergedText.contains("老年"));
+        }
+        return party.isEmpty() ? null : party;
+    }
+
+    private Integer parseGroupSize(String groupSize) {
+        String text = firstNotBlank(groupSize);
+        if (!hasText(text)) {
+            return null;
+        }
+        String digits = text.replaceAll("[^0-9]", "");
+        if (!hasText(digits)) {
+            return null;
+        }
+        try {
+            return Integer.parseInt(digits.length() > 1 && text.contains("-") ? digits.substring(0, 1) : digits);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private String normalizeVisitStatus(String value) {
+        return GuideVisitContextResolver.normalizeVisitStatus(value);
+    }
+
+    private Map<String, Object> buildRouteContractLocation(GuideChatRequest request) {
+        Map<String, Object> location = asMutableMap(normalizeFlexibleObject(request.getLocation()));
+        if (location == null) {
+            location = new LinkedHashMap<String, Object>();
+        }
+        if (request.getLongitude() != null && !location.containsKey("longitude")) {
+            location.put("longitude", request.getLongitude());
+        }
+        if (request.getLatitude() != null && !location.containsKey("latitude")) {
+            location.put("latitude", request.getLatitude());
+        }
+        if (request.getAccuracyMeters() != null && !location.containsKey("accuracyMeters")) {
+            location.put("accuracyMeters", request.getAccuracyMeters());
+            location.put("accuracy_meters", request.getAccuracyMeters());
+        }
+        return location;
+    }
+
+    private Map<String, Object> buildRouteContractCurrentSpot(GuideChatRequest request,
+                                                              String currentSpotId,
+                                                              String currentSpotName) {
+        Map<String, Object> currentSpot = asMutableMap(normalizeFlexibleObject(request.getCurrentSpot()));
+        if (currentSpot == null) {
+            currentSpot = new LinkedHashMap<String, Object>();
+        }
+        putMapIfMissing(currentSpot, "spotId", currentSpotId);
+        putMapIfMissing(currentSpot, "spot_id", currentSpotId);
+        putMapIfMissing(currentSpot, "sceneCode", request.getSceneCode());
+        putMapIfMissing(currentSpot, "scene_code", request.getSceneCode());
+        putMapIfMissing(currentSpot, "spotName", currentSpotName);
+        putMapIfMissing(currentSpot, "spot_name", currentSpotName);
+        return currentSpot;
+    }
+
+    private void putMapIfMissing(Map<String, Object> map, String key, String value) {
+        if (map == null || !hasText(key) || !hasText(value)) {
+            return;
+        }
+        Object current = map.get(key);
+        if (current == null || !hasText(String.valueOf(current))) {
+            map.put(key, value.trim());
+        }
+    }
+
+    private void logRouteContractRequest(Map<String, Object> body, boolean routeIntent) {
+        if (body == null) {
+            return;
+        }
+        log.info("[RouteContract] request visitStatus={}, visitId={}, conversationId={}, routeIntent={}, areaId={}, areaCode={}, currentSpot={}",
+                body.get("visit_status"),
+                body.get("visit_id"),
+                body.get("conversation_id"),
+                routeIntent,
+                body.get("area_id"),
+                body.get("area_code"),
+                body.get("current_spot"));
+    }
+
+    private void logRouteContextPayload(Map<String, Object> body, boolean allowRoute) {
+        if (body == null || !allowRoute) {
+            return;
+        }
+        if (!"NOT_ARRIVED".equalsIgnoreCase(stringValue(body.get("visit_status")))) {
+            return;
+        }
+        log.info("[RouteContext] pre-arrival route payload visit_status=NOT_ARRIVED, hasVisitId={}, hasCurrentSpot={}, hasCurrentLocation={}, routeEnabled={}",
+                hasPayloadValue(body, "visit_id"),
+                hasPayloadValue(body, "current_spot_id", "current_spot_name", "current_spot"),
+                hasPayloadValue(body, "current_location", "location", "location_context"),
+                isRoutePayloadEnabled(body.get("route")));
+    }
+
+    private boolean hasPayloadValue(Map<String, Object> body, String... keys) {
+        if (body == null || keys == null) {
+            return false;
+        }
+        for (String key : keys) {
+            Object value = body.get(key);
+            if (value instanceof Map<?, ?> map && !map.isEmpty()) {
+                return true;
+            }
+            if (value instanceof List<?> list && !list.isEmpty()) {
+                return true;
+            }
+            if (value != null && hasText(String.valueOf(value))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isRoutePayloadEnabled(Object route) {
+        if (route instanceof Map<?, ?> map) {
+            return isTruthy(map.get("enabled"));
+        }
+        return isTruthy(route);
+    }
+
+    private void logRouteContractResponse(GuideChatResponse result) {
+        if (result == null) {
+            return;
+        }
+        RouteCardDto route = result.getRoute();
+        log.info("[RouteContract] response routeIntent={}, routeId={}, routeMode={}, spots={}",
+                result.getRouteIntent(),
+                route == null ? "" : firstNotBlank(route.routeId),
+                route == null ? "" : firstNotBlank(route.routeMode),
+                countRouteSpots(route));
+    }
+
+    private int countRouteSpots(RouteCardDto route) {
+        if (route == null) {
+            return 0;
+        }
+        if (route.spots != null && !route.spots.isEmpty()) {
+            return route.spots.size();
+        }
+        return route.nodes == null ? 0 : route.nodes.size();
+    }
+
+    private void logProfileDeltaIgnored(Map<String, Object> responseBody, String userId, String sessionId) {
+        Map<String, Object> dataMap = readMap(responseBody, "data");
+        Object profileDelta = firstNonNull(
+                readObject(dataMap, "profileDelta", "profile_delta"),
+                readObject(responseBody, "profileDelta", "profile_delta")
+        );
+        if (profileDelta != null) {
+            log.debug("[GuideChat] ignore profileDelta from AI, userId={}, sessionId={}", userId, sessionId);
+        }
     }
 
     private String resolveTrigger(GuideChatRequest request) {
@@ -591,21 +1365,7 @@ public class GuideChatService {
     }
 
     private boolean hasRouteIntentText(String question) {
-        String text = firstNotBlank(question);
-        if (text.isEmpty()) {
-            return false;
-        }
-        return text.contains("推荐路线")
-                || text.contains("规划路线")
-                || text.contains("游览路线")
-                || text.contains("路线规划")
-                || text.contains("怎么走")
-                || text.contains("导航")
-                || text.contains("怎么逛")
-                || text.contains("如何逛")
-                || text.contains("游览顺序")
-                || text.contains("接下来去哪")
-                || text.contains("下一站去哪");
+        return GuideVisitContextResolver.hasRouteIntentText(question);
     }
 
     private boolean isTruthy(Object value) {
@@ -651,8 +1411,8 @@ public class GuideChatService {
                 readString(responseBody, "message_id", "messageId")
         ));
         result.setAnswer(firstNotBlank(
-                readString(dataMap, "answer", "content"),
-                readString(responseBody, "answer", "content")
+                readString(dataMap, "answer", "reply", "content"),
+                readString(responseBody, "answer", "reply", "content")
         ));
         result.setRewrittenQuestion(firstNotBlank(
                 readString(dataMap, "rewritten_question", "rewrittenQuestion"),
@@ -661,6 +1421,42 @@ public class GuideChatService {
         result.setIntent(firstNotBlank(
                 readString(dataMap, "intent"),
                 readString(responseBody, "intent")
+        ));
+        result.setRouteIntent(firstNonNullBoolean(
+                readBoolean(dataMap, "routeIntent", "route_intent"),
+                readBoolean(responseBody, "routeIntent", "route_intent")
+        ));
+        result.setInteractionCategory(firstNotBlank(
+                readString(dataMap, "interactionCategory", "interaction_category"),
+                readString(responseBody, "interactionCategory", "interaction_category")
+        ));
+        result.setAnswerStatus(firstNotBlank(
+                readString(dataMap, "answerStatus", "answer_status"),
+                readString(responseBody, "answerStatus", "answer_status")
+        ));
+        result.setFallbackReason(firstNotBlank(
+                readString(dataMap, "fallbackReason", "fallback_reason"),
+                readString(responseBody, "fallbackReason", "fallback_reason")
+        ));
+        result.setIssueCategory(firstNotBlank(
+                readString(dataMap, "issueCategory", "issue_category"),
+                readString(responseBody, "issueCategory", "issue_category")
+        ));
+        result.setIssueType(firstNotBlank(
+                readString(dataMap, "issueType", "issue_type"),
+                readString(responseBody, "issueType", "issue_type")
+        ));
+        result.setKnowledgeGapCandidate(firstNonNull(
+                readObject(dataMap, "knowledgeGapCandidate", "knowledge_gap_candidate"),
+                readObject(responseBody, "knowledgeGapCandidate", "knowledge_gap_candidate")
+        ));
+        result.setRequiresAdminAction(firstNonNullBoolean(
+                readBoolean(dataMap, "requiresAdminAction", "requires_admin_action"),
+                readBoolean(responseBody, "requiresAdminAction", "requires_admin_action")
+        ));
+        result.setGrounding(firstNonNull(
+                readObject(dataMap, "grounding"),
+                readObject(responseBody, "grounding")
         ));
         result.setAudioUrl(normalizeAudioUrl(firstNotBlank(
                 readString(dataMap, "audio_url", "audioUrl"),
@@ -676,6 +1472,11 @@ public class GuideChatService {
                 readString(dataMap, "audio_status", "audioStatus", "tts_status", "ttsStatus"),
                 readString(responseBody, "audio_status", "audioStatus", "tts_status", "ttsStatus"),
                 readString(audioMap, "status", "audioStatus", "audio_status", "ttsStatus", "tts_status")
+        ));
+        result.setTtsStatus(firstNotBlank(
+                readString(dataMap, "tts_status", "ttsStatus"),
+                readString(responseBody, "tts_status", "ttsStatus"),
+                readString(audioMap, "ttsStatus", "tts_status", "status")
         ));
         result.setTtsTaskId(firstNotBlank(
                 readString(dataMap, "ttsTaskId", "tts_task_id", "taskId", "task_id"),
@@ -734,6 +1535,11 @@ public class GuideChatService {
                 readString(dataMap, "mouthStatus", "mouth_status"),
                 readString(responseBody, "mouthStatus", "mouth_status"),
                 readString(mouthMap, "status", "mouthStatus", "mouth_status")
+        ));
+        result.setMouthError(firstNotBlank(
+                readString(dataMap, "mouthError", "mouth_error"),
+                readString(responseBody, "mouthError", "mouth_error"),
+                readString(mouthMap, "error", "mouthError", "mouth_error")
         ));
         result.setEmotion(firstNotBlank(
                 readString(dataMap, "emotion", "emotion_code", "emotionCode"),
@@ -871,6 +1677,15 @@ public class GuideChatService {
         return null;
     }
 
+    private Map<String, Object> readMap(Map<String, Object> map, String... keys) {
+        Object value = readObject(map, keys);
+        if (value instanceof Map<?, ?> rawMap) {
+            return objectMapper.convertValue(rawMap, new TypeReference<Map<String, Object>>() {
+            });
+        }
+        return null;
+    }
+
     private Object firstNonNull(Object... values) {
         if (values == null) {
             return null;
@@ -893,6 +1708,88 @@ public class GuideChatService {
             }
         }
         return null;
+    }
+
+    private Boolean firstNonNullBoolean(Boolean... values) {
+        if (values == null) {
+            return null;
+        }
+        for (Boolean value : values) {
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> asMutableMap(Object value) {
+        if (value instanceof Map<?, ?> rawMap) {
+            return objectMapper.convertValue(rawMap, new TypeReference<Map<String, Object>>() {
+            });
+        }
+        return null;
+    }
+
+    private Object normalizeFlexibleObject(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (!(value instanceof String text)) {
+            return value;
+        }
+        String trimmed = text.trim();
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+        if ((trimmed.startsWith("{") && trimmed.endsWith("}"))
+                || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
+            try {
+                return objectMapper.readValue(trimmed, Object.class);
+            } catch (Exception ignored) {
+                return trimmed;
+            }
+        }
+        return trimmed;
+    }
+
+    private String sanitizeBodyForLog(Object body) {
+        try {
+            Object sanitized = sanitizeLogValue(body, "");
+            return objectMapper.writeValueAsString(sanitized);
+        } catch (Exception e) {
+            return String.valueOf(body);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private Object sanitizeLogValue(Object value, String key) {
+        if (isSensitiveLogKey(key)) {
+            return "***";
+        }
+        if (value instanceof Map<?, ?> rawMap) {
+            Map<String, Object> copy = new LinkedHashMap<String, Object>();
+            for (Map.Entry<?, ?> entry : rawMap.entrySet()) {
+                String childKey = String.valueOf(entry.getKey());
+                copy.put(childKey, sanitizeLogValue(entry.getValue(), childKey));
+            }
+            return copy;
+        }
+        if (value instanceof List<?> list) {
+            List<Object> copy = new ArrayList<Object>();
+            for (Object item : list) {
+                copy.add(sanitizeLogValue(item, key));
+            }
+            return copy;
+        }
+        return value;
+    }
+
+    private boolean isSensitiveLogKey(String key) {
+        String text = key == null ? "" : key.toLowerCase();
+        return text.contains("token")
+                || text.contains("authorization")
+                || text.contains("authsession");
     }
 
     @SuppressWarnings("unchecked")
@@ -922,6 +1819,24 @@ public class GuideChatService {
 
     private Long readLong(Map<String, Object> map, String... keys) {
         return readLongValue(readObject(map, keys));
+    }
+
+    private Boolean readBoolean(Map<String, Object> map, String... keys) {
+        Object value = readObject(map, keys);
+        if (value instanceof Boolean bool) {
+            return bool;
+        }
+        if (value instanceof Number number) {
+            return number.intValue() != 0;
+        }
+        String text = scalarToText(value).toLowerCase();
+        if ("true".equals(text) || "1".equals(text) || "yes".equals(text) || "y".equals(text) || "是".equals(text)) {
+            return true;
+        }
+        if ("false".equals(text) || "0".equals(text) || "no".equals(text) || "n".equals(text) || "否".equals(text)) {
+            return false;
+        }
+        return null;
     }
 
     private Long readLongValue(Object value) {
@@ -1009,6 +1924,7 @@ public class GuideChatService {
         }
         Map<String, Object> payload = new LinkedHashMap<String, Object>();
         payload.put("status", firstNotBlank(result.getAudioStatus()));
+        payload.put("ttsStatus", firstNotBlank(result.getTtsStatus(), result.getAudioStatus()));
         payload.put("taskId", firstNotBlank(result.getTtsTaskId()));
         payload.put("url", firstNotBlank(result.getAudioUrl()));
         payload.put("format", firstNotBlank(result.getAudioFormat()));
@@ -1023,6 +1939,7 @@ public class GuideChatService {
         }
         Map<String, Object> payload = new LinkedHashMap<String, Object>();
         payload.put("status", firstNotBlank(result.getMouthStatus()));
+        payload.put("error", firstNotBlank(result.getMouthError()));
         payload.put("frames", result.getMouthFrames() == null ? new ArrayList<MouthFrameDto>() : result.getMouthFrames());
         return payload;
     }

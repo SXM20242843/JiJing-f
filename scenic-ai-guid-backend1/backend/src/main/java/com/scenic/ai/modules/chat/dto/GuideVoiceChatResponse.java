@@ -22,17 +22,28 @@ public class GuideVoiceChatResponse {
     private String audioUrl;
     private String audioFormat;
     private String audioStatus;
+    private String ttsStatus;
     private String ttsTaskId;
     private Long audioDurationMs;
     private String ttsError;
     private Map<String, Object> currentEntity;
     private List<MouthFrameDto> mouthFrames;
     private String mouthStatus;
+    private String mouthError;
+    private String interactionCategory;
+    private String answerStatus;
+    private String fallbackReason;
+    private String issueCategory;
+    private String issueType;
+    private Object knowledgeGapCandidate;
+    private Boolean requiresAdminAction;
+    private Object grounding;
     private String emotion;
     private String emotionCode;
     private String action;
     private String actionCode;
     private String avatarId;
+    private Boolean routeIntent;
     private RouteCardDto route;
     private Object routeRecommendation;
 

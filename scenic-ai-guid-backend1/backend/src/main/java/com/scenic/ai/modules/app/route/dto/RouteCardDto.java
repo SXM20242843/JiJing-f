@@ -14,6 +14,9 @@ public class RouteCardDto {
 
     public String type = "route";
     public String mapAction = "show_route_card";
+    @JsonAlias({"schema_version", "schemaVersion"})
+    @JsonProperty("schemaVersion")
+    public String schemaVersion;
     @JsonAlias({"route_mode", "routeMode"})
     @JsonProperty("route_mode")
     public String routeMode;
@@ -28,16 +31,34 @@ public class RouteCardDto {
     public Boolean shouldShowRouteCard;
     public String planId;
     public Long routePlanId;
+    @JsonAlias({"route_id"})
+    public String routeId;
+    @JsonAlias({"route_name", "name"})
     public String routeName;
     public String title;
     public String reason;
+    @JsonAlias({"recommend_reason", "recommendReason"})
+    public String recommendReason;
+    @JsonAlias({"profile_version", "profileVersion"})
+    public Long profileVersion;
+    @JsonAlias({"matched_tags", "matchedTags"})
+    public List<Object> matchedTags = new ArrayList<>();
     public String summary;
     public BigDecimal totalDistanceM;
     public String distanceText;
+    @JsonAlias({"estimated_duration_minutes", "estimatedDurationMinutes"})
+    public Integer estimatedDurationMinutes;
     public Integer estimatedDurationMin;
     public String durationText;
     public Integer spotCount;
     public List<Object> spots = new ArrayList<>();
+    @JsonAlias({"narration_focus", "narrationFocus"})
+    public List<Object> narrationFocus = new ArrayList<>();
+    @JsonAlias({"experience_points", "experiencePoints"})
+    public List<Object> experiencePoints = new ArrayList<>();
+    public List<Object> warnings = new ArrayList<>();
+    @JsonAlias({"algorithm_version", "algorithmVersion"})
+    public String algorithmVersion;
     @JsonAlias({"template_spot_sequence", "templateSpotSequence"})
     @JsonProperty("template_spot_sequence")
     public List<Object> templateSpotSequence = new ArrayList<>();

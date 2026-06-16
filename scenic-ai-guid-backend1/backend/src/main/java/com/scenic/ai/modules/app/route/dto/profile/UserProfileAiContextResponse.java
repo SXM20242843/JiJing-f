@@ -13,6 +13,10 @@ public class UserProfileAiContextResponse {
 
     private Long areaId;
 
+    private String areaCode;
+
+    private Long profileVersion;
+
     private Profile profile;
 
     private Profile longTermProfile;
@@ -20,6 +24,8 @@ public class UserProfileAiContextResponse {
     private List<ProfileTag> profileTags;
 
     private ShortTermContext shortTermContext;
+
+    private String updatedAt;
 
     @Data
     public static class Profile {

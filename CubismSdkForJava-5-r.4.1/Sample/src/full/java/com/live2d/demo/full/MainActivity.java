@@ -83,6 +83,7 @@ import java.io.BufferedWriter;
 import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
@@ -100,16 +101,28 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
+import java.util.concurrent.TimeUnit;
+
+import okhttp3.Call;
+import okhttp3.Callback;
+import okhttp3.MediaType;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+import okhttp3.Response;
+import okhttp3.ResponseBody;
+import okio.BufferedSource;
 
 public class MainActivity extends Activity {
     private static final String TAG = "Live2DGuide";
     private static final String GUIDE_SOURCE = "native-live2d-guide";
 
     // 改成你当前小后端电脑的真实 IPv4 地址
-    private static final String GUIDE_CHAT_URL = "http://10.75.131.131:8080/api/guide/chat";
-    private static final String GUIDE_VOICE_CHAT_URL = "http://10.75.131.131:8080/api/guide/voice/chat";
+    private static final String GUIDE_CHAT_URL = "http://10.18.112.131:8080/api/guide/chat";
+    private static final String GUIDE_VOICE_CHAT_URL = "http://10.18.112.131:8080/api/guide/voice/chat";
     // 旧路线推荐接口保留常量但不再主动调用；路线问题统一走 Chat 接口。
-    private static final String GUIDE_ROUTE_RECOMMEND_URL = "http://10.75.131.131:8080/api/guide/route/recommend";
+    private static final String GUIDE_ROUTE_RECOMMEND_URL = "http://10.18.112.131:8080/api/guide/route/recommend";
     private static final String DEFAULT_BEHAVIOR_EVENT_PATH = "/api/app/behavior/event";
     private static final String DEFAULT_SPOT_ENTER_PATH = "/api/visit/spot/enter";
     private static final String DEFAULT_SPOT_LEAVE_PATH = "/api/visit/spot/leave";
@@ -118,6 +131,10 @@ public class MainActivity extends Activity {
     private static final String DEMO_LOCATION_SOURCE = "demo-route-node";
     private static final String DEMO_TRIGGER = "route-node-demo";
     private static final String ROUTE_EVENT_SOURCE = "android_live2d";
+    private static final String ROUTE_MODE_DYNAMIC_IN_PARK = "DYNAMIC_IN_PARK";
+    private static final String ROUTE_MODE_OFFICIAL_TEMPLATE = "OFFICIAL_TEMPLATE";
+    private static final String VISIT_STATUS_IN_PARK = "IN_PARK";
+    private static final String VISIT_STATUS_NOT_ARRIVED = "NOT_ARRIVED";
     private static final long SPEAKING_MOTION_INTERVAL_MS = 6500L;
     private static final long OFFLINE_PACKAGE_CHECK_INTERVAL_MS = 10L * 60L * 1000L;
     private static final String OFFLINE_PACKAGE_PREFS = "offline_package_check";
@@ -130,6 +147,8 @@ public class MainActivity extends Activity {
     // 只作为兜底欢迎语 / audioUrl 为空时使用。正式回答优先播放后端 audioUrl。
     private static final boolean ENABLE_NATIVE_TTS = true;
     private static final long TTS_INIT_TIMEOUT_MS = 3000L;
+    private static final MediaType GUIDE_CHAT_JSON_MEDIA_TYPE = MediaType.parse("application/json; charset=utf-8");
+    private static final long SPEECH_MISSING_FALLBACK_DELAY_MS = 6000L;
 
     private GLSurfaceView glSurfaceView;
     private GLRenderer glRenderer;
@@ -224,10 +243,24 @@ public class MainActivity extends Activity {
     private TextView navigationSubText;
     private TextView navigationStatusText;
     private final Set<String> shownRoutePlanIds = new HashSet<>();
+    private String lastReportedRouteUseId = "";
 
     private TextToSpeech textToSpeech;
     private MediaPlayer mediaPlayer;
     private MediaRecorder mediaRecorder;
+    private final OkHttpClient guideSseHttpClient = new OkHttpClient.Builder()
+            .connectTimeout(8, TimeUnit.SECONDS)
+            .readTimeout(0, TimeUnit.MILLISECONDS)
+            .build();
+    private Call currentGuideSseCall;
+    private final Object speechQueueLock = new Object();
+    private final TreeMap<Integer, SpeechChunk> pendingSpeechChunks = new TreeMap<Integer, SpeechChunk>();
+    private final Set<Integer> skippedSpeechChunkIndexes = new HashSet<Integer>();
+    private final Set<String> receivedSpeechChunkKeys = new HashSet<String>();
+    private final Set<String> playedSpeechChunkKeys = new HashSet<String>();
+    private final Set<String> acceptedMessageIds = new HashSet<String>();
+    private final Set<String> canceledMessageIds = new HashSet<String>();
+    private final StringBuilder currentAnswerBuilder = new StringBuilder();
 
     private File currentAudioFile;
 
@@ -238,8 +271,26 @@ public class MainActivity extends Activity {
     private boolean recording = false;
     private boolean voiceFlowActive = false;
     private boolean backendAudioSpeaking = false;
+    private boolean textGenerating = false;
+    private boolean speechGenerating = false;
+    private boolean speechPlaying = false;
+    private boolean serverDone = false;
+    private boolean speechDoneReceived = false;
+    private boolean currentSseAnswerCommitted = false;
+    private boolean routeReadyThisTurn = false;
     private long backendAudioStartMs = 0L;
     private long lastSpeakingMotionMs = 0L;
+    private int nextSpeechIndexToPlay = 0;
+    private int currentSpeechChunkCount = 0;
+    private int missingFallbackScheduledIndex = -1;
+    private String missingFallbackScheduledMessageId = "";
+    private int activeSseRoundSeq = 0;
+    private String contextMessageId = "";
+    private String responseMessageId = "";
+    private String currentMessageId = "";
+    private String canceledMessageId = "";
+    private String currentTraceId = "";
+    private String currentSseQuestion = "";
 
     private final Runnable speakingMotionRunnable = new Runnable() {
         @Override
@@ -280,6 +331,8 @@ public class MainActivity extends Activity {
     private String groupSize = "";
     private String travelType = "";
     private String visitPreference = "";
+    private String estimatedDuration = "";
+    private String availableMinutes = "";
 
     private String contextType = "";
     private String contextName = "";
@@ -325,6 +378,7 @@ public class MainActivity extends Activity {
     private String voiceName = "知甜";
     private String welcomeText = "";
     private String behaviorBackendBaseUrl = "";
+    private String aiBaseUrl = "";
     private String behaviorEventPath = DEFAULT_BEHAVIOR_EVENT_PATH;
     private String spotEnterPath = DEFAULT_SPOT_ENTER_PATH;
     private String spotLeavePath = DEFAULT_SPOT_LEAVE_PATH;
@@ -945,8 +999,9 @@ public class MainActivity extends Activity {
             public void onClick(View view) {
                 if (currentRoute != null) {
                     writeRouteCardEvent("map_card_close", currentRoute, null);
+                    writeRouteCardEvent("ROUTE_REJECT", currentRoute, null);
                 }
-                hideRouteCard();
+                hideRouteCard("user_close_route_card");
             }
         });
 
@@ -1194,9 +1249,9 @@ public class MainActivity extends Activity {
             return;
         }
 
-        if (requesting) {
-            showToast("数字人正在处理，请稍候");
-            return;
+        if (requesting || isSseRoundActive()) {
+            Log.d(TAG, "[SSE] cancel previous round before new question");
+            cancelCurrentSseRound("new_question");
         }
 
         requesting = true;
@@ -1217,136 +1272,1503 @@ public class MainActivity extends Activity {
             }
         });
 
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                HttpURLConnection connection = null;
+        startGuideChatSse(question, suppressRoute, routeRequestSource, allowRouteResponse);
+    }
 
-                try {
-                    URL url = new URL(getGuideTextRequestUrl(question));
-                    String requestUrl = url.toString();
-                    connection = (HttpURLConnection) url.openConnection();
-                    connection.setRequestMethod("POST");
-                    connection.setConnectTimeout(8000);
-                    connection.setReadTimeout(30000);
-                    connection.setDoOutput(true);
-                    connection.setDoInput(true);
-                    connection.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
-                    connection.setRequestProperty("Accept", "application/json");
-                    applyAuthorizationHeader(connection);
+    private void startGuideChatSse(final String question,
+                                   final boolean suppressRoute,
+                                   final String routeRequestSource,
+                                   final boolean allowRouteResponse) {
+        try {
+            URL url = new URL(getGuideTextRequestUrl(question));
+            String requestUrl = url.toString();
+            JSONObject requestJson = buildRequestJson(question, suppressRoute, routeRequestSource);
+            logRouteContext(requestJson, question, allowRouteResponse);
 
-                    JSONObject requestJson = buildRequestJson(question, suppressRoute, routeRequestSource);
+            Log.d(TAG, "[SSE] request start url=" + requestUrl);
+            Log.d(TAG, "[GuideChat] request body=" + sanitizeGuideChatRequestBody(requestJson));
 
-                    logRouteContext(requestJson, question, allowRouteResponse);
-                    Log.d(TAG, "[GuideChat] request url=" + requestUrl);
-                    Log.d(TAG, "[GuideChat] request body=" + sanitizeGuideChatRequestBody(requestJson));
+            RequestBody body = RequestBody.create(GUIDE_CHAT_JSON_MEDIA_TYPE, requestJson.toString());
+            Request.Builder builder = new Request.Builder()
+                    .url(requestUrl)
+                    .post(body)
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "text/event-stream");
+            applyAuthorizationHeader(builder);
 
-                    OutputStream outputStream = connection.getOutputStream();
-                    BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(outputStream, StandardCharsets.UTF_8));
-                    writer.write(requestJson.toString());
-                    writer.flush();
-                    writer.close();
-                    outputStream.close();
+            final Call call = guideSseHttpClient.newCall(builder.build());
+            final int roundSeq;
+            synchronized (speechQueueLock) {
+                activeSseRoundSeq++;
+                roundSeq = activeSseRoundSeq;
+                currentGuideSseCall = call;
+                resetCurrentSseRoundStateLocked();
+            }
+            Log.d(TAG, "[SSE] request round start roundSeq=" + roundSeq);
 
-                    int responseCode = connection.getResponseCode();
-                    InputStream inputStream = responseCode >= 200 && responseCode < 300 ? connection.getInputStream() : connection.getErrorStream();
-                    String responseText = readStream(inputStream);
-                    Log.d(TAG, "[GuideChat] httpStatus=" + responseCode);
-                    Log.d(TAG, "[GuideChat] responseBody=" + responseText);
-
-                    final GuideResponse guideResponse = parseGuideResponse(responseText, responseCode);
-
-                    if (guideResponse.success) {
-                        runOnUiThread(new Runnable() {
-                            @Override
-                            public void run() {
-                                if (guideEnded) {
-                                    return;
-                                }
-                                requesting = false;
-                                voiceFlowActive = false;
-                                updateSimulatedSpotButton();
-                                guideStateText.setText("讲解完成");
-                                voiceMainButton.setText("🎙 长按说话");
-
-                                if (guideResponse.questionText != null && guideResponse.questionText.trim().length() > 0) {
-                                    lastQuestionText.setText("游客提问：" + guideResponse.questionText);
-                                }
-
-                                showGuideAnswer(guideResponse.answer);
-                                updateQuickButtons(guideResponse.suggestions);
-                                handleGuideRouteResponse(guideResponse.route, allowRouteResponse, routeRequestSource);
-
-                                if (guideResponse.conversationId != null && guideResponse.conversationId.trim().length() > 0) {
-                                    conversationId = guideResponse.conversationId.trim();
-                                }
-
-                                playAnswerVoice(guideResponse);
-                                forceRenderLive2D();
-                            }
-                        });
-                    } else {
-                        final boolean useNfcFallback = shouldUseNfcGuideFallback(question);
-                        final String errorText = useNfcFallback
-                                ? nfcFallbackGuideSummary.trim()
-                                : firstNotEmpty(guideResponse.answer, formatBackendErrorMessage(responseText, "请求失败，请稍后重试"));
-                        Log.e(TAG, "[GuideChat] request failed" + (useNfcFallback ? " with fallback" : "")
-                                + ": httpStatus=" + responseCode
-                                + ", businessCode=" + guideResponse.businessCode
-                                + ", msg=" + safeString(guideResponse.businessMsg)
-                                + ", response=" + responseText);
-                        runOnUiThread(new Runnable() {
-                            @Override
-                            public void run() {
-                                if (guideEnded) {
-                                    return;
-                                }
-                                requesting = false;
-                                voiceFlowActive = false;
-                                updateSimulatedSpotButton();
-                                guideStateText.setText(useNfcFallback ? "基础讲解" : "请求失败");
-                                voiceMainButton.setText("🎙 长按说话");
-                                showGuideAnswer(errorText);
-                                if (useNfcFallback) {
-                                    showToast("网络讲解暂时失败，已先展示 NFC 点位基础讲解。");
-                                }
-                                returnDigitalHumanToIdle();
-                            }
-                        });
+            call.enqueue(new Callback() {
+                @Override
+                public void onFailure(Call call, IOException e) {
+                    if (call.isCanceled() || !isCurrentGuideSseCall(call)) {
+                        Log.d(TAG, "[SSE] request canceled or stale: " + e.getMessage());
+                        return;
                     }
+                    clearCurrentGuideSseCall(call);
+                    Log.e(TAG, "[SSE] error code=network message=" + e.getMessage(), e);
+                    handleGuideChatSseFailure(question, "暂时无法连接后端服务，请检查网络和小后端地址。", true);
+                }
 
-                } catch (final Exception e) {
-                    final boolean useNfcFallback = shouldUseNfcGuideFallback(question);
-                    Log.e(TAG, "[GuideChat] request failed" + (useNfcFallback ? " with fallback" : "")
-                            + ": " + e.getMessage(), e);
-                    runOnUiThread(new Runnable() {
-                        @Override
-                        public void run() {
-                            if (guideEnded) {
-                                return;
-                            }
-                            requesting = false;
-                            voiceFlowActive = false;
-                            updateSimulatedSpotButton();
-                            guideStateText.setText(useNfcFallback ? "基础讲解" : "连接异常");
-                            voiceMainButton.setText("🎙 长按说话");
-                            if (useNfcFallback) {
-                                showGuideAnswer(nfcFallbackGuideSummary.trim());
-                                showToast("网络讲解暂时失败，已先展示 NFC 点位基础讲解。");
-                            } else {
-                                showGuideAnswer("暂时无法连接后端服务。\n\n请检查：\n1. 小后端是否正在运行\n2. 手机和电脑是否在同一个局域网\n3. GUIDE_CHAT_URL 是否是当前电脑 IPv4 地址\n4. AndroidManifest 是否允许 HTTP 网络请求");
-                            }
-                            returnDigitalHumanToIdle();
+                @Override
+                public void onResponse(Call call, Response response) throws IOException {
+                    try {
+                        if (!isCurrentGuideSseCall(call)) {
+                            Log.d(TAG, "[SSE] ignore stale response");
+                            return;
                         }
-                    });
-                } finally {
-                    if (connection != null) {
-                        connection.disconnect();
+                        Log.d(TAG, "[GuideChat] httpStatus=" + response.code());
+                        if (!response.isSuccessful()) {
+                            Log.e(TAG, "[SSE] error code=" + response.code());
+                            handleGuideChatSseFailure(question, "请求失败，请稍后重试。", false);
+                            return;
+                        }
+                        ResponseBody responseBody = response.body();
+                        if (responseBody == null) {
+                            Log.e(TAG, "[SSE] error code=empty_body");
+                            handleGuideChatSseFailure(question, "AI 服务暂时没有返回内容。", false);
+                            return;
+                        }
+                        readGuideChatSse(responseBody.source(), question, allowRouteResponse, routeRequestSource, roundSeq);
+                    } catch (IOException e) {
+                        if (call.isCanceled() || !isCurrentGuideSseCall(call)) {
+                            Log.d(TAG, "[SSE] stream canceled or stale: " + e.getMessage());
+                            return;
+                        }
+                        Log.e(TAG, "[SSE] error code=stream message=" + e.getMessage(), e);
+                        handleGuideChatSseFailure(question, "AI 流式响应中断，请稍后重试。", false);
+                    } catch (Exception e) {
+                        Log.e(TAG, "[SSE] error code=parse message=" + e.getMessage(), e);
+                        handleGuideChatSseFailure(question, "AI 响应解析失败，请稍后重试。", false);
+                    } finally {
+                        clearCurrentGuideSseCall(call);
+                        response.close();
                     }
                 }
-            }
-        }).start();
+            });
+        } catch (final Exception e) {
+            Log.e(TAG, "[SSE] request build failed: " + e.getMessage(), e);
+            handleGuideChatSseFailure(question, "请求构建失败，请稍后重试。", false);
+        }
     }
+
+    private void readGuideChatSse(BufferedSource source,
+                                  String question,
+                                  boolean allowRouteResponse,
+                                  String routeRequestSource,
+                                  int roundSeq) throws Exception {
+        String eventName = "";
+        StringBuilder dataBuilder = new StringBuilder();
+        String line;
+        while ((line = source.readUtf8Line()) != null) {
+            if (line.length() == 0) {
+                dispatchGuideSseEvent(eventName, dataBuilder.toString(), question, allowRouteResponse, routeRequestSource, roundSeq);
+                eventName = "";
+                dataBuilder.setLength(0);
+                continue;
+            }
+            if (line.startsWith(":")) {
+                continue;
+            }
+            if (line.startsWith("event:")) {
+                eventName = stripSseValue(line.substring("event:".length()));
+                continue;
+            }
+            if (line.startsWith("data:")) {
+                if (dataBuilder.length() > 0) {
+                    dataBuilder.append('\n');
+                }
+                dataBuilder.append(stripSseValue(line.substring("data:".length())));
+            }
+        }
+        boolean dispatchLast = eventName.length() > 0 || dataBuilder.length() > 0;
+        Log.d(TAG, "[SSE] stream eof dispatchLast=" + dispatchLast);
+        if (eventName.length() > 0 || dataBuilder.length() > 0) {
+            dispatchGuideSseEvent(eventName, dataBuilder.toString(), question, allowRouteResponse, routeRequestSource, roundSeq);
+        }
+        handleSseStreamEof(roundSeq);
+    }
+
+    private String stripSseValue(String value) {
+        if (value == null) {
+            return "";
+        }
+        if (value.startsWith(" ")) {
+            return value.substring(1);
+        }
+        return value;
+    }
+
+    private void dispatchGuideSseEvent(String rawEvent,
+                                       String rawData,
+                                       String question,
+                                       boolean allowRouteResponse,
+                                       String routeRequestSource,
+                                       int roundSeq) {
+        String event = safeString(rawEvent).trim();
+        if (event.length() == 0) {
+            event = "message";
+        }
+        if ("message".equals(event) && "[DONE]".equals(safeString(rawData).trim())) {
+            event = "done";
+        }
+        JSONObject data = parseSseDataObject(event, rawData);
+        event = normalizeSseEventName(event, data);
+        Log.d(TAG, "[SSE][Dispatch] event=" + event
+                + " dataLen=" + safeString(rawData).length()
+                + " currentMessageId=" + safeString(currentMessageId)
+                + " roundSeq=" + roundSeq);
+        if (looksLikeJson(rawData)) {
+            Log.d(TAG, "[SSE][Dispatch] event=" + event
+                    + " messageId=" + getSseEventMessageId(data)
+                    + " chunkIndex=" + getJsonText(data, "chunkIndex", "chunk_index", "index")
+                    + " chunkId=" + getJsonText(data, "chunkId", "chunk_id", "id"));
+        }
+        JSONObject eventData = unwrapSseEventData(data);
+        if (!isCurrentSseRound(roundSeq, event)) {
+            return;
+        }
+
+        if ("context".equals(event)) {
+            handleSseContext(eventData, roundSeq);
+        } else if ("asr_done".equals(event)) {
+            handleSseAsrDone(eventData);
+        } else if ("answer_delta".equals(event)) {
+            handleSseAnswerDelta(eventData, roundSeq);
+        } else if ("answer_done".equals(event)) {
+            handleSseAnswerDone(eventData, roundSeq);
+        } else if ("route_ready".equals(event)) {
+            handleSseRouteReady(eventData, allowRouteResponse, routeRequestSource, roundSeq);
+        } else if ("speech_chunk_ready".equals(event)) {
+            handleSseSpeechChunkReady(eventData, roundSeq);
+        } else if ("speech_done".equals(event)) {
+            handleSseSpeechDone(eventData, roundSeq);
+        } else if ("tts_error".equals(event)) {
+            handleSseTtsError(eventData, roundSeq);
+        } else if ("error".equals(event)) {
+            String code = firstNotEmpty(getJsonText(eventData, "code", "errorCode", "error_code"), "error");
+            String message = firstNotEmpty(getJsonText(eventData, "message", "msg", "error"), "AI 服务返回错误");
+            Log.e(TAG, "[SSE] error code=" + code + ", message=" + safeLogText(message));
+            handleGuideChatSseFailure(question, message, false);
+        } else if ("done".equals(event)) {
+            handleSseDone(eventData, roundSeq);
+        } else {
+            Log.d(TAG, "[SSE][Dispatch] unknown event=" + event + " rawPreview=" + rawPreview(rawData));
+        }
+    }
+
+    private JSONObject parseSseDataObject(String event, String rawData) {
+        String data = safeString(rawData).trim();
+        JSONObject object = new JSONObject();
+        if (data.length() == 0 || "[DONE]".equals(data)) {
+            return object;
+        }
+        try {
+            if (data.startsWith("{")) {
+                return new JSONObject(data);
+            }
+            object.put("text", data);
+        } catch (Exception e) {
+            Log.e(TAG, "[SSE][Error] parse event=" + event
+                    + " error=" + e.getMessage()
+                    + " rawPreview=" + rawPreview(data));
+        }
+        return object;
+    }
+
+    private boolean looksLikeJson(String rawData) {
+        String text = safeString(rawData).trim();
+        return text.startsWith("{") && text.endsWith("}");
+    }
+
+    private String normalizeSseEventName(String event, JSONObject data) {
+        String normalized = safeString(event).trim();
+        if ("message".equals(normalized) || normalized.length() == 0) {
+            String dataEvent = firstNotEmpty(
+                    getJsonText(data, "event", "type", "eventType", "event_type"),
+                    getJsonText(getJsonObject(data, "data", "payload"), "event", "type", "eventType", "event_type")
+            );
+            if (dataEvent.length() > 0) {
+                normalized = dataEvent;
+            }
+        }
+        String key = normalized.trim().toLowerCase(Locale.ROOT).replace('-', '_').replace('.', '_');
+        if ("answerdelta".equals(key)) return "answer_delta";
+        if ("answerdone".equals(key)) return "answer_done";
+        if ("routeready".equals(key) || "route_ready_event".equals(key)) return "route_ready";
+        if ("speechchunkready".equals(key)) return "speech_chunk_ready";
+        if ("speechdone".equals(key)) return "speech_done";
+        return key;
+    }
+
+    private String getSseEventMessageId(JSONObject data) {
+        return firstNotEmpty(
+                getJsonText(data, "messageId", "message_id"),
+                getJsonText(getJsonObject(data, "data", "payload"), "messageId", "message_id")
+        );
+    }
+
+    private JSONObject unwrapSseEventData(JSONObject data) {
+        if (data == null) {
+            return new JSONObject();
+        }
+        JSONObject payload = getJsonObject(data, "data", "payload");
+        if (payload == null) {
+            return data;
+        }
+        try {
+            JSONObject merged = new JSONObject(payload.toString());
+            copyEnvelopeTextIfMissing(data, merged, "messageId", "messageId", "message_id");
+            copyEnvelopeTextIfMissing(data, merged, "message_id", "messageId", "message_id");
+            copyEnvelopeTextIfMissing(data, merged, "conversationId", "conversationId", "conversation_id");
+            copyEnvelopeTextIfMissing(data, merged, "conversation_id", "conversationId", "conversation_id");
+            copyEnvelopeTextIfMissing(data, merged, "traceId", "traceId", "trace_id");
+            copyEnvelopeTextIfMissing(data, merged, "trace_id", "traceId", "trace_id");
+            return merged;
+        } catch (Exception e) {
+            Log.w(TAG, "[SSE][Error] unwrap payload failed error=" + e.getMessage());
+            return payload;
+        }
+    }
+
+    private void copyEnvelopeTextIfMissing(JSONObject from, JSONObject to, String targetKey, String... sourceKeys) {
+        if (from == null || to == null || to.has(targetKey)) {
+            return;
+        }
+        String value = getJsonText(from, sourceKeys);
+        if (value.length() > 0) {
+            try {
+                to.put(targetKey, value);
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private String rawPreview(String rawData) {
+        String text = safeString(rawData).replace('\r', ' ').replace('\n', ' ').trim();
+        if (text.length() > 180) {
+            return text.substring(0, 180) + "...";
+        }
+        return text;
+    }
+
+    private void handleSseContext(final JSONObject data, int roundSeq) {
+        final String newConversationId = firstNotEmpty(
+                getJsonText(data, "conversationId", "conversation_id"),
+                conversationId
+        );
+        final String newMessageId = firstNotEmpty(
+                getJsonText(data, "messageId", "message_id"),
+                "sse_" + System.currentTimeMillis()
+        );
+        final String newTraceId = firstNotEmpty(getJsonText(data, "traceId", "trace_id"));
+
+        synchronized (speechQueueLock) {
+            if (!acceptSseEventMessageIdLocked("context", newMessageId, roundSeq)) {
+                return;
+            }
+            conversationId = newConversationId;
+            currentTraceId = newTraceId;
+            currentAnswerBuilder.setLength(0);
+            currentSseAnswerCommitted = false;
+            routeReadyThisTurn = false;
+            textGenerating = true;
+            speechGenerating = true;
+            serverDone = false;
+            speechDoneReceived = false;
+            speechPlaying = false;
+            currentSpeechChunkCount = 0;
+            nextSpeechIndexToPlay = 0;
+            missingFallbackScheduledIndex = -1;
+            missingFallbackScheduledMessageId = "";
+            pendingSpeechChunks.clear();
+            skippedSpeechChunkIndexes.clear();
+            receivedSpeechChunkKeys.clear();
+            playedSpeechChunkKeys.clear();
+        }
+        if (newConversationId.length() > 0) {
+            rememberGuideConversationId(newConversationId);
+        }
+        Log.d(TAG, "[SSE] event=context/messageId=" + newMessageId
+                + ", conversationId=" + newConversationId
+                + ", traceId=" + newTraceId);
+
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                if (guideEnded) {
+                    return;
+                }
+                if (currentRoute != null || routeGuideActive || routeNavigationModeActive) {
+                    Log.d(TAG, "[RouteNav] keep route card after spot explain");
+                }
+                stopMouthSync();
+                guideStateText.setText("正在生成");
+                voiceMainButton.setText("AI 正在回答...");
+                renderStreamingAnswer();
+                updateSimulatedSpotButton();
+            }
+        });
+    }
+
+    private void handleSseAsrDone(JSONObject data) {
+        final String questionText = firstNotEmpty(
+                getJsonText(data, "questionText", "question_text"),
+                getJsonText(data, "rawQuestion", "raw_question")
+        );
+        Log.d(TAG, "[SSE] event=asr_done questionLength=" + questionText.length());
+        if (questionText.length() == 0) {
+            return;
+        }
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                if (lastQuestionText != null) {
+                    lastQuestionText.setText("游客提问：" + questionText);
+                }
+            }
+        });
+    }
+
+    private void handleSseAnswerDelta(JSONObject data, int roundSeq) {
+        String messageId = getJsonText(data, "messageId", "message_id");
+        if (isStaleSseMessage(messageId, "answer_delta", roundSeq)) {
+            return;
+        }
+        final String delta = firstNotEmpty(
+                getJsonText(data, "delta", "answerDelta", "answer_delta"),
+                getJsonText(data, "text", "content")
+        );
+        int totalLen;
+        synchronized (speechQueueLock) {
+            totalLen = currentAnswerBuilder.length() + delta.length();
+        }
+        Log.d(TAG, "[SSE][Text] answer_delta len=" + delta.length() + " totalLen=" + totalLen);
+        if (delta.length() == 0) {
+            Log.d(TAG, "[SSE][Filter] ignore event=answer_delta reason=empty_delta");
+            return;
+        }
+        synchronized (speechQueueLock) {
+            currentAnswerBuilder.append(delta);
+        }
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                renderStreamingAnswer();
+            }
+        });
+    }
+
+    private void handleSseAnswerDone(JSONObject data, int roundSeq) {
+        String messageId = getJsonText(data, "messageId", "message_id");
+        if (isStaleSseMessage(messageId, "answer_done", roundSeq)) {
+            return;
+        }
+        final String answer = firstNotEmpty(
+                getJsonText(data, "answer", "text", "content"),
+                currentAnswerBuilder.toString()
+        );
+        synchronized (speechQueueLock) {
+            currentAnswerBuilder.setLength(0);
+            currentAnswerBuilder.append(answer);
+            textGenerating = false;
+        }
+        Log.d(TAG, "[SSE] event=answer_done length=" + answer.length());
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                renderStreamingAnswer();
+                finishCurrentSseRoundIfReady();
+            }
+        });
+    }
+
+    private void handleSseRouteReady(JSONObject data, boolean allowRouteResponse, String routeRequestSource, int roundSeq) {
+        String messageId = getJsonText(data, "messageId", "message_id");
+        if (isStaleSseMessage(messageId, "route_ready", roundSeq)) {
+            return;
+        }
+        final RouteInfo route = parseRouteFromSseData(data);
+        if (route != null) {
+            route.routeIntent = route.routeIntent || allowRouteResponse;
+        }
+        final String routeFallbackText = buildRouteReadyFallbackText(data, route);
+        synchronized (speechQueueLock) {
+            routeReadyThisTurn = true;
+        }
+        Log.d(TAG, "[SSE][Route] route_ready received messageId=" + safeString(messageId)
+                + " nodes=" + (route == null || route.nodes == null ? 0 : route.nodes.size())
+                + " title=" + safeLogText(getRouteReadyTitle(data, route))
+                + " summary=" + safeLogText(routeFallbackText));
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                if (route != null) {
+                    showRouteCardIfNeeded(route);
+                } else {
+                    Log.w(TAG, "[SSE][Route] route_ready has no parsable route payload");
+                }
+                ensureRouteReadyAnswerVisible(routeFallbackText);
+            }
+        });
+    }
+
+    private void ensureRouteReadyAnswerVisible(String routeFallbackText) {
+        boolean shouldRender = false;
+        synchronized (speechQueueLock) {
+            if (currentAnswerBuilder.toString().trim().length() == 0) {
+                currentAnswerBuilder.append(firstNotEmpty(
+                        routeFallbackText,
+                        "我已为你生成一条推荐路线，可以点击路线卡片查看详情。"
+                ));
+                shouldRender = true;
+            }
+        }
+        if (shouldRender) {
+            Log.d(TAG, "[SSE][Route] route_ready fallback answer rendered len="
+                    + safeString(routeFallbackText).length());
+            renderStreamingAnswer();
+        } else {
+            Log.d(TAG, "[SSE][Route] route_ready fallback skipped because answer bubble already has text");
+        }
+    }
+
+    private String buildRouteReadyFallbackText(JSONObject data, RouteInfo route) {
+        String text = firstNotEmpty(
+                getJsonText(data, "title", "routeName", "route_name", "summary", "reason", "text", "answer", "content"),
+                getJsonText(getJsonObject(data, "data", "payload"), "title", "routeName", "route_name", "summary", "reason", "text", "answer", "content"),
+                getJsonText(getJsonObject(data, "route", "routeInfo", "route_info"), "title", "routeName", "route_name", "summary", "reason", "text", "answer", "content"),
+                route == null ? "" : route.reason,
+                route == null ? "" : route.routeName
+        );
+        if (text.length() == 0) {
+            text = "我已为你生成一条推荐路线，可以点击路线卡片查看详情。";
+        }
+        return text;
+    }
+
+    private String getRouteReadyTitle(JSONObject data, RouteInfo route) {
+        return firstNotEmpty(
+                getJsonText(data, "title", "routeName", "route_name", "name"),
+                getJsonText(getJsonObject(data, "data", "payload"), "title", "routeName", "route_name", "name"),
+                route == null ? "" : route.routeName
+        );
+    }
+
+    private void handleSseSpeechChunkReady(JSONObject data, int roundSeq) {
+        final SpeechChunk chunk = parseSpeechChunk(data);
+        if (chunk == null) {
+            Log.w(TAG, "[SSE][Filter] ignore event=speech_chunk_ready reason=parse_empty_chunk");
+            return;
+        }
+        chunk.roundSeq = roundSeq;
+        Log.d(TAG, "[speech-receive] messageId=" + safeString(chunk.messageId)
+                + " chunkId=" + safeString(chunk.chunkId)
+                + " chunkIndex=" + chunk.chunkIndex
+                + " audioUrl=" + safeString(chunk.audioUrl)
+                + " isLast=" + chunk.isLast);
+        if (isStaleSpeechChunk(chunk, "speech_chunk_ready", roundSeq)) {
+            return;
+        }
+        String chunkKey = buildSpeechChunkKey(chunk);
+        boolean duplicate;
+        boolean lateChunk;
+        boolean indexAlreadyPending;
+        boolean queued;
+        synchronized (speechQueueLock) {
+            duplicate = receivedSpeechChunkKeys.contains(chunkKey) || playedSpeechChunkKeys.contains(chunkKey);
+            lateChunk = chunk.chunkIndex < nextSpeechIndexToPlay;
+            indexAlreadyPending = !duplicate && !lateChunk && pendingSpeechChunks.containsKey(chunk.chunkIndex);
+            if (!duplicate) {
+                receivedSpeechChunkKeys.add(chunkKey);
+            }
+            queued = !duplicate && !lateChunk && !indexAlreadyPending;
+            if (queued) {
+                pendingSpeechChunks.put(chunk.chunkIndex, chunk);
+            }
+            if (chunk.isLast && currentSpeechChunkCount <= 0) {
+                currentSpeechChunkCount = chunk.chunkIndex + 1;
+            }
+            Log.d(TAG, "[speech-queue] expectedChunkIndex=" + nextSpeechIndexToPlay
+                    + " pendingIndexes=" + getPendingIndexesTextLocked()
+                    + " receivedKeysSize=" + receivedSpeechChunkKeys.size()
+                    + " playedKeysSize=" + playedSpeechChunkKeys.size()
+                    + " isPlaying=" + speechPlaying
+                    + " duplicate=" + duplicate);
+        }
+        if (duplicate) {
+            Log.d(TAG, "[SSE][Filter] ignore duplicate event=speech_chunk_ready key=" + chunkKey);
+            return;
+        }
+        if (lateChunk) {
+            Log.d(TAG, "[SSE][Filter] ignore event=speech_chunk_ready reason=late_chunk chunkIndex=" + chunk.chunkIndex
+                    + " expectedChunkIndex=" + nextSpeechIndexToPlay);
+            return;
+        }
+        if (indexAlreadyPending) {
+            Log.d(TAG, "[SSE][Filter] ignore event=speech_chunk_ready reason=index_already_pending key=" + chunkKey
+                    + " chunkIndex=" + chunk.chunkIndex);
+            return;
+        }
+        Log.d(TAG, "[SSE][Audio] speech_chunk_ready queued key=" + chunkKey
+                + " chunkIndex=" + chunk.chunkIndex
+                + " queued=" + queued);
+        logSseState("speech_chunk_ready");
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                tryPlayNextSpeechChunk();
+            }
+        });
+    }
+
+    private void handleSseSpeechDone(JSONObject data, int roundSeq) {
+        String messageId = getJsonText(data, "messageId", "message_id");
+        if (isStaleSseMessage(messageId, "speech_done", roundSeq)) {
+            return;
+        }
+        int chunkCount = parseIntOrDefault(firstNotEmpty(
+                getJsonText(data, "chunkCount", "chunk_count", "totalChunks", "total_chunks")
+        ), 0);
+        synchronized (speechQueueLock) {
+            speechGenerating = false;
+            speechDoneReceived = true;
+            if (chunkCount > 0) {
+                currentSpeechChunkCount = chunkCount;
+            }
+        }
+        Log.d(TAG, "[SSE] event=speech_done chunkCount=" + chunkCount);
+        logSseState("speech_done");
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                tryPlayNextSpeechChunk();
+                finishCurrentSseRoundIfReady();
+            }
+        });
+    }
+
+    private void handleSseTtsError(JSONObject data, int roundSeq) {
+        String messageId = getJsonText(data, "messageId", "message_id");
+        if (isStaleSseMessage(messageId, "tts_error", roundSeq)) {
+            return;
+        }
+        final int chunkIndex = parseIntOrDefault(firstNotEmpty(
+                getJsonText(data, "chunkIndex", "chunk_index", "index")
+        ), nextSpeechIndexToPlay);
+        String message = firstNotEmpty(getJsonText(data, "message", "msg", "error"), "分段语音生成失败");
+        synchronized (speechQueueLock) {
+            skippedSpeechChunkIndexes.add(chunkIndex);
+            advanceSkippedSpeechIndexesLocked();
+        }
+        Log.w(TAG, "[SSE] event=tts_error chunkIndex=" + chunkIndex + ", message=" + safeLogText(message));
+        Log.w(TAG, "[SSE][Audio] skip chunkIndex=" + chunkIndex + " reason=tts_error");
+        logSseState("tts_error");
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                showToast("部分语音生成失败，继续播放已生成内容");
+                tryPlayNextSpeechChunk();
+                finishCurrentSseRoundIfReady();
+            }
+        });
+    }
+
+    private void handleSseDone(JSONObject data, int roundSeq) {
+        String messageId = firstNotEmpty(getJsonText(data, "messageId", "message_id"), currentMessageId);
+        if (isStaleSseMessage(messageId, "done", roundSeq)) {
+            return;
+        }
+        String answer = firstNotEmpty(getJsonText(data, "answer", "text", "content"));
+        String doneConversationId = getJsonText(data, "conversationId", "conversation_id");
+        if (doneConversationId.length() > 0) {
+            rememberGuideConversationId(doneConversationId);
+        }
+        int chunkCount = parseIntOrDefault(firstNotEmpty(
+                getJsonText(data, "speechChunkCount", "speech_chunk_count", "chunkCount", "chunk_count", "totalChunks", "total_chunks")
+        ), 0);
+        boolean speechDone = getBooleanCompat(data, "speechDone", "speech_done");
+        synchronized (speechQueueLock) {
+            boolean keepRouteReadyText = routeReadyThisTurn && currentAnswerBuilder.toString().trim().length() > 0;
+            if (answer.length() > 0 && !keepRouteReadyText) {
+                currentAnswerBuilder.setLength(0);
+                currentAnswerBuilder.append(answer);
+            } else if (answer.length() > 0) {
+                Log.d(TAG, "[SSE][Route] done answer ignored to keep route_ready text len=" + currentAnswerBuilder.length());
+            }
+            serverDone = true;
+            textGenerating = false;
+            if (chunkCount > 0) {
+                currentSpeechChunkCount = chunkCount;
+            }
+            if (speechDone || chunkCount > 0 || (pendingSpeechChunks.size() == 0 && !speechPlaying)) {
+                speechGenerating = false;
+            }
+            if (speechDone) {
+                speechDoneReceived = true;
+            }
+        }
+        Log.d(TAG, "[SSE] event=done messageId=" + messageId);
+        logSseState("done");
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                renderStreamingAnswer();
+                finishCurrentSseRoundIfReady();
+            }
+        });
+    }
+
+    private void handleSseStreamEof(int roundSeq) {
+        if (!isCurrentSseRound(roundSeq, "stream_eof")) {
+            return;
+        }
+        synchronized (speechQueueLock) {
+            serverDone = true;
+            textGenerating = false;
+            speechGenerating = false;
+        }
+        Log.d(TAG, "[SSE] stream eof mark serverDone");
+        logSseState("stream_eof");
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                renderStreamingAnswer();
+                tryPlayNextSpeechChunk();
+                finishCurrentSseRoundIfReady();
+            }
+        });
+    }
+
+    private boolean isSseRoundActive() {
+        synchronized (speechQueueLock) {
+            return currentGuideSseCall != null
+                    || textGenerating
+                    || speechGenerating
+                    || speechPlaying
+                    || backendAudioSpeaking
+                    || pendingSpeechChunks.size() > 0;
+        }
+    }
+
+    private boolean isCurrentGuideSseCall(Call call) {
+        synchronized (speechQueueLock) {
+            return call != null && call == currentGuideSseCall;
+        }
+    }
+
+    private void clearCurrentGuideSseCall(Call call) {
+        synchronized (speechQueueLock) {
+            if (call == currentGuideSseCall) {
+                currentGuideSseCall = null;
+            }
+        }
+    }
+
+    private void resetCurrentSseRoundStateLocked() {
+        contextMessageId = "";
+        responseMessageId = "";
+        currentMessageId = "";
+        currentTraceId = "";
+        currentSseQuestion = "";
+        currentAnswerBuilder.setLength(0);
+        currentSseAnswerCommitted = false;
+        textGenerating = false;
+        speechGenerating = false;
+        speechPlaying = false;
+        serverDone = false;
+        speechDoneReceived = false;
+        routeReadyThisTurn = false;
+        currentSpeechChunkCount = 0;
+        nextSpeechIndexToPlay = 0;
+        missingFallbackScheduledIndex = -1;
+        missingFallbackScheduledMessageId = "";
+        pendingSpeechChunks.clear();
+        skippedSpeechChunkIndexes.clear();
+        receivedSpeechChunkKeys.clear();
+        playedSpeechChunkKeys.clear();
+        acceptedMessageIds.clear();
+    }
+
+    private void cancelCurrentSseRound(String reason) {
+        Call callToCancel;
+        synchronized (speechQueueLock) {
+            callToCancel = currentGuideSseCall;
+            currentGuideSseCall = null;
+            canceledMessageId = firstNotEmpty(currentMessageId, canceledMessageId);
+            if (currentMessageId.length() > 0) {
+                canceledMessageIds.add(currentMessageId);
+            }
+            if (contextMessageId.length() > 0) {
+                canceledMessageIds.add(contextMessageId);
+            }
+            if (responseMessageId.length() > 0) {
+                canceledMessageIds.add(responseMessageId);
+            }
+            canceledMessageIds.addAll(acceptedMessageIds);
+            activeSseRoundSeq++;
+            currentMessageId = "pending_" + System.currentTimeMillis();
+            contextMessageId = "";
+            responseMessageId = "";
+            currentTraceId = "";
+            currentSseQuestion = "";
+            currentAnswerBuilder.setLength(0);
+            currentSseAnswerCommitted = false;
+            textGenerating = false;
+            speechGenerating = false;
+            speechPlaying = false;
+            serverDone = false;
+            speechDoneReceived = false;
+            routeReadyThisTurn = false;
+            currentSpeechChunkCount = 0;
+            nextSpeechIndexToPlay = 0;
+            missingFallbackScheduledIndex = -1;
+            missingFallbackScheduledMessageId = "";
+            pendingSpeechChunks.clear();
+            skippedSpeechChunkIndexes.clear();
+            receivedSpeechChunkKeys.clear();
+            playedSpeechChunkKeys.clear();
+            acceptedMessageIds.clear();
+        }
+        if (callToCancel != null) {
+            callToCancel.cancel();
+        }
+        Log.d(TAG, "[SSE] cancel round reason=" + reason
+                + ", canceledMessageId=" + safeString(canceledMessageId));
+        stopCurrentAudio();
+        requesting = false;
+        voiceFlowActive = false;
+    }
+
+    private boolean isStaleSseMessage(String messageId) {
+        return isStaleSseMessage(messageId, "unknown", activeSseRoundSeq);
+    }
+
+    private boolean isStaleSseMessage(String messageId, String event) {
+        return isStaleSseMessage(messageId, event, activeSseRoundSeq);
+    }
+
+    private boolean isStaleSseMessage(String messageId, String event, int roundSeq) {
+        synchronized (speechQueueLock) {
+            return !acceptSseEventMessageIdLocked(event, messageId, roundSeq);
+        }
+    }
+
+    private boolean isCurrentSseRound(int roundSeq, String event) {
+        synchronized (speechQueueLock) {
+            if (roundSeq != activeSseRoundSeq) {
+                Log.d(TAG, "[SSE][Filter] ignore old round event=" + event
+                        + " eventRoundSeq=" + roundSeq
+                        + " activeSseRoundSeq=" + activeSseRoundSeq);
+                return false;
+            }
+            return true;
+        }
+    }
+
+    private boolean acceptSseEventMessageIdLocked(String event, String messageId, int roundSeq) {
+        if (roundSeq != activeSseRoundSeq) {
+            Log.d(TAG, "[SSE][Filter] ignore old round event=" + event
+                    + " eventRoundSeq=" + roundSeq
+                    + " activeSseRoundSeq=" + activeSseRoundSeq);
+            return false;
+        }
+        String msg = safeString(messageId).trim();
+        if (msg.length() == 0) {
+            Log.d(TAG, "[SSE][Filter] allow current round event=" + event
+                    + " eventMessageId="
+                    + " roundSeq=" + roundSeq);
+            logSseMessageIdStateLocked(event, msg, true);
+            return true;
+        }
+        if (canceledMessageIds.contains(msg) || msg.equals(safeString(canceledMessageId).trim())) {
+            Log.d(TAG, "[SSE][Filter] ignore canceled messageId=" + msg
+                    + " event=" + event
+                    + " roundSeq=" + roundSeq);
+            logSseMessageIdStateLocked(event, msg, false);
+            return false;
+        }
+
+        if ("context".equals(event)) {
+            contextMessageId = msg;
+        } else if (responseMessageId.length() == 0) {
+            responseMessageId = msg;
+        }
+        acceptedMessageIds.add(msg);
+        currentMessageId = firstNotEmpty(responseMessageId, contextMessageId, msg, currentMessageId);
+        Log.d(TAG, "[SSE][Filter] allow current round event=" + event
+                + " eventMessageId=" + msg
+                + " roundSeq=" + roundSeq);
+        logSseMessageIdStateLocked(event, msg, true);
+        return true;
+    }
+
+    private void logSseMessageIdStateLocked(String event, String eventMessageId, boolean accepted) {
+        Log.d(TAG, "[SSE][MessageId] contextMessageId=" + safeString(contextMessageId)
+                + " responseMessageId=" + safeString(responseMessageId)
+                + " eventMessageId=" + safeString(eventMessageId)
+                + " accepted=" + accepted
+                + " acceptedSize=" + acceptedMessageIds.size()
+                + " event=" + safeString(event));
+    }
+
+    private boolean isStaleSpeechChunk(SpeechChunk chunk, String event, int roundSeq) {
+        if (chunk == null) {
+            return false;
+        }
+        boolean stale = isStaleSseMessage(chunk.messageId, event, roundSeq);
+        if (stale) {
+            Log.d(TAG, "[speech-receive] stale messageId=" + safeString(chunk.messageId)
+                    + " currentMessageId=" + safeString(currentMessageId)
+                    + " chunkId=" + safeString(chunk.chunkId)
+                    + " chunkIndex=" + chunk.chunkIndex);
+        }
+        return stale;
+    }
+
+    private String buildSpeechChunkKey(SpeechChunk chunk) {
+        if (chunk == null) {
+            return "";
+        }
+        String messageId = firstNotEmpty(chunk.messageId, currentMessageId).trim();
+        String chunkId = safeString(chunk.chunkId).trim();
+        if (chunkId.length() > 0) {
+            return messageId + ":" + chunkId;
+        }
+        return messageId + ":" + chunk.chunkIndex + ":" + safeString(chunk.audioUrl).trim();
+    }
+
+    private String getPendingIndexesTextLocked() {
+        if (pendingSpeechChunks.size() == 0) {
+            return "[]";
+        }
+        StringBuilder builder = new StringBuilder("[");
+        boolean first = true;
+        for (Integer index : pendingSpeechChunks.keySet()) {
+            if (!first) {
+                builder.append(',');
+            }
+            builder.append(index == null ? "null" : String.valueOf(index));
+            first = false;
+        }
+        builder.append(']');
+        return builder.toString();
+    }
+
+    private RouteInfo parseRouteFromSseData(JSONObject data) {
+        if (data == null) {
+            return null;
+        }
+        RouteInfo route = parseRouteFromAiResponse(data);
+        if (route != null) {
+            return attachRouteEnvelopeFields(route, data);
+        }
+        if (data.has("nodes") || data.has("spots") || data.has("routeName") || data.has("route_name")) {
+            return attachRouteEnvelopeFields(parseRouteInfo(data), data);
+        }
+        JSONObject payload = getJsonObject(data, "data");
+        if (payload != null) {
+            route = parseRouteFromAiResponse(payload);
+            if (route != null) {
+                return attachRouteEnvelopeFields(route, data);
+            }
+            if (payload.has("nodes") || payload.has("spots") || payload.has("routeName") || payload.has("route_name")) {
+                return attachRouteEnvelopeFields(parseRouteInfo(payload), data);
+            }
+        }
+        return null;
+    }
+
+    private RouteInfo attachRouteEnvelopeFields(RouteInfo route, JSONObject envelope) {
+        if (route == null || envelope == null) {
+            return route;
+        }
+        route.routeIntent = route.routeIntent || getBooleanCompat(envelope, "routeIntent", "route_intent");
+        if (route.visitStatus.length() == 0) {
+            route.visitStatus = getJsonText(envelope, "visitStatus", "visit_status");
+        }
+        if (route.routeMode.length() == 0) {
+            route.routeMode = getJsonText(envelope, "routeMode", "route_mode");
+        }
+        String envelopeRouteId = getJsonText(envelope, "routeId", "route_id");
+        if (route.originalRouteId.length() == 0 && envelopeRouteId.length() > 0) {
+            route.routeId = envelopeRouteId;
+            route.originalRouteId = envelopeRouteId;
+            route.localRouteIdGenerated = false;
+        } else if (route.routeId.length() == 0) {
+            route.routeId = envelopeRouteId;
+            route.originalRouteId = envelopeRouteId;
+            ensureRouteId(route);
+        }
+        return route;
+    }
+
+    private SpeechChunk parseSpeechChunk(JSONObject data) {
+        if (data == null) {
+            return null;
+        }
+        SpeechChunk chunk = new SpeechChunk();
+        chunk.messageId = getJsonText(data, "messageId", "message_id");
+        chunk.chunkId = getJsonText(data, "chunkId", "chunk_id", "id");
+        chunk.chunkIndex = parseIntOrDefault(firstNotEmpty(
+                getJsonText(data, "chunkIndex", "chunk_index", "index"),
+                "0"
+        ), 0);
+        chunk.text = firstNotEmpty(getJsonText(data, "text", "content", "answer"), "");
+        JSONObject audioJson = getJsonObject(data, "audio", "speech", "tts");
+        chunk.audioUrl = firstNotEmpty(
+                getJsonText(data, "audioUrl", "audio_url", "url"),
+                getJsonText(audioJson, "url", "audioUrl", "audio_url")
+        );
+        chunk.durationMs = parseLongOrDefault(firstNotEmpty(
+                getJsonText(data, "durationMs", "duration_ms", "audioDurationMs", "audio_duration_ms"),
+                getJsonText(audioJson, "durationMs", "duration_ms", "audioDurationMs", "audio_duration_ms")
+        ), 0L);
+        chunk.isLast = getBooleanCompat(data, "isLast", "is_last", "last");
+        chunk.action = firstNotEmpty(getJsonText(data, "action", "actionCode", "action_code"), "explain");
+        chunk.emotion = firstNotEmpty(getJsonText(data, "emotion", "emotionCode", "emotion_code"), "warm");
+        parseSpeechMouthFrames(data, chunk);
+        return chunk;
+    }
+
+    private void parseSpeechMouthFrames(JSONObject data, SpeechChunk chunk) {
+        JSONArray mouthFramesArray = getJsonArray(data, "mouthFrames", "mouth_frames");
+        JSONObject mouthJson = getJsonObject(data, "mouth", "mouthSync", "mouth_sync");
+        JSONObject audioJson = getJsonObject(data, "audio", "speech", "tts");
+        if (mouthFramesArray == null) {
+            mouthFramesArray = getJsonArray(mouthJson, "frames", "mouthFrames", "mouth_frames");
+        }
+        if (mouthFramesArray == null) {
+            mouthFramesArray = getJsonArray(audioJson, "frames", "mouthFrames", "mouth_frames");
+        }
+        if (mouthFramesArray == null) {
+            return;
+        }
+        for (int i = 0; i < mouthFramesArray.length(); i++) {
+            JSONObject frame = mouthFramesArray.optJSONObject(i);
+            if (frame == null) {
+                continue;
+            }
+            String timeText = firstNotEmpty(getJsonText(
+                    frame,
+                    "timeMs",
+                    "time_ms",
+                    "timestampMs",
+                    "timestamp_ms",
+                    "offsetMs",
+                    "offset_ms",
+                    "time",
+                    "timestamp",
+                    "t"
+            ));
+            boolean hasTimeField = timeText.length() > 0;
+            double rawTime = hasTimeField ? parseDoubleOrDefault(timeText, i * 40.0d) : i * 40.0d;
+            String openText = firstNotEmpty(getJsonText(
+                    frame,
+                    "open",
+                    "value",
+                    "mouthOpen",
+                    "mouth_open",
+                    "mouthOpenY",
+                    "mouth_open_y",
+                    "openY",
+                    "open_y",
+                    "ParamMouthOpenY",
+                    "paramMouthOpenY"
+            ));
+            boolean hasOpenField = openText.length() > 0;
+            double openValue = hasOpenField ? parseDoubleOrDefault(openText, 0.0d) : 0.0d;
+            double formValue = parseDoubleOrDefault(firstNotEmpty(
+                    getJsonText(frame, "form", "mouthForm", "mouth_form")
+            ), 0.0d);
+            chunk.mouthFrames.add(new MouthSyncManager.MouthFrame((int) Math.round(rawTime), (float) openValue, (float) formValue));
+            chunk.controllerMouthFrames.add(new MouthSyncController.MouthFrame(
+                    rawTime,
+                    (float) openValue,
+                    (float) formValue,
+                    hasTimeField,
+                    hasOpenField
+            ));
+        }
+    }
+
+    private void renderStreamingAnswer() {
+        if (answerText == null) {
+            return;
+        }
+        String answer;
+        synchronized (speechQueueLock) {
+            answer = currentAnswerBuilder.toString();
+        }
+        StringBuilder display = new StringBuilder(chatTranscriptBuilder.toString());
+        if (answer.trim().length() > 0) {
+            if (display.length() > 0) {
+                display.append("\n\n");
+            }
+            display.append("AI 导游：").append(answer);
+        }
+        answerText.setText(display.toString());
+        scrollChatToBottom();
+    }
+
+    private void commitCurrentSseAnswerIfNeeded() {
+        String answer;
+        boolean shouldCommit;
+        synchronized (speechQueueLock) {
+            shouldCommit = !currentSseAnswerCommitted;
+            currentSseAnswerCommitted = true;
+            answer = currentAnswerBuilder.toString();
+        }
+        if (shouldCommit && answer.trim().length() > 0) {
+            appendAiMessage(answer);
+        } else {
+            renderStreamingAnswer();
+        }
+    }
+
+    private void tryPlayNextSpeechChunk() {
+        SpeechChunk chunk;
+        synchronized (speechQueueLock) {
+            advanceSkippedSpeechIndexesLocked();
+            if (speechPlaying) {
+                return;
+            }
+            chunk = pendingSpeechChunks.get(nextSpeechIndexToPlay);
+            if (chunk == null) {
+                scheduleSpeechMissingFallbackIfNeededLocked("try_play");
+                return;
+            }
+            speechPlaying = true;
+            if (missingFallbackScheduledIndex == nextSpeechIndexToPlay) {
+                missingFallbackScheduledIndex = -1;
+                missingFallbackScheduledMessageId = "";
+            }
+        }
+        playSpeechChunk(chunk);
+    }
+
+    private void scheduleSpeechMissingFallbackIfNeededLocked(String reason) {
+        if (speechPlaying
+                || currentSpeechChunkCount <= 0
+                || nextSpeechIndexToPlay >= currentSpeechChunkCount
+                || pendingSpeechChunks.containsKey(nextSpeechIndexToPlay)
+                || (!speechDoneReceived && !serverDone)) {
+            return;
+        }
+        final int scheduledIndex = nextSpeechIndexToPlay;
+        final String scheduledMessageId = safeString(currentMessageId);
+        if (missingFallbackScheduledIndex == scheduledIndex
+                && scheduledMessageId.equals(missingFallbackScheduledMessageId)) {
+            return;
+        }
+        missingFallbackScheduledIndex = scheduledIndex;
+        missingFallbackScheduledMessageId = scheduledMessageId;
+        Log.d(TAG, "[SSE][Audio] schedule missing fallback reason=" + reason
+                + " expectedChunkIndex=" + scheduledIndex
+                + " expected=" + currentSpeechChunkCount
+                + " delayMs=" + SPEECH_MISSING_FALLBACK_DELAY_MS
+                + " pendingIndexes=" + getPendingIndexesTextLocked());
+        if (mainHandler == null) {
+            mainHandler = new Handler(Looper.getMainLooper());
+        }
+        mainHandler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                handleSpeechMissingFallback(scheduledMessageId, scheduledIndex);
+            }
+        }, SPEECH_MISSING_FALLBACK_DELAY_MS);
+    }
+
+    private void handleSpeechMissingFallback(String scheduledMessageId, int scheduledIndex) {
+        boolean skipped = false;
+        synchronized (speechQueueLock) {
+            if (!safeString(currentMessageId).equals(safeString(scheduledMessageId))
+                    || nextSpeechIndexToPlay != scheduledIndex
+                    || speechPlaying
+                    || currentSpeechChunkCount <= 0
+                    || scheduledIndex >= currentSpeechChunkCount
+                    || pendingSpeechChunks.containsKey(scheduledIndex)
+                    || (!speechDoneReceived && !serverDone)) {
+                Log.d(TAG, "[SSE][Audio] missing fallback canceled expectedChunkIndex=" + scheduledIndex
+                        + " currentExpectedChunkIndex=" + nextSpeechIndexToPlay
+                        + " pendingIndexes=" + getPendingIndexesTextLocked());
+                return;
+            }
+            Log.w(TAG, "[speech-missing] expectedChunkIndex=" + scheduledIndex
+                    + " expected=" + currentSpeechChunkCount
+                    + " pendingIndexes=" + getPendingIndexesTextLocked());
+            skippedSpeechChunkIndexes.add(scheduledIndex);
+            nextSpeechIndexToPlay++;
+            missingFallbackScheduledIndex = -1;
+            missingFallbackScheduledMessageId = "";
+            if (currentSpeechChunkCount > 0 && nextSpeechIndexToPlay >= currentSpeechChunkCount) {
+                speechGenerating = false;
+            }
+            skipped = true;
+        }
+        if (skipped) {
+            logSseState("speech_missing_skipped");
+            tryPlayNextSpeechChunk();
+            finishCurrentSseRoundIfReady();
+        }
+    }
+
+    private void advanceSkippedSpeechIndexesLocked() {
+        while (skippedSpeechChunkIndexes.contains(nextSpeechIndexToPlay)) {
+            skippedSpeechChunkIndexes.remove(nextSpeechIndexToPlay);
+            nextSpeechIndexToPlay++;
+        }
+    }
+
+    private void playSpeechChunk(final SpeechChunk chunk) {
+        if (chunk == null) {
+            markSpeechChunkFinished(null, false);
+            return;
+        }
+        if (isStaleSseMessage(chunk.messageId, "speech_chunk_play", chunk.roundSeq)) {
+            markSpeechChunkFinished(chunk, false);
+            return;
+        }
+        final String finalUrl = resolveAudioUrl(chunk.audioUrl);
+        Log.d(TAG, "[SSE][Audio] playSpeechChunk messageId=" + safeString(chunk.messageId)
+                + " chunkId=" + safeString(chunk.chunkId)
+                + " chunkIndex=" + chunk.chunkIndex
+                + " expectedChunkIndex=" + nextSpeechIndexToPlay);
+        Log.d(TAG, "[SSE][Audio] raw audioUrl=" + safeString(chunk.audioUrl));
+        Log.d(TAG, "[SSE][Audio] resolved audioUrl=" + safeString(finalUrl));
+        if (finalUrl.length() == 0) {
+            Log.w(TAG, "[SSE][Audio] skip chunkIndex=" + chunk.chunkIndex + " reason=empty_or_unresolved_url");
+            markSpeechChunkFinished(chunk, false);
+            return;
+        }
+
+        try {
+            releaseMediaPlayerOnly();
+            final GuideResponse guideResponse = new GuideResponse();
+            guideResponse.answer = chunk.text;
+            guideResponse.audioUrl = finalUrl;
+            guideResponse.audioDurationMs = chunk.durationMs;
+            guideResponse.mouthFrames = chunk.mouthFrames;
+            guideResponse.controllerMouthFrames = chunk.controllerMouthFrames;
+            guideResponse.action = firstNotEmpty(chunk.action, "explain");
+            guideResponse.emotion = firstNotEmpty(chunk.emotion, "warm");
+
+            mediaPlayer = new MediaPlayer();
+            mediaPlayer.setAudioStreamType(AudioManager.STREAM_MUSIC);
+            mediaPlayer.setVolume(1f, 1f);
+            mediaPlayer.setDataSource(finalUrl);
+            mediaPlayer.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
+                @Override
+                public void onPrepared(MediaPlayer mp) {
+                    Log.d(TAG, "[SSE][Audio] onPrepared messageId=" + safeString(chunk.messageId)
+                            + " chunkId=" + safeString(chunk.chunkId)
+                            + " chunkIndex=" + chunk.chunkIndex);
+                    if (isStaleSseMessage(chunk.messageId, "speech_chunk_prepared", chunk.roundSeq)) {
+                        markSpeechChunkFinished(chunk, false);
+                        return;
+                    }
+                    try {
+                        guideStateText.setText("正在讲解");
+                        voiceMainButton.setText("数字人正在讲解...");
+                        mp.start();
+                        Log.d(TAG, "[SSE][Audio] play start chunkIndex=" + chunk.chunkIndex);
+                    } catch (Exception e) {
+                        Log.e(TAG, "[SSE][Audio] play error chunkIndex=" + chunk.chunkIndex
+                                + " url=" + finalUrl
+                                + " stage=start", e);
+                        markSpeechChunkFinished(chunk, false);
+                        return;
+                    }
+
+                    long startUptimeMs = android.os.SystemClock.uptimeMillis();
+                    long durationMs = chunk.durationMs;
+                    if (durationMs <= 0L) {
+                        try {
+                            durationMs = mp.getDuration();
+                        } catch (Exception ignored) {
+                        }
+                    }
+                    if (hasMouthFrames(chunk.mouthFrames, chunk.controllerMouthFrames)) {
+                        startMouthSyncWithFrames(chunk.mouthFrames, chunk.controllerMouthFrames, durationMs, startUptimeMs);
+                    } else {
+                        startMouthSyncWithText(chunk.text, durationMs, startUptimeMs, finalUrl);
+                    }
+                    startBackendAudioSpeaking(guideResponse);
+                    forceRenderLive2D();
+                }
+            });
+            mediaPlayer.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
+                @Override
+                public void onCompletion(MediaPlayer mp) {
+                    Log.d(TAG, "[SSE][Audio] onCompletion messageId=" + safeString(chunk.messageId)
+                            + " chunkId=" + safeString(chunk.chunkId)
+                            + " chunkIndex=" + chunk.chunkIndex);
+                    Log.d(TAG, "[SSE][Audio] play complete chunkIndex=" + chunk.chunkIndex);
+                    markSpeechChunkFinished(chunk, true);
+                }
+            });
+            mediaPlayer.setOnErrorListener(new MediaPlayer.OnErrorListener() {
+                @Override
+                public boolean onError(MediaPlayer mp, int what, int extra) {
+                    Log.e(TAG, "[SSE][Audio] onError messageId=" + safeString(chunk.messageId)
+                            + " chunkId=" + safeString(chunk.chunkId)
+                            + " chunkIndex=" + chunk.chunkIndex
+                            + " url=" + finalUrl
+                            + ", what=" + what
+                            + ", extra=" + extra);
+                    markSpeechChunkFinished(chunk, false);
+                    return true;
+                }
+            });
+            mediaPlayer.prepareAsync();
+        } catch (Exception e) {
+            Log.e(TAG, "[SSE][Audio] play error chunkIndex=" + chunk.chunkIndex
+                    + " url=" + finalUrl
+                    + " stage=prepare", e);
+            markSpeechChunkFinished(chunk, false);
+        }
+    }
+
+    private void markSpeechChunkFinished(SpeechChunk chunk, boolean completed) {
+        String chunkKey = buildSpeechChunkKey(chunk);
+        if (isPlayedSpeechChunk(chunk)) {
+            Log.d(TAG, "[SSE][Audio] duplicate chunk finish ignored key=" + chunkKey
+                    + " chunkIndex=" + chunk.chunkIndex);
+            finishCurrentSseRoundIfReady();
+            return;
+        }
+        Log.d(TAG, "[SSE][Audio] markSpeechChunkFinished messageId=" + (chunk == null ? "" : safeString(chunk.messageId))
+                + " chunkId=" + (chunk == null ? "" : safeString(chunk.chunkId))
+                + " chunkIndex=" + (chunk == null ? -1 : chunk.chunkIndex)
+                + " completed=" + completed);
+        stopBackendAudioSpeaking();
+        stopMouthSync();
+        releaseMediaPlayerOnly();
+        synchronized (speechQueueLock) {
+            speechPlaying = false;
+            if (chunk != null) {
+                playedSpeechChunkKeys.add(chunkKey);
+                pendingSpeechChunks.remove(chunk.chunkIndex);
+            }
+            if (chunk != null && chunk.chunkIndex == nextSpeechIndexToPlay) {
+                nextSpeechIndexToPlay++;
+            } else if (chunk != null && chunk.chunkIndex > nextSpeechIndexToPlay) {
+                Log.w(TAG, "[SSE][Audio] finished chunk index ahead of expected, keep sequential advance chunkIndex="
+                        + chunk.chunkIndex + " expectedChunkIndex=" + nextSpeechIndexToPlay);
+                nextSpeechIndexToPlay++;
+            } else if (chunk == null) {
+                nextSpeechIndexToPlay++;
+            }
+            advanceSkippedSpeechIndexesLocked();
+            if (currentSpeechChunkCount > 0 && nextSpeechIndexToPlay >= currentSpeechChunkCount) {
+                speechGenerating = false;
+            }
+            Log.d(TAG, "[speech-queue] expectedChunkIndex=" + nextSpeechIndexToPlay
+                    + " pendingIndexes=" + getPendingIndexesTextLocked()
+                    + " receivedKeysSize=" + receivedSpeechChunkKeys.size()
+                    + " playedKeysSize=" + playedSpeechChunkKeys.size()
+                    + " isPlaying=" + speechPlaying
+                    + " duplicate=false");
+        }
+        if (chunk != null) {
+            Log.d(TAG, "[SSE] chunk finished index=" + chunk.chunkIndex + ", completed=" + completed);
+        }
+        logSseState("chunk_finished");
+        tryPlayNextSpeechChunk();
+        finishCurrentSseRoundIfReady();
+    }
+
+    private boolean isPlayedSpeechChunk(SpeechChunk chunk) {
+        if (chunk == null) {
+            return false;
+        }
+        synchronized (speechQueueLock) {
+            return playedSpeechChunkKeys.contains(buildSpeechChunkKey(chunk));
+        }
+    }
+
+    private void logSseState(String reason) {
+        synchronized (speechQueueLock) {
+            Log.d(TAG, "[SSE][State] reason=" + reason
+                    + " serverDone=" + serverDone
+                    + " textGenerating=" + textGenerating
+                    + " speechGenerating=" + speechGenerating
+                    + " speechPlaying=" + speechPlaying
+                    + " queueSize=" + pendingSpeechChunks.size()
+                    + " pendingUnplayed=" + getPendingUnplayedChunkCountLocked()
+                    + " expectedChunkIndex=" + nextSpeechIndexToPlay
+                    + " expectedSpeechChunkCount=" + currentSpeechChunkCount
+                    + " speechDoneReceived=" + speechDoneReceived
+                    + " pendingIndexes=" + getPendingIndexesTextLocked());
+        }
+    }
+
+    private String getSseLifecycleState() {
+        synchronized (speechQueueLock) {
+            return "requesting=" + requesting
+                    + " voiceFlowActive=" + voiceFlowActive
+                    + " recording=" + recording
+                    + " serverDone=" + serverDone
+                    + " textGenerating=" + textGenerating
+                    + " speechGenerating=" + speechGenerating
+                    + " speechPlaying=" + speechPlaying
+                    + " expectedChunkIndex=" + nextSpeechIndexToPlay
+                    + " expectedSpeechChunkCount=" + currentSpeechChunkCount
+                    + " pendingIndexes=" + getPendingIndexesTextLocked()
+                    + " receivedKeysSize=" + receivedSpeechChunkKeys.size()
+                    + " playedKeysSize=" + playedSpeechChunkKeys.size();
+        }
+    }
+
+    private void finishCurrentSseRoundIfReady() {
+        boolean ready;
+        String notFinishedReason = "";
+        synchronized (speechQueueLock) {
+            int pendingUnplayed = getPendingUnplayedChunkCountLocked();
+            Log.d(TAG, "[SSE][State] reason=finish_check"
+                    + " serverDone=" + serverDone
+                    + " textGenerating=" + textGenerating
+                    + " speechGenerating=" + speechGenerating
+                    + " speechPlaying=" + speechPlaying
+                    + " expectedChunkIndex=" + nextSpeechIndexToPlay
+                    + " expectedSpeechChunkCount=" + currentSpeechChunkCount
+                    + " pendingUnplayed=" + pendingUnplayed
+                    + " pendingIndexes=" + getPendingIndexesTextLocked());
+            ready = serverDone
+                    && !textGenerating
+                    && !speechGenerating
+                    && !speechPlaying
+                    && isSpeechQueueDrainedLocked();
+            if (!serverDone) {
+                notFinishedReason = "server_not_done";
+            } else if (textGenerating) {
+                notFinishedReason = "text_generating";
+            } else if (speechGenerating) {
+                notFinishedReason = "speech_generating";
+            } else if (speechPlaying) {
+                notFinishedReason = "speech_playing";
+            } else if (!isSpeechQueueDrainedLocked()) {
+                notFinishedReason = "speech_queue_not_drained";
+            }
+            if (!ready) {
+                scheduleSpeechMissingFallbackIfNeededLocked("finish_check");
+            }
+        }
+        if (guideEnded) {
+            Log.d(TAG, "[SSE][State] round not finished reason=guide_ended");
+            return;
+        }
+        if (!ready) {
+            Log.d(TAG, "[SSE][State] round not finished reason=" + notFinishedReason);
+            return;
+        }
+        Log.d(TAG, "[SSE][State] round finished");
+        commitCurrentSseAnswerIfNeeded();
+        requesting = false;
+        voiceFlowActive = false;
+        updateSimulatedSpotButton();
+        if (guideStateText != null) {
+            guideStateText.setText("讲解完成");
+        }
+        if (voiceMainButton != null) {
+            voiceMainButton.setText("🎙 长按说话");
+        }
+        stopBackendAudioSpeaking();
+        stopMouthSync();
+        returnDigitalHumanToIdle();
+    }
+
+    private boolean isSpeechQueueDrainedLocked() {
+        if (getPendingUnplayedChunkCountLocked() > 0) {
+            return false;
+        }
+        if (currentSpeechChunkCount > 0) {
+            return nextSpeechIndexToPlay >= currentSpeechChunkCount;
+        }
+        return true;
+    }
+
+    private boolean hasPendingUnplayedChunksLocked() {
+        return getPendingUnplayedChunkCountLocked() > 0;
+    }
+
+    private int getPendingUnplayedChunkCountLocked() {
+        int count = 0;
+        for (Integer index : pendingSpeechChunks.keySet()) {
+            if (index != null && index >= nextSpeechIndexToPlay) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private void handleGuideChatSseFailure(final String question, final String fallbackMessage, boolean networkError) {
+        final boolean useNfcFallback = shouldUseNfcGuideFallback(question);
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                if (guideEnded) {
+                    return;
+                }
+                Call callToCancel;
+                synchronized (speechQueueLock) {
+                    callToCancel = currentGuideSseCall;
+                    currentGuideSseCall = null;
+                    if (currentMessageId.length() > 0) {
+                        canceledMessageIds.add(currentMessageId);
+                    }
+                    if (contextMessageId.length() > 0) {
+                        canceledMessageIds.add(contextMessageId);
+                    }
+                    if (responseMessageId.length() > 0) {
+                        canceledMessageIds.add(responseMessageId);
+                    }
+                    canceledMessageIds.addAll(acceptedMessageIds);
+                    textGenerating = false;
+                    speechGenerating = false;
+                    speechPlaying = false;
+                    serverDone = false;
+                    speechDoneReceived = false;
+                    contextMessageId = "";
+                    responseMessageId = "";
+                    pendingSpeechChunks.clear();
+                    skippedSpeechChunkIndexes.clear();
+                    receivedSpeechChunkKeys.clear();
+                    playedSpeechChunkKeys.clear();
+                    acceptedMessageIds.clear();
+                    currentSpeechChunkCount = 0;
+                    nextSpeechIndexToPlay = 0;
+                    missingFallbackScheduledIndex = -1;
+                    missingFallbackScheduledMessageId = "";
+                }
+                if (callToCancel != null) {
+                    callToCancel.cancel();
+                }
+                stopCurrentAudio();
+                requesting = false;
+                voiceFlowActive = false;
+                updateSimulatedSpotButton();
+                guideStateText.setText(useNfcFallback ? "基础讲解" : "请求失败");
+                voiceMainButton.setText("🎙 长按说话");
+                if (useNfcFallback) {
+                    showGuideAnswer(nfcFallbackGuideSummary.trim());
+                    showToast("网络讲解暂时失败，已先展示 NFC 点位基础讲解。");
+                } else {
+                    showGuideAnswer(firstNotEmpty(fallbackMessage, "AI 服务暂时不可用，请稍后再试。"));
+                }
+                returnDigitalHumanToIdle();
+            }
+        });
+    }
+
 
     private String getGuideTextRequestUrl(String question) {
         if (isRouteIntentQuestion(question)) {
@@ -1369,7 +2791,27 @@ public class MainActivity extends Activity {
                     + ", nodes=" + (route.nodes == null ? 0 : route.nodes.size()));
             return;
         }
+        route.routeIntent = true;
         showRouteCardIfNeeded(route);
+    }
+
+    private boolean shouldAllowRouteCardForResponse(GuideResponse response) {
+        if (response == null) {
+            return false;
+        }
+        String answerStatus = safeString(response.answerStatus).trim().toLowerCase(Locale.ROOT);
+        if ("knowledge_miss".equals(answerStatus)
+                || "no_evidence".equals(answerStatus)
+                || "user_instruction".equals(answerStatus)
+                || "short_term_profile".equals(answerStatus)
+                || "instruction_saved".equals(answerStatus)
+                || "location_confirmation_required".equals(answerStatus)) {
+            return false;
+        }
+        if ("route_recommend".equals(answerStatus)) {
+            return response.route != null;
+        }
+        return true;
     }
 
     private boolean isRouteIntentQuestion(String question) {
@@ -1514,6 +2956,180 @@ public class MainActivity extends Activity {
         return value;
     }
 
+    private String ensureGuideConversationIdForRequest() {
+        String current = firstNotEmpty(conversationId, sessionId);
+        if (current.length() == 0) {
+            String base = getTargetName();
+            if (base == null || base.trim().length() == 0) {
+                base = "general";
+            }
+            current = "guide-" + Math.abs(base.hashCode()) + "-" + System.currentTimeMillis();
+        }
+        conversationId = current;
+        sessionId = current;
+        return current;
+    }
+
+    private void rememberGuideConversationId(String value) {
+        String current = firstNotEmpty(value);
+        if (current.length() == 0) {
+            return;
+        }
+        conversationId = current;
+        sessionId = current;
+        Log.d(TAG, "[GuideChat] conversationId updated=" + current);
+    }
+
+    private String normalizeAreaCode(String rawAreaCode, String rawAreaId) {
+        String code = firstNotEmpty(rawAreaCode);
+        if (code.length() == 0) {
+            String idText = firstNotEmpty(rawAreaId);
+            if (isIntegerText(idText)) {
+                return formatAreaCode(idText);
+            }
+            return "";
+        }
+        if (isIntegerText(code)) {
+            return formatAreaCode(code);
+        }
+        return code;
+    }
+
+    private String resolveAreaIdForGuideRequest(String rawAreaId, String rawAreaCode) {
+        String idText = firstNotEmpty(rawAreaId);
+        if (idText.length() > 0) {
+            return idText;
+        }
+        String code = firstNotEmpty(rawAreaCode);
+        if (isIntegerText(code)) {
+            return code;
+        }
+        String upper = code.toUpperCase(Locale.ROOT);
+        if (upper.startsWith("AREA_")) {
+            String suffix = upper.substring("AREA_".length());
+            if (isIntegerText(suffix)) {
+                try {
+                    return String.valueOf(Long.parseLong(suffix));
+                } catch (NumberFormatException ignored) {
+                    return suffix;
+                }
+            }
+        }
+        return "";
+    }
+
+    private boolean isIntegerText(String value) {
+        String text = safeString(value).trim();
+        if (text.length() == 0) {
+            return false;
+        }
+        for (int i = 0; i < text.length(); i++) {
+            if (!Character.isDigit(text.charAt(i))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private String formatAreaCode(String numericText) {
+        try {
+            long value = Long.parseLong(safeString(numericText).trim());
+            return String.format(Locale.ROOT, "AREA_%04d", value);
+        } catch (Exception e) {
+            return firstNotEmpty(numericText);
+        }
+    }
+
+    private String normalizeAvailableMinutesText(String value) {
+        String text = safeString(value).trim();
+        if (text.length() == 0) {
+            return "";
+        }
+        if (text.contains("全天")) {
+            return "360";
+        }
+        if (text.contains("半天")) {
+            return "180";
+        }
+        String digits = text.replaceAll("[^0-9]", "");
+        if (digits.length() == 0) {
+            return "";
+        }
+        try {
+            int number = Integer.parseInt(digits);
+            if (text.contains("小时")) {
+                return String.valueOf(number * 60);
+            }
+            return String.valueOf(number);
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private JSONObject buildTravelPartyObject() {
+        JSONObject party = new JSONObject();
+        try {
+            String groupCount = normalizeGroupSizeText(groupSize);
+            if (groupCount.length() > 0) {
+                party.put("groupSize", Integer.parseInt(groupCount));
+            }
+            String merged = (safeString(groupSize) + " " + safeString(travelType) + " " + safeString(visitPreference)).trim();
+            if (merged.length() > 0) {
+                party.put("withChildren", merged.contains("亲子") || merged.contains("儿童") || merged.contains("孩子"));
+                party.put("withElderly", merged.contains("老人") || merged.contains("长辈") || merged.contains("老年"));
+            }
+        } catch (Exception ignored) {
+        }
+        return party;
+    }
+
+    private String normalizeGroupSizeText(String value) {
+        String text = safeString(value).trim();
+        if (text.length() == 0) {
+            return "";
+        }
+        String digits = text.replaceAll("[^0-9]", "");
+        if (digits.length() == 0) {
+            return "";
+        }
+        if (text.contains("-") && digits.length() > 1) {
+            return digits.substring(0, 1);
+        }
+        return digits;
+    }
+
+    private void appendCurrentTravelConditionFields(JSONObject requestJson) throws Exception {
+        JSONObject travelParty = buildTravelPartyObject();
+        if (travelParty.length() > 0) {
+            requestJson.put("travelParty", travelParty);
+            requestJson.put("travel_party", travelParty);
+        }
+        String minutes = firstNotEmpty(availableMinutes, normalizeAvailableMinutesText(estimatedDuration));
+        if (minutes.length() > 0) {
+            int value = Integer.parseInt(minutes);
+            requestJson.put("availableMinutes", value);
+            requestJson.put("available_minutes", value);
+        }
+
+        String status = resolveCurrentVisitStatusForChat();
+        boolean inside = VISIT_STATUS_IN_PARK.equals(status);
+        requestJson.put("visitStatus", status);
+        requestJson.put("visit_status", status);
+        requestJson.put("isInsideArea", inside);
+        requestJson.put("is_inside_area", inside);
+    }
+
+    private String resolveCurrentVisitStatusForChat() {
+        if (isRealOnsiteRouteContext() || isOnsiteGuide || startVisitGuide || allowEndVisit) {
+            return VISIT_STATUS_IN_PARK;
+        }
+        String explicit = firstNotEmpty(visitStatus);
+        if (explicit.length() > 0) {
+            return normalizeVisitStatusForContract(explicit);
+        }
+        return VISIT_STATUS_NOT_ARRIVED;
+    }
+
     private JSONObject buildRequestJson(String question) throws Exception {
         return buildRequestJson(question, false);
     }
@@ -1526,10 +3142,12 @@ public class MainActivity extends Activity {
         JSONObject requestJson = new JSONObject();
 
         String realUserId = getEffectiveNativeUserId();
-        String realSessionId = firstNotEmpty(sessionId, conversationId);
-        String realConversationId = firstNotEmpty(conversationId, sessionId);
+        String realConversationId = ensureGuideConversationIdForRequest();
+        String realSessionId = firstNotEmpty(sessionId, realConversationId);
         boolean routeIntent = shouldAllowRouteResponse(question, suppressRoute);
         String routeRequestSource = normalizeRouteRequestSource(requestSource);
+        String requestAreaId = resolveAreaIdForGuideRequest(areaId, areaCode);
+        String requestAreaCode = normalizeAreaCode(areaCode, requestAreaId);
 
         requestJson.put("sessionId", safeString(realSessionId));
         requestJson.put("session_id", safeString(realSessionId));
@@ -1582,10 +3200,10 @@ public class MainActivity extends Activity {
         requestJson.put("entry", safeString(entry));
         appendGuideContextParams(requestJson, realUserId, "text");
 
-        requestJson.put("areaCode", safeString(areaCode));
-        requestJson.put("area_code", safeString(areaCode));
-        putLongOrString(requestJson, "areaId", areaId);
-        putLongOrString(requestJson, "area_id", areaId);
+        requestJson.put("areaCode", safeString(requestAreaCode));
+        requestJson.put("area_code", safeString(requestAreaCode));
+        putLongOrString(requestJson, "areaId", requestAreaId);
+        putLongOrString(requestJson, "area_id", requestAreaId);
         requestJson.put("areaName", safeString(areaName));
         requestJson.put("area_name", safeString(areaName));
 
@@ -1601,10 +3219,10 @@ public class MainActivity extends Activity {
         requestJson.put("current_spot_id", safeString(spotId));
         requestJson.put("currentSpotName", safeString(spotName));
         requestJson.put("current_spot_name", safeString(spotName));
-        requestJson.put("currentLatitude", safeString(latitude));
-        requestJson.put("current_latitude", safeString(latitude));
-        requestJson.put("currentLongitude", safeString(longitude));
-        requestJson.put("current_longitude", safeString(longitude));
+        putCoordinateIfPresent(requestJson, "currentLatitude", latitude);
+        putCoordinateIfPresent(requestJson, "current_latitude", latitude);
+        putCoordinateIfPresent(requestJson, "currentLongitude", longitude);
+        putCoordinateIfPresent(requestJson, "current_longitude", longitude);
 
         requestJson.put("mode", safeString(mode));
         requestJson.put("trigger", safeString(trigger));
@@ -1638,8 +3256,8 @@ public class MainActivity extends Activity {
 
         // 路线推荐时只传 routeStart*；不把手机 GPS 当作景区内路线起点。
         if (!routeIntent) {
-            requestJson.put("latitude", safeString(latitude));
-            requestJson.put("longitude", safeString(longitude));
+            putCoordinateIfPresent(requestJson, "latitude", latitude);
+            putCoordinateIfPresent(requestJson, "longitude", longitude);
         }
 
         // ==================== NFC 位置上下文 & 网络上下文 ====================
@@ -1666,6 +3284,8 @@ public class MainActivity extends Activity {
                 locCtx.put("confidence_level", "HIGH");
                 locCtx.put("area_id", nfcAreaId);
                 locCtx.put("areaId", nfcAreaId);
+                locCtx.put("area_code", nfcAreaCode);
+                locCtx.put("areaCode", nfcAreaCode);
                 locCtx.put("area_name", safeString(nfcAreaName));
                 locCtx.put("areaName", safeString(nfcAreaName));
                 putLongOrString(locCtx, "current_spot_id", nfcSpotId);
@@ -1721,6 +3341,8 @@ public class MainActivity extends Activity {
                     + ", network_context=" + (networkContextSnake == null ? "null" : networkContextSnake.getClass().getSimpleName())
                     + ", networkContext=" + (networkContextCamel == null ? "null" : networkContextCamel.getClass().getSimpleName()));
         }
+
+        ensureGuideAiContractFields(requestJson, routeIntent, !routeIntent || suppressRoute);
 
         Log.d(TAG, "文本问答真实身份参数 realUserId=" + realUserId
                 + ", appUserId=" + appUserId
@@ -1787,21 +3409,23 @@ public class MainActivity extends Activity {
         requestJson.put("start_spot_id", safeString(startSpotId));
         requestJson.put("startSpotName", safeString(startSpotName));
         requestJson.put("start_spot_name", safeString(startSpotName));
-        requestJson.put("routeStartLatitude", safeString(routeStartLatitude));
-        requestJson.put("route_start_latitude", safeString(routeStartLatitude));
-        requestJson.put("routeStartLongitude", safeString(routeStartLongitude));
-        requestJson.put("route_start_longitude", safeString(routeStartLongitude));
-        requestJson.put("startLatitude", safeString(routeStartLatitude));
-        requestJson.put("start_latitude", safeString(routeStartLatitude));
-        requestJson.put("startLongitude", safeString(routeStartLongitude));
-        requestJson.put("start_longitude", safeString(routeStartLongitude));
+        putCoordinateIfPresent(requestJson, "routeStartLatitude", routeStartLatitude);
+        putCoordinateIfPresent(requestJson, "route_start_latitude", routeStartLatitude);
+        putCoordinateIfPresent(requestJson, "routeStartLongitude", routeStartLongitude);
+        putCoordinateIfPresent(requestJson, "route_start_longitude", routeStartLongitude);
+        putCoordinateIfPresent(requestJson, "startLatitude", routeStartLatitude);
+        putCoordinateIfPresent(requestJson, "start_latitude", routeStartLatitude);
+        putCoordinateIfPresent(requestJson, "startLongitude", routeStartLongitude);
+        putCoordinateIfPresent(requestJson, "start_longitude", routeStartLongitude);
         if (routeIntent) {
             requestJson.put("currentSpotId", safeString(startSpotId));
             requestJson.put("current_spot_id", safeString(startSpotId));
             requestJson.put("currentSpotName", safeString(startSpotName));
             requestJson.put("current_spot_name", safeString(startSpotName));
-            requestJson.put("latitude", safeString(routeStartLatitude));
-            requestJson.put("longitude", safeString(routeStartLongitude));
+            putCoordinateIfPresent(requestJson, "latitude", routeStartLatitude);
+            putCoordinateIfPresent(requestJson, "longitude", routeStartLongitude);
+            Log.d(TAG, "[RouteStart] send route request start spotId=" + startSpotId
+                    + ", spotName=" + startSpotName);
         }
 
         JSONObject clientContext = new JSONObject();
@@ -1865,14 +3489,14 @@ public class MainActivity extends Activity {
 
     private String resolveRouteVisitStatusForRequest() {
         if (isRealOnsiteRouteContext()) {
-            return "IN_AREA";
+            return VISIT_STATUS_IN_PARK;
         }
-        // 非现场入口：优先使用 visitStatus；未传则默认 NOT_IN_AREA
+        // 非现场入口：优先使用 visitStatus；未传则默认 NOT_ARRIVED
         String explicit = firstNotEmpty(visitStatus);
         if (explicit.length() > 0) {
-            return explicit;
+            return normalizeVisitStatusForContract(explicit);
         }
-        return "NOT_IN_AREA";
+        return VISIT_STATUS_NOT_ARRIVED;
     }
 
     private String resolveIsInsideAreaForRequest() {
@@ -1899,13 +3523,226 @@ public class MainActivity extends Activity {
 
             JSONObject context = new JSONObject();
             context.put("source", "ANDROID_NATIVE");
-            context.put("latitude", safeString(latitude));
-            context.put("longitude", safeString(longitude));
+            putCoordinateIfPresent(context, "latitude", latitude);
+            putCoordinateIfPresent(context, "longitude", longitude);
             context.put("visit_status", resolveRouteVisitStatusForRequest());
             context.put("is_inside_area", parseBooleanLike(resolveIsInsideAreaForRequest()));
             return context;
         } catch (Exception e) {
             return null;
+        }
+    }
+
+    private void ensureGuideAiContractFields(JSONObject requestJson, boolean routeIntent, boolean suppressRoute) throws Exception {
+        if (requestJson == null) {
+            return;
+        }
+
+        String requestAreaId = firstNotEmpty(
+                getJsonText(requestJson, "areaId", "area_id"),
+                resolveAreaIdForGuideRequest(areaId, areaCode)
+        );
+        String requestAreaCode = normalizeAreaCode(
+                firstNotEmpty(getJsonText(requestJson, "areaCode", "area_code"), areaCode),
+                requestAreaId
+        );
+        String requestAreaName = firstNotEmpty(
+                getJsonText(requestJson, "areaName", "area_name"),
+                areaName,
+                parkName,
+                scenicName
+        );
+        String requestSpotId = firstNotEmpty(
+                getJsonText(requestJson, "currentSpotId", "current_spot_id"),
+                nfcLocationActive ? nfcCurrentSpotId : "",
+                spotId,
+                scenicId
+        );
+        String requestSpotName = firstNotEmpty(
+                getJsonText(requestJson, "currentSpotName", "current_spot_name"),
+                nfcLocationActive ? nfcCurrentSpotName : "",
+                spotName,
+                scenicName
+        );
+        String requestSceneCode = firstNotEmpty(
+                getJsonText(requestJson, "sceneCode", "scene_code"),
+                nfcLocationActive ? nfcSceneCode : "",
+                spotId,
+                scenicId
+        );
+
+        putLongOrString(requestJson, "areaId", requestAreaId);
+        putLongOrString(requestJson, "area_id", requestAreaId);
+        requestJson.put("areaCode", safeString(requestAreaCode));
+        requestJson.put("area_code", safeString(requestAreaCode));
+        requestJson.put("areaName", safeString(requestAreaName));
+        requestJson.put("area_name", safeString(requestAreaName));
+        requestJson.put("currentSpotId", safeString(requestSpotId));
+        requestJson.put("current_spot_id", safeString(requestSpotId));
+        requestJson.put("currentSpotName", safeString(requestSpotName));
+        requestJson.put("current_spot_name", safeString(requestSpotName));
+        requestJson.put("sceneCode", safeString(requestSceneCode));
+        requestJson.put("scene_code", safeString(requestSceneCode));
+
+        JSONObject location = firstJsonObject(
+                getJsonObject(requestJson, "locationContext", "location_context"),
+                buildGuideLocationContextObject(requestAreaId, requestAreaCode, requestAreaName, requestSpotId, requestSpotName, requestSceneCode)
+        );
+        fillGuideLocationContext(location, requestAreaId, requestAreaCode, requestAreaName, requestSpotId, requestSpotName, requestSceneCode);
+        requestJson.put("locationContext", location);
+        requestJson.put("location_context", location);
+
+        JSONObject network = firstJsonObject(
+                getJsonObject(requestJson, "networkContext", "network_context"),
+                buildGuideNetworkContextObject()
+        );
+        requestJson.put("networkContext", network);
+        requestJson.put("network_context", network);
+
+        JSONObject context = getJsonObject(requestJson, "context");
+        if (context == null) {
+            context = new JSONObject();
+        }
+        putIfMissingText(context, "currentSpotId", requestSpotId);
+        putIfMissingText(context, "current_spot_id", requestSpotId);
+        putIfMissingText(context, "currentSpotName", requestSpotName);
+        putIfMissingText(context, "current_spot_name", requestSpotName);
+        putIfMissingText(context, "sceneCode", requestSceneCode);
+        putIfMissingText(context, "scene_code", requestSceneCode);
+        context.put("location", location);
+        requestJson.put("context", context);
+
+        appendCurrentTravelConditionFields(requestJson);
+
+        JSONObject options = getJsonObject(requestJson, "options");
+        if (options == null) {
+            options = new JSONObject();
+        }
+        putIfMissingText(options, "responseMode", "digital_human");
+        putIfMissingBoolean(options, "enableTts", true);
+        putIfMissingText(options, "ttsMode", "async");
+        putIfMissingBoolean(options, "includeMouthFrames", true);
+        JSONObject routeOptions = getJsonObject(options, "route");
+        if (routeOptions == null) {
+            routeOptions = new JSONObject();
+        }
+        routeOptions.put("enabled", routeIntent);
+        routeOptions.put("suppressRoute", suppressRoute);
+        routeOptions.put("suppress_route", suppressRoute);
+        options.put("route", routeOptions);
+        requestJson.put("options", options);
+
+        Log.d(TAG, "[GuideChat] contract fields conversationId="
+                + safeString(getJsonText(requestJson, "conversationId", "conversation_id"))
+                + ", areaCode=" + requestAreaCode
+                + ", areaId=" + requestAreaId
+                + ", currentSpotId=" + requestSpotId
+                + ", currentSpotName=" + requestSpotName
+                + ", sceneCode=" + requestSceneCode);
+    }
+
+    private JSONObject buildGuideLocationContextObject(String requestAreaId,
+                                                       String requestAreaCode,
+                                                       String requestAreaName,
+                                                       String requestSpotId,
+                                                       String requestSpotName,
+                                                       String requestSceneCode) {
+        JSONObject location = null;
+        try {
+            if (locationContext != null && locationContext.trim().startsWith("{")) {
+                location = new JSONObject(locationContext.trim());
+            }
+        } catch (Exception ignored) {
+            location = null;
+        }
+        if (location == null) {
+            location = new JSONObject();
+        }
+        fillGuideLocationContext(location, requestAreaId, requestAreaCode, requestAreaName, requestSpotId, requestSpotName, requestSceneCode);
+        return location;
+    }
+
+    private void fillGuideLocationContext(JSONObject location,
+                                          String requestAreaId,
+                                          String requestAreaCode,
+                                          String requestAreaName,
+                                          String requestSpotId,
+                                          String requestSpotName,
+                                          String requestSceneCode) {
+        if (location == null) {
+            return;
+        }
+        try {
+            putIfMissingText(location, "source", nfcLocationActive ? "NFC" : "ANDROID_NATIVE");
+            putLongOrStringIfMissing(location, "areaId", requestAreaId);
+            putLongOrStringIfMissing(location, "area_id", requestAreaId);
+            putIfMissingText(location, "areaCode", requestAreaCode);
+            putIfMissingText(location, "area_code", requestAreaCode);
+            putIfMissingText(location, "areaName", requestAreaName);
+            putIfMissingText(location, "area_name", requestAreaName);
+            putLongOrStringIfMissing(location, "currentSpotId", requestSpotId);
+            putLongOrStringIfMissing(location, "current_spot_id", requestSpotId);
+            putIfMissingText(location, "currentSpotName", requestSpotName);
+            putIfMissingText(location, "current_spot_name", requestSpotName);
+            putIfMissingText(location, "sceneCode", requestSceneCode);
+            putIfMissingText(location, "scene_code", requestSceneCode);
+            putCoordinateIfPresent(location, "latitude", latitude);
+            putCoordinateIfPresent(location, "longitude", longitude);
+            putIfMissingText(location, "visit_status", resolveRouteVisitStatusForRequest());
+            if (!location.has("is_inside_area") || location.isNull("is_inside_area")) {
+                location.put("is_inside_area", parseBooleanLike(resolveIsInsideAreaForRequest()));
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private JSONObject buildGuideNetworkContextObject() {
+        JSONObject network = new JSONObject();
+        try {
+            NetworkLevel level = networkStateHelper != null
+                    ? networkStateHelper.getNetworkLevel()
+                    : NetworkLevel.NORMAL;
+            network.put("network_level", level.name());
+            network.put("networkLevel", level.name());
+            network.put("prefer_text_first", level == NetworkLevel.WEAK);
+            network.put("preferTextFirst", level == NetworkLevel.WEAK);
+            network.put("tts_async", level == NetworkLevel.WEAK);
+            network.put("ttsAsync", level == NetworkLevel.WEAK);
+            network.put("allow_offline_fallback", true);
+            network.put("allowOfflineFallback", true);
+        } catch (Exception ignored) {
+        }
+        return network;
+    }
+
+    private JSONObject firstJsonObject(JSONObject first, JSONObject fallback) {
+        return first != null ? first : fallback;
+    }
+
+    private void putIfMissingText(JSONObject object, String key, String value) throws Exception {
+        if (object == null || key == null) {
+            return;
+        }
+        if (!object.has(key) || object.isNull(key) || safeString(String.valueOf(object.opt(key))).trim().length() == 0) {
+            object.put(key, safeString(value));
+        }
+    }
+
+    private void putIfMissingBoolean(JSONObject object, String key, boolean value) throws Exception {
+        if (object == null || key == null) {
+            return;
+        }
+        if (!object.has(key) || object.isNull(key)) {
+            object.put(key, value);
+        }
+    }
+
+    private void putLongOrStringIfMissing(JSONObject object, String key, String value) throws Exception {
+        if (object == null || key == null) {
+            return;
+        }
+        if (!object.has(key) || object.isNull(key) || safeString(String.valueOf(object.opt(key))).trim().length() == 0) {
+            putLongOrString(object, key, value);
         }
     }
 
@@ -2143,8 +3980,42 @@ public class MainActivity extends Activity {
                     DataOutputStream outputStream = new DataOutputStream(connection.getOutputStream());
 
                     String realUserId = getEffectiveNativeUserId();
-                    String realSessionId = firstNotEmpty(sessionId, conversationId);
-                    String realConversationId = firstNotEmpty(conversationId, sessionId);
+                    String realConversationId = ensureGuideConversationIdForRequest();
+                    String realSessionId = firstNotEmpty(sessionId, realConversationId);
+                    String requestAreaId = resolveAreaIdForGuideRequest(areaId, areaCode);
+                    String requestAreaCode = normalizeAreaCode(areaCode, requestAreaId);
+                    String requestAreaName = firstNotEmpty(areaName, parkName, scenicName);
+                    String requestSceneCode = firstNotEmpty(spotId, scenicId);
+                    String requestSceneName = firstNotEmpty(spotName, scenicName);
+                    String requestSpotId = firstNotEmpty(spotId, scenicId);
+                    String requestSpotName = firstNotEmpty(spotName, scenicName);
+                    JSONObject voiceLocationContext = buildGuideLocationContextObject(
+                            requestAreaId,
+                            requestAreaCode,
+                            requestAreaName,
+                            requestSpotId,
+                            requestSpotName,
+                            requestSceneCode
+                    );
+                    JSONObject voiceNetworkContext = buildGuideNetworkContextObject();
+                    JSONObject voiceContext = new JSONObject();
+                    voiceContext.put("currentSpotId", safeString(requestSpotId));
+                    voiceContext.put("current_spot_id", safeString(requestSpotId));
+                    voiceContext.put("currentSpotName", safeString(requestSpotName));
+                    voiceContext.put("current_spot_name", safeString(requestSpotName));
+                    voiceContext.put("sceneCode", safeString(requestSceneCode));
+                    voiceContext.put("scene_code", safeString(requestSceneCode));
+                    voiceContext.put("location", voiceLocationContext);
+                    JSONObject voiceOptions = new JSONObject();
+                    voiceOptions.put("responseMode", "digital_human");
+                    voiceOptions.put("enableTts", true);
+                    voiceOptions.put("ttsMode", "async");
+                    voiceOptions.put("includeMouthFrames", true);
+                    JSONObject voiceRouteOptions = new JSONObject();
+                    voiceRouteOptions.put("enabled", false);
+                    voiceRouteOptions.put("suppressRoute", true);
+                    voiceRouteOptions.put("suppress_route", true);
+                    voiceOptions.put("route", voiceRouteOptions);
 
                     writeFormField(outputStream, boundary, "sessionId", realSessionId);
                     writeFormField(outputStream, boundary, "session_id", realSessionId);
@@ -2163,31 +4034,29 @@ public class MainActivity extends Activity {
                     writeFormField(outputStream, boundary, "visitorId", visitorId);
                     writeFormField(outputStream, boundary, "visitor_id", visitorId);
 
-                    if (realConversationId != null && realConversationId.trim().length() > 0) {
-                        writeFormField(outputStream, boundary, "conversationId", realConversationId);
-                        writeFormField(outputStream, boundary, "conversation_id", realConversationId);
-                    }
+                    writeFormField(outputStream, boundary, "conversationId", realConversationId);
+                    writeFormField(outputStream, boundary, "conversation_id", realConversationId);
+                    writeFormField(outputStream, boundary, "question", "");
 
                     writeFormField(outputStream, boundary, "scenicName", getTargetName());
                     writeFormField(outputStream, boundary, "scenic_name", getTargetName());
                     writeGuideContextFormFields(outputStream, boundary, realUserId, "voice");
-                    writeFormField(outputStream, boundary, "areaCode", safeString(areaCode));
-                    writeFormField(outputStream, boundary, "area_code", safeString(areaCode));
-                    writeFormField(outputStream, boundary, "areaName", safeString(areaName));
-                    writeFormField(outputStream, boundary, "area_name", safeString(areaName));
+                    writeFormField(outputStream, boundary, "areaCode", safeString(requestAreaCode));
+                    writeFormField(outputStream, boundary, "area_code", safeString(requestAreaCode));
+                    writeFormField(outputStream, boundary, "areaId", safeString(requestAreaId));
+                    writeFormField(outputStream, boundary, "area_id", safeString(requestAreaId));
+                    writeFormField(outputStream, boundary, "areaName", safeString(requestAreaName));
+                    writeFormField(outputStream, boundary, "area_name", safeString(requestAreaName));
 
-                    String sceneCode = firstNotEmpty(spotId, scenicId);
-                    String sceneName = firstNotEmpty(spotName, scenicName);
+                    writeFormField(outputStream, boundary, "sceneCode", safeString(requestSceneCode));
+                    writeFormField(outputStream, boundary, "scene_code", safeString(requestSceneCode));
+                    writeFormField(outputStream, boundary, "sceneName", safeString(requestSceneName));
+                    writeFormField(outputStream, boundary, "scene_name", safeString(requestSceneName));
 
-                    writeFormField(outputStream, boundary, "sceneCode", safeString(sceneCode));
-                    writeFormField(outputStream, boundary, "scene_code", safeString(sceneCode));
-                    writeFormField(outputStream, boundary, "sceneName", safeString(sceneName));
-                    writeFormField(outputStream, boundary, "scene_name", safeString(sceneName));
-
-                    writeFormField(outputStream, boundary, "currentSpotId", safeString(spotId));
-                    writeFormField(outputStream, boundary, "current_spot_id", safeString(spotId));
-                    writeFormField(outputStream, boundary, "currentSpotName", safeString(spotName));
-                    writeFormField(outputStream, boundary, "current_spot_name", safeString(spotName));
+                    writeFormField(outputStream, boundary, "currentSpotId", safeString(requestSpotId));
+                    writeFormField(outputStream, boundary, "current_spot_id", safeString(requestSpotId));
+                    writeFormField(outputStream, boundary, "currentSpotName", safeString(requestSpotName));
+                    writeFormField(outputStream, boundary, "current_spot_name", safeString(requestSpotName));
 
                     writeFormField(outputStream, boundary, "voice", getEffectiveVoiceId());
                     writeFormField(outputStream, boundary, "voiceId", getEffectiveVoiceId());
@@ -2225,11 +4094,33 @@ public class MainActivity extends Activity {
                         writeFormField(outputStream, boundary, "is_inside_area", String.valueOf(parseBooleanLike(requestIsInsideArea)));
                         writeFormField(outputStream, boundary, "isInsideArea", String.valueOf(parseBooleanLike(requestIsInsideArea)));
                     }
+                    String requestAvailableMinutes = firstNotEmpty(availableMinutes, normalizeAvailableMinutesText(estimatedDuration));
+                    if (requestAvailableMinutes.length() > 0) {
+                        writeFormField(outputStream, boundary, "availableMinutes", requestAvailableMinutes);
+                        writeFormField(outputStream, boundary, "available_minutes", requestAvailableMinutes);
+                    }
+                    JSONObject requestTravelParty = buildTravelPartyObject();
+                    if (requestTravelParty.length() > 0) {
+                        writeFormField(outputStream, boundary, "travelParty", requestTravelParty.toString());
+                        writeFormField(outputStream, boundary, "travel_party", requestTravelParty.toString());
+                    }
                     JSONObject routeLocationContext = buildRouteLocationContextForRequest();
                     if (routeLocationContext != null) {
                         writeFormField(outputStream, boundary, "location_context", routeLocationContext.toString());
                         writeFormField(outputStream, boundary, "locationContext", routeLocationContext.toString());
+                    } else {
+                        writeFormField(outputStream, boundary, "location_context", voiceLocationContext.toString());
+                        writeFormField(outputStream, boundary, "locationContext", voiceLocationContext.toString());
                     }
+                    writeFormField(outputStream, boundary, "network_context", voiceNetworkContext.toString());
+                    writeFormField(outputStream, boundary, "networkContext", voiceNetworkContext.toString());
+                    writeFormField(outputStream, boundary, "context", voiceContext.toString());
+                    writeFormField(outputStream, boundary, "options", voiceOptions.toString());
+                    writeFormField(outputStream, boundary, "route", "false");
+                    writeFormField(outputStream, boundary, "suppressRoute", "true");
+                    writeFormField(outputStream, boundary, "suppress_route", "true");
+                    writeFormField(outputStream, boundary, "requestType", "voice_chat");
+                    writeFormField(outputStream, boundary, "request_type", "voice_chat");
 
                     Log.d(TAG, "语音问答真实身份参数 realUserId=" + realUserId
                             + ", appUserId=" + appUserId
@@ -2238,6 +4129,11 @@ public class MainActivity extends Activity {
                             + ", appAuthSessionId=" + appAuthSessionId
                             + ", sessionId=" + realSessionId
                             + ", conversationId=" + realConversationId
+                            + ", areaCode=" + requestAreaCode
+                            + ", areaId=" + requestAreaId
+                            + ", currentSpotId=" + requestSpotId
+                            + ", currentSpotName=" + requestSpotName
+                            + ", sceneCode=" + requestSceneCode
                             + ", visitId=" + visitId
                             + ", groupSize=" + groupSize
                             + ", travelType=" + travelType
@@ -2267,7 +4163,7 @@ public class MainActivity extends Activity {
                                 voiceMainButton.setText("🎙 长按说话");
 
                                 if (guideResponse.conversationId != null && guideResponse.conversationId.trim().length() > 0) {
-                                    conversationId = guideResponse.conversationId.trim();
+                                    rememberGuideConversationId(guideResponse.conversationId);
                                 }
 
                                 String recognizedText = guideResponse.questionText == null ? "" : guideResponse.questionText.trim();
@@ -2293,7 +4189,8 @@ public class MainActivity extends Activity {
                                 updateQuickButtons(guideResponse.suggestions);
                                 handleGuideRouteResponse(
                                         guideResponse.route,
-                                        isRouteIntentQuestion(guideResponse.questionText),
+                                        (guideResponse.routeIntent || isRouteIntentQuestion(guideResponse.questionText))
+                                                && shouldAllowRouteCardForResponse(guideResponse),
                                         "voice"
                                 );
 
@@ -2451,10 +4348,53 @@ public class MainActivity extends Activity {
             result.businessMsg = businessMsg;
             Log.d(TAG, "[GuideChat] businessCode=" + businessCode + " msg=" + businessMsg);
 
+            result.interactionCategory = firstNotEmpty(
+                    getJsonText(source, "interactionCategory", "interaction_category"),
+                    getJsonText(root, "interactionCategory", "interaction_category")
+            );
+            result.answerStatus = firstNotEmpty(
+                    getJsonText(source, "answerStatus", "answer_status"),
+                    getJsonText(root, "answerStatus", "answer_status")
+            );
+            result.routeIntent = getBooleanCompat(source, "routeIntent", "route_intent")
+                    || getBooleanCompat(root, "routeIntent", "route_intent");
+            result.fallbackReason = firstNotEmpty(
+                    getJsonText(source, "fallbackReason", "fallback_reason"),
+                    getJsonText(root, "fallbackReason", "fallback_reason")
+            );
+            result.issueCategory = firstNotEmpty(
+                    getJsonText(source, "issueCategory", "issue_category"),
+                    getJsonText(root, "issueCategory", "issue_category")
+            );
+            result.issueType = firstNotEmpty(
+                    getJsonText(source, "issueType", "issue_type"),
+                    getJsonText(root, "issueType", "issue_type")
+            );
+            result.requiresAdminAction = getBooleanCompat(source, "requiresAdminAction", "requires_admin_action")
+                    || getBooleanCompat(root, "requiresAdminAction", "requires_admin_action");
+            Object knowledgeGapCandidate = firstJsonValue(source, root, "knowledgeGapCandidate", "knowledge_gap_candidate");
+            if (knowledgeGapCandidate != null) {
+                result.knowledgeGapCandidate = String.valueOf(knowledgeGapCandidate);
+            }
+            Object grounding = firstJsonValue(source, root, "grounding");
+            if (grounding != null) {
+                result.grounding = String.valueOf(grounding);
+            }
+            Object sources = firstJsonValue(source, root, "sources");
+            if (sources != null) {
+                result.sources = String.valueOf(sources);
+            }
+            String parsedAnswer = firstNotEmpty(
+                    getJsonText(data, "answer", "reply", "content"),
+                    dataText,
+                    getJsonText(root, "answer", "reply", "content")
+            );
+
             boolean httpOk = httpStatus >= 200 && httpStatus < 300;
             boolean businessOk = businessCode == 0 || businessCode == 200
                     || (!requireBusinessCode && businessCode == -1);
-            if (!httpOk || !businessOk) {
+            boolean statusCanDisplay = isDisplayableAnswerStatus(result.answerStatus) && parsedAnswer.length() > 0;
+            if (!httpOk || (!businessOk && !statusCanDisplay)) {
                 if (businessMsg.contains("用户不存在")
                         || businessMsg.contains("登录")
                         || businessMsg.contains("token")
@@ -2482,11 +4422,7 @@ public class MainActivity extends Activity {
                 result.questionText = "";
             }
 
-            result.answer = firstNotEmpty(
-                    getJsonText(data, "answer", "reply", "content"),
-                    dataText,
-                    getJsonText(root, "answer", "reply", "content")
-            );
+            result.answer = parsedAnswer;
 
             result.audioUrl = firstNotEmpty(
                     getJsonText(data, "audioUrl", "audio_url"),
@@ -2495,10 +4431,16 @@ public class MainActivity extends Activity {
                     getJsonText(rootAudioJson, "url", "audioUrl", "audio_url")
             );
             result.audioStatus = firstNotEmpty(
-                    getJsonText(source, "audioStatus", "audio_status"),
-                    getJsonText(root, "audioStatus", "audio_status"),
-                    getJsonText(audioJson, "status", "audioStatus", "audio_status"),
-                    getJsonText(rootAudioJson, "status", "audioStatus", "audio_status")
+                    getJsonText(source, "audioStatus", "audio_status", "ttsStatus", "tts_status"),
+                    getJsonText(root, "audioStatus", "audio_status", "ttsStatus", "tts_status"),
+                    getJsonText(audioJson, "status", "audioStatus", "audio_status", "ttsStatus", "tts_status"),
+                    getJsonText(rootAudioJson, "status", "audioStatus", "audio_status", "ttsStatus", "tts_status")
+            );
+            result.ttsStatus = firstNotEmpty(
+                    getJsonText(source, "ttsStatus", "tts_status"),
+                    getJsonText(root, "ttsStatus", "tts_status"),
+                    getJsonText(audioJson, "ttsStatus", "tts_status", "status"),
+                    getJsonText(rootAudioJson, "ttsStatus", "tts_status", "status")
             );
             result.ttsTaskId = firstNotEmpty(
                     getJsonText(source, "ttsTaskId", "tts_task_id", "taskId", "task_id"),
@@ -2533,6 +4475,12 @@ public class MainActivity extends Activity {
             if (result.conversationId == null || result.conversationId.trim().length() == 0) {
                 result.conversationId = source.optString("conversation_id", "");
             }
+            if (result.conversationId == null || result.conversationId.trim().length() == 0) {
+                result.conversationId = firstNotEmpty(
+                        getJsonText(source, "sessionId", "session_id"),
+                        getJsonText(root, "conversationId", "conversation_id", "sessionId", "session_id")
+                );
+            }
 
             result.messageId = source.optString("messageId", "");
             if (result.messageId == null || result.messageId.trim().length() == 0) {
@@ -2542,6 +4490,13 @@ public class MainActivity extends Activity {
             result.ttsError = source.optString("ttsError", "");
             if (result.ttsError == null || result.ttsError.trim().length() == 0) {
                 result.ttsError = source.optString("tts_error", "");
+            }
+            if (result.ttsError == null || result.ttsError.trim().length() == 0) {
+                result.ttsError = firstNotEmpty(
+                        getJsonText(root, "ttsError", "tts_error"),
+                        getJsonText(audioJson, "error", "ttsError", "tts_error"),
+                        getJsonText(rootAudioJson, "error", "ttsError", "tts_error")
+                );
             }
 
             JSONArray suggestionsArray = source.optJSONArray("suggestions");
@@ -2616,6 +4571,18 @@ public class MainActivity extends Activity {
                     ));
                 }
             }
+            result.mouthStatus = firstNotEmpty(
+                    getJsonText(source, "mouthStatus", "mouth_status"),
+                    getJsonText(root, "mouthStatus", "mouth_status"),
+                    getJsonText(mouthJson, "status", "mouthStatus", "mouth_status"),
+                    getJsonText(rootMouthJson, "status", "mouthStatus", "mouth_status")
+            );
+            result.mouthError = firstNotEmpty(
+                    getJsonText(source, "mouthError", "mouth_error"),
+                    getJsonText(root, "mouthError", "mouth_error"),
+                    getJsonText(mouthJson, "error", "mouthError", "mouth_error"),
+                    getJsonText(rootMouthJson, "error", "mouthError", "mouth_error")
+            );
 
             result.route = parseRouteFromAiResponse(source);
             if (result.route == null && source != root) {
@@ -2660,7 +4627,10 @@ public class MainActivity extends Activity {
 
             Log.d(TAG, "[GuideChat] parsed success=true, answerLength=" + safeString(result.answer).length()
                     + ", hasAudioUrl=" + (safeString(result.audioUrl).length() > 0)
-                    + ", mouthFrames=" + result.mouthFrames.size());
+                    + ", mouthFrames=" + result.mouthFrames.size()
+                    + ", answerStatus=" + safeString(result.answerStatus)
+                    + ", interactionCategory=" + safeString(result.interactionCategory)
+                    + ", conversationId=" + safeString(result.conversationId));
 
             return result;
         } catch (Exception e) {
@@ -2678,7 +4648,7 @@ public class MainActivity extends Activity {
         if (routeJson == null) {
             return null;
         }
-        return parseRouteInfo(routeJson);
+        return attachRouteEnvelopeFields(attachRouteEnvelopeFields(parseRouteInfo(routeJson), routeJson), data);
     }
 
     private JSONObject findRouteJson(JSONObject object) {
@@ -2712,17 +4682,29 @@ public class MainActivity extends Activity {
 
     private RouteInfo parseRouteInfo(JSONObject routeJson) {
         RouteInfo route = new RouteInfo();
+        route.schemaVersion = getJsonText(routeJson, "schemaVersion", "schema_version");
         route.planId = getJsonText(routeJson, "planId", "plan_id", "routePlanId", "route_plan_id");
+        route.routeId = getJsonText(routeJson, "routeId", "route_id");
+        route.originalRouteId = route.routeId;
         route.routeName = getJsonText(routeJson, "routeName", "route_name", "name", "title");
         route.reason = getJsonText(routeJson, "reason", "recommendReason", "recommend_reason");
+        route.recommendReason = firstNotEmpty(getJsonText(routeJson, "recommendReason", "recommend_reason"), route.reason);
+        route.profileVersion = getJsonText(routeJson, "profileVersion", "profile_version");
+        route.matchedTags.addAll(parseMatchedTags(routeJson));
         route.totalDistanceM = getJsonText(routeJson, "totalDistanceM", "total_distance_m", "distanceM", "distance_m");
-        route.estimatedDurationMin = getJsonText(routeJson, "estimatedDurationMin", "estimated_duration_min", "durationMin", "duration_min");
+        route.estimatedDurationMin = getJsonText(routeJson,
+                "estimatedDurationMinutes", "estimated_duration_minutes",
+                "estimatedDurationMin", "estimated_duration_min",
+                "durationMin", "duration_min");
         route.mapAction = getJsonText(routeJson, "mapAction", "map_action");
         route.routeMapReady = getJsonText(routeJson, "routeMapReady", "route_map_ready", "mapReady", "map_ready");
         route.routeMode = getJsonText(routeJson, "route_mode", "routeMode");
         route.visitStatus = getJsonText(routeJson, "visit_status", "visitStatus");
+        route.routeIntent = getBooleanCompat(routeJson, "routeIntent", "route_intent");
+        route.hasShouldShowRouteCard = hasJsonKey(routeJson, "should_show_route_card", "shouldShowRouteCard");
         route.shouldShowRouteCard = getBooleanCompat(routeJson, "should_show_route_card", "shouldShowRouteCard");
         route.isOfficialTemplate = getBooleanCompat(routeJson, "is_official_template", "isOfficialTemplate");
+        route.algorithmVersion = getJsonText(routeJson, "algorithmVersion", "algorithm_version");
         route.rawPolylinePoints.addAll(parseRoutePolyline(routeJson));
 
         JSONArray nodesArray = getJsonArray(routeJson,
@@ -2738,20 +4720,46 @@ public class MainActivity extends Activity {
 
         if (nodesArray != null) {
             for (int i = 0; i < nodesArray.length(); i++) {
-                JSONObject nodeJson = nodesArray.optJSONObject(i);
-                if (nodeJson == null) continue;
-
                 RouteNode node = new RouteNode();
-                node.order = firstNotEmpty(getJsonText(nodeJson, "order", "sort", "index"), String.valueOf(i + 1));
+                JSONObject nodeJson = nodesArray.optJSONObject(i);
+                if (nodeJson == null) {
+                    String nodeName = nodesArray.optString(i, "").trim();
+                    if (nodeName.length() == 0) {
+                        continue;
+                    }
+                    node.order = String.valueOf(i + 1);
+                    node.orderNumber = i + 1;
+                    node.name = nodeName;
+                    node.spotName = nodeName;
+                    node.scenicName = nodeName;
+                    node.displayName = nodeName;
+                    node.nodeType = "SPOT";
+                    route.nodes.add(node);
+                    continue;
+                }
+
+                node.order = firstNotEmpty(getJsonText(nodeJson, "sortOrder", "sort_order", "order", "sort", "index"), String.valueOf(i + 1));
                 node.orderNumber = parseIntOrDefault(node.order, i + 1);
+                node.nodeType = firstNotEmpty(getJsonText(nodeJson, "nodeType", "node_type"), "");
+                node.facilityId = getJsonText(nodeJson, "facilityId", "facility_id");
+                node.sceneCode = getJsonText(nodeJson, "sceneCode", "scene_code");
                 node.id = getJsonText(nodeJson, "spotId", "spot_id", "scenicId", "scenic_id", "sceneCode", "scene_code", "id");
                 node.scenicId = getJsonText(nodeJson, "scenicId", "scenic_id", "sceneCode", "scene_code", "id");
                 node.spotId = getJsonText(nodeJson, "spotId", "spot_id", "id", "scenicId", "scenic_id");
-                node.name = getJsonText(nodeJson, "spotName", "spot_name", "scenicName", "scenic_name", "name", "title");
-                node.spotName = firstNotEmpty(getJsonText(nodeJson, "spotName", "spot_name"), node.name);
-                node.scenicName = firstNotEmpty(getJsonText(nodeJson, "scenicName", "scenic_name", "name", "title"), node.name);
+                node.displayName = getJsonText(nodeJson, "displayName", "display_name");
+                node.name = firstNotEmpty(getJsonText(nodeJson, "nodeName", "node_name", "spotName", "spot_name", "scenicName", "scenic_name", "name", "title"), node.displayName);
+                node.spotName = firstNotEmpty(getJsonText(nodeJson, "spotName", "spot_name"), node.name, node.displayName);
+                node.scenicName = firstNotEmpty(getJsonText(nodeJson, "scenicName", "scenic_name", "name", "title"), node.name, node.displayName);
+                if (node.displayName.length() == 0) {
+                    node.displayName = firstNotEmpty(node.name, node.spotName, node.scenicName);
+                }
+                if (node.nodeType.length() == 0 && (node.spotId.length() > 0 || node.sceneCode.length() > 0 || node.scenicId.length() > 0)) {
+                    node.nodeType = "SPOT";
+                }
                 node.guideText = getJsonText(nodeJson, "guideText", "guide_text", "description", "desc");
-                node.recommendedStayMin = getJsonText(nodeJson, "recommendedStayMin", "recommended_stay_min", "stayMin", "stay_min");
+                node.recommendedStayMin = getJsonText(nodeJson, "recommendedStayMinutes", "recommended_stay_minutes", "recommendedStayMin", "recommended_stay_min", "stayMin", "stay_min");
+                node.distanceFromPreviousMeters = getJsonText(nodeJson, "distanceFromPreviousMeters", "distance_from_previous_meters");
+                node.estimatedWalkMinutes = getJsonText(nodeJson, "estimatedWalkMinutes", "estimated_walk_minutes");
                 node.latitude = getJsonText(nodeJson, "latitude", "lat");
                 node.longitude = getJsonText(nodeJson, "longitude", "lng", "lon");
                 normalizeRouteNodeLocation(node);
@@ -2760,8 +4768,52 @@ public class MainActivity extends Activity {
         }
 
         normalizeRouteNodes(route);
+        ensureRouteId(route);
 
         return route;
+    }
+
+    private void ensureRouteId(RouteInfo route) {
+        if (route == null) {
+            return;
+        }
+        if (route.originalRouteId.length() == 0 && route.routeId.length() > 0 && !route.localRouteIdGenerated) {
+            route.originalRouteId = route.routeId;
+        }
+        route.routeId = firstNotEmpty(route.routeId, route.planId);
+        if (route.routeId.length() == 0) {
+            route.routeId = "ROUTE_" + firstNotEmpty(conversationId, sessionId, "LOCAL")
+                    + "_" + System.currentTimeMillis();
+            route.localRouteIdGenerated = true;
+        }
+        if (route.planId.length() == 0) {
+            route.planId = route.routeId;
+        }
+    }
+
+    private List<String> parseMatchedTags(JSONObject routeJson) {
+        List<String> result = new ArrayList<>();
+        JSONArray tags = getJsonArray(routeJson, "matchedTags", "matched_tags");
+        if (tags == null) {
+            return result;
+        }
+        for (int i = 0; i < tags.length(); i++) {
+            Object item = tags.opt(i);
+            String tagCode = "";
+            if (item instanceof JSONObject) {
+                JSONObject tag = (JSONObject) item;
+                tagCode = firstNotEmpty(
+                        getJsonText(tag, "tagCode", "tag_code", "code"),
+                        getJsonText(tag, "tagName", "tag_name", "name")
+                );
+            } else if (item != null) {
+                tagCode = safeString(String.valueOf(item));
+            }
+            if (tagCode.trim().length() > 0) {
+                result.add(tagCode.trim());
+            }
+        }
+        return result;
     }
 
     private JSONArray getJsonArray(JSONObject object, String... keys) {
@@ -2793,13 +4845,72 @@ public class MainActivity extends Activity {
         return null;
     }
 
+    private boolean hasJsonKey(JSONObject object, String... keys) {
+        if (object == null || keys == null) {
+            return false;
+        }
+        for (String key : keys) {
+            if (key != null && object.has(key) && !object.isNull(key)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private Object firstJsonValue(JSONObject primary, JSONObject fallback, String... keys) {
+        Object value = getJsonValue(primary, keys);
+        if (value != null) {
+            return value;
+        }
+        return getJsonValue(fallback, keys);
+    }
+
+    private Object getJsonValue(JSONObject object, String... keys) {
+        if (object == null || keys == null) {
+            return null;
+        }
+        for (String key : keys) {
+            if (key == null || !object.has(key) || object.isNull(key)) {
+                continue;
+            }
+            return object.opt(key);
+        }
+        return null;
+    }
+
+    private boolean isDisplayableAnswerStatus(String answerStatus) {
+        String status = safeString(answerStatus).trim().toLowerCase(Locale.ROOT);
+        if (status.length() == 0) {
+            return true;
+        }
+        return "grounded".equals(status)
+                || "partially_grounded".equals(status)
+                || "knowledge_miss".equals(status)
+                || "no_evidence".equals(status)
+                || "user_instruction".equals(status)
+                || "short_term_profile".equals(status)
+                || "instruction_saved".equals(status)
+                || "non_scenic_chat".equals(status)
+                || "route_recommend".equals(status)
+                || "offline_fallback".equals(status)
+                || "location_confirmation_required".equals(status);
+    }
+
     private List<LatLng> parseRoutePolyline(JSONObject routeJson) {
         List<LatLng> result = new ArrayList<>();
         if (routeJson == null) {
             return result;
         }
         Object polylineObject = null;
-        String[] keys = new String[]{"routePolyline", "route_polyline", "mapPolyline", "map_polyline", "roadPolyline", "road_polyline", "polyline", "polylinePoints", "polyline_points", "path", "paths"};
+        String[] keys = new String[]{
+                "routePolyline", "route_polyline",
+                "mapPolyline", "map_polyline",
+                "roadPolyline", "road_polyline",
+                "walkingPolyline", "walking_polyline",
+                "amapPolyline", "amap_polyline",
+                "polyline", "polylinePoints", "polyline_points",
+                "path", "paths", "segments"
+        };
         for (String key : keys) {
             if (routeJson.has(key) && !routeJson.isNull(key)) {
                 polylineObject = routeJson.opt(key);
@@ -2827,6 +4938,19 @@ public class MainActivity extends Activity {
             double lon = parseDoubleOrNaN(getJsonText(object, "longitude", "lng", "lon"));
             if (isValidCoordinate(lat, lon)) {
                 appendLatLngDedup(points, new LatLng(lat, lon));
+                return;
+            }
+            String[] nestedKeys = new String[]{
+                    "points", "polyline", "polylinePoints", "polyline_points",
+                    "routePolyline", "route_polyline",
+                    "walkingPolyline", "walking_polyline",
+                    "amapPolyline", "amap_polyline",
+                    "path", "paths"
+            };
+            for (String key : nestedKeys) {
+                if (object.has(key) && !object.isNull(key)) {
+                    appendRoutePolylineValue(points, object.opt(key));
+                }
             }
             return;
         }
@@ -3042,6 +5166,9 @@ public class MainActivity extends Activity {
             return false;
         }
         normalizeRouteNodes(route);
+        Log.d(TAG, "[RouteMap] route_ready parsed nodes=" + (route.nodes == null ? 0 : route.nodes.size())
+                + " polylinePoints=" + (route.rawPolylinePoints == null ? 0 : route.rawPolylinePoints.size())
+                + " source=" + (route.rawPolylinePoints != null && route.rawPolylinePoints.size() >= 2 ? "route_ready_polyline" : "route_ready_nodes"));
         if (!shouldShowOnsiteRouteCard(route, route.nodes)) {
             Log.d(TAG, "忽略非现场动态路线卡片 routeMode=" + route.routeMode
                     + ", visitStatus=" + route.visitStatus
@@ -3054,7 +5181,8 @@ public class MainActivity extends Activity {
         currentRoutePreview = createInitialRoutePreview(route);
         route.preview = currentRoutePreview;
         routeCardExpanded = false;
-        resetRouteDemoState();
+        resetRouteDemoState("new_route_ready_replace");
+        alignRouteStartState(route);
         renderRouteCard(route);
         if (routeCardContainer != null) {
             routeCardContainer.setVisibility(View.VISIBLE);
@@ -3062,6 +5190,7 @@ public class MainActivity extends Activity {
         buildRoutePreviewWithAmap(route);
         trackRouteEventOnce("map_card_show", route, null);
         trackRouteEvent("route_view", route, null);
+        trackRouteEvent("ROUTE_VIEW", route, null);
         return true;
     }
 
@@ -3070,26 +5199,88 @@ public class MainActivity extends Activity {
             return false;
         }
 
-        // 四个条件同时成立才弹现场路线卡片：
-        // 1. 当前处于真正的现场导览上下文中
-        // 2. AI 明确标记 should_show_route_card=true
-        // 3. route_mode == "onsite_dynamic"
-        // 4. spots / nodes 非空
-        boolean realOnsite = isRealOnsiteRouteContext();
-        boolean isOnsiteDynamic = "onsite_dynamic".equalsIgnoreCase(firstNotEmpty(route.routeMode));
-        boolean hasNodes = nodes != null && !nodes.isEmpty();
+        String responseVisitStatus = safeString(route.visitStatus).trim();
+        String localVisitStatus = resolveCurrentVisitStatusForChat();
+        String resolvedVisitStatus = responseVisitStatus.length() > 0 ? responseVisitStatus : localVisitStatus;
+        boolean isInPark = isInParkVisitStatus(resolvedVisitStatus)
+                || isOnsiteGuide
+                || startVisitGuide
+                || allowEndVisit;
+        boolean routeIntent = route.routeIntent;
+        boolean isDynamicInPark = isDynamicInParkRoute(route);
+        int spotsSize = nodes == null ? 0 : nodes.size();
+        boolean finalShowCard = isInPark
+                && routeIntent
+                && route != null
+                && isDynamicInPark
+                && spotsSize > 0;
 
-        Log.d(TAG, "[RouteCardGate] isRealOnsiteRouteContext=" + realOnsite
+        Log.d(TAG, "[RouteCardGate] responseVisitStatus=" + responseVisitStatus
+                + ", localStatus=" + localVisitStatus
+                + ", resolvedVisitStatus=" + resolvedVisitStatus
                 + ", routeMode=" + route.routeMode
-                + ", visitStatus=" + route.visitStatus
-                + ", shouldShowRouteCard=" + route.shouldShowRouteCard
-                + ", spotsSize=" + (nodes == null ? 0 : nodes.size())
-                + ", finalShowCard=" + (realOnsite && route.shouldShowRouteCard && isOnsiteDynamic && hasNodes));
+                + ", routeIntent=" + routeIntent
+                + ", spotsSize=" + spotsSize
+                + ", finalShowCard=" + finalShowCard);
 
-        return realOnsite && route.shouldShowRouteCard && isOnsiteDynamic && hasNodes;
+        if (finalShowCard) {
+            Log.d(TAG, "[RouteCard] show dynamic in-park route routeId=" + getProvidedRouteId(route));
+        } else {
+            Log.d(TAG, "[RouteCard] suppress non-onsite route routeId="
+                    + getProvidedRouteId(route)
+                    + ", routeMode=" + route.routeMode
+                    + ", resolvedVisitStatus=" + resolvedVisitStatus);
+        }
+        return finalShowCard;
+    }
+
+    private boolean isInParkRouteContext(RouteInfo route) {
+        if (route == null) {
+            return false;
+        }
+        String responseVisitStatus = safeString(route.visitStatus).trim();
+        String resolvedVisitStatus = responseVisitStatus.length() > 0 ? responseVisitStatus : resolveCurrentVisitStatusForChat();
+        return isInParkVisitStatus(resolvedVisitStatus)
+                || isOnsiteGuide
+                || startVisitGuide
+                || allowEndVisit;
+    }
+
+    private boolean isDynamicInParkRoute(RouteInfo route) {
+        return route != null && ROUTE_MODE_DYNAMIC_IN_PARK.equals(normalizeRouteModeForContract(route.routeMode));
+    }
+
+    private boolean isOfficialTemplateRoute(RouteInfo route) {
+        return route != null && (route.isOfficialTemplate
+                || ROUTE_MODE_OFFICIAL_TEMPLATE.equals(normalizeRouteModeForContract(route.routeMode)));
+    }
+
+    private String normalizeRouteModeForContract(String routeMode) {
+        String text = safeString(routeMode).trim();
+        if (text.length() == 0) {
+            return "";
+        }
+        String upper = text.toUpperCase(Locale.ROOT);
+        if (ROUTE_MODE_DYNAMIC_IN_PARK.equals(upper)
+                || "ONSITE_DYNAMIC".equals(upper)
+                || "DYNAMIC".equals(upper)) {
+            return ROUTE_MODE_DYNAMIC_IN_PARK;
+        }
+        if (ROUTE_MODE_OFFICIAL_TEMPLATE.equals(upper)
+                || "PRETRIP_TEMPLATE".equals(upper)
+                || "PRE_TRIP_TEMPLATE".equals(upper)
+                || "TEMPLATE".equals(upper)) {
+            return ROUTE_MODE_OFFICIAL_TEMPLATE;
+        }
+        return upper;
     }
 
     private void hideRouteCard() {
+        hideRouteCard("legacy_call");
+    }
+
+    private void hideRouteCard(String reason) {
+        Log.d(TAG, "[RouteNav] hide route card reason=" + safeString(reason));
         exitRouteMapModeInternal(true);
         dismissRouteExpandedPanel();
 
@@ -3103,7 +5294,7 @@ public class MainActivity extends Activity {
 
         currentRoute = null;
         currentRoutePreview = null;
-        resetRouteDemoState();
+        resetRouteDemoState("hide_route_card:" + safeString(reason));
         clearRouteMapOverlays();
     }
 
@@ -3120,13 +5311,13 @@ public class MainActivity extends Activity {
             preview.amapRouteReady = false;
             preview.partialFallback = true;
             preview.message = "当前路线缺少景点坐标，暂按推荐顺序模拟导览";
-            preview.polylinePoints = collectLocatedLatLngs(planningNodes);
+            preview.polylinePoints.clear();
             return preview;
         }
 
         preview.calculating = true;
         preview.message = "正在生成高德步行路线...";
-        preview.polylinePoints = collectLocatedLatLngs(planningNodes);
+        preview.polylinePoints.clear();
         return preview;
     }
 
@@ -3143,14 +5334,15 @@ public class MainActivity extends Activity {
             currentRoutePreview = preview;
         }
 
-        if (route.rawPolylinePoints != null && route.rawPolylinePoints.size() >= 2) {
+        int rawPolylineStartIndex = findRouteNodeIndex(route.nodes, preview.routePreviewStartPoint);
+        if (shouldUseRawRoutePolyline(route, preview)) {
             preview.calculating = false;
             preview.amapRouteReady = true;
             preview.partialFallback = false;
             preview.message = "已生成高德步行路线";
             preview.polylinePoints.clear();
             preview.polylinePoints.addAll(route.rawPolylinePoints);
-            Log.d(TAG, "[BackendRoute] 使用后端高德WebService路线: ready=true, points="
+            Log.d(TAG, "[RouteMap] use existing polyline points="
                     + route.rawPolylinePoints.size());
             updateRouteCard(preview);
             drawRouteOnMap(preview);
@@ -3158,6 +5350,8 @@ public class MainActivity extends Activity {
                 showRouteExpandedPanel(false);
             }
             return;
+        } else if (route.rawPolylinePoints != null && route.rawPolylinePoints.size() >= 2) {
+            Log.d(TAG, "[RouteMap] skip raw polyline reason=start_index_shifted, startIndex=" + rawPolylineStartIndex);
         }
 
         final int requestSeq = ++routePreviewRequestSeq;
@@ -3169,7 +5363,9 @@ public class MainActivity extends Activity {
             preview.amapRouteReady = false;
             preview.partialFallback = true;
             preview.message = "当前路线缺少景点坐标，暂按推荐顺序模拟导览";
-            drawFallbackPolyline(preview);
+            preview.polylinePoints.clear();
+            Log.d(TAG, "[RouteMap] fallback nodes only, skip direct polyline reason=located_nodes_lt_2");
+            drawRouteOnMap(preview);
             updateRouteCard(preview);
             return;
         }
@@ -3178,15 +5374,17 @@ public class MainActivity extends Activity {
         preview.amapRouteReady = false;
         preview.partialFallback = false;
         preview.message = "正在生成高德步行路线...";
-        preview.polylinePoints = collectLocatedLatLngs(locatedNodes);
+        preview.polylinePoints.clear();
         updateRouteCard(preview);
-        drawFallbackPolyline(preview);
+        Log.d(TAG, "[RouteMap] fallback nodes only, skip direct polyline reason=waiting_amap");
+        drawRouteOnMap(preview);
 
         if (routeAMap == null || routeMapView == null) {
             preview.calculating = false;
             preview.amapRouteReady = false;
             preview.partialFallback = true;
-            preview.message = "高德路线暂不可用，已按推荐节点顺序展示";
+            preview.message = "高德路线暂不可用，已保留节点顺序";
+            preview.polylinePoints.clear();
             updateRouteCard(preview);
             drawRouteOnMap(preview);
             return;
@@ -3356,6 +5554,11 @@ public class MainActivity extends Activity {
             if (state.results.containsKey(segmentIndex)) {
                 return;
             }
+            Log.d(TAG, "[RouteMap] segment index=" + segmentIndex
+                    + ", success=" + (result != null && !result.fallbackLine)
+                    + ", points=" + (result == null || result.points == null ? 0 : result.points.size())
+                    + ", distanceM=" + (result == null ? 0f : result.distanceMeter)
+                    + ", durationSecond=" + (result == null ? 0L : result.durationSecond));
             state.results.put(segmentIndex, result);
             state.completedSegmentCount++;
             if (state.completedSegmentCount < state.totalSegmentCount) {
@@ -3393,21 +5596,34 @@ public class MainActivity extends Activity {
             preview.totalDurationSecond += segmentResult.durationSecond;
             hasFallback = hasFallback || segmentResult.fallbackLine;
             allFallback = allFallback && segmentResult.fallbackLine;
-            for (LatLng point : segmentResult.points) {
-                appendLatLngDedup(preview.polylinePoints, point);
+            if (!segmentResult.fallbackLine) {
+                for (LatLng point : segmentResult.points) {
+                    appendLatLngDedup(preview.polylinePoints, point);
+                }
             }
         }
 
         preview.calculating = false;
-        preview.amapRouteReady = !allFallback;
+        preview.amapRouteReady = preview.polylinePoints != null && preview.polylinePoints.size() >= 2;
         preview.partialFallback = hasFallback;
         state.searches.clear();
-        if (allFallback) {
-            preview.message = "高德路线暂不可用，已按推荐节点顺序展示";
+        if (allFallback || preview.polylinePoints == null || preview.polylinePoints.size() < 2) {
+            preview.polylinePoints.clear();
+            preview.amapRouteReady = false;
+            preview.message = allFallback
+                    ? "步行路线暂未生成，已保留节点顺序"
+                    : "步行路线暂未生成，已保留节点顺序";
+            Log.d(TAG, "[RouteMap] fallback nodes only, skip direct polyline reason="
+                    + (allFallback ? "all_amap_fallback" : "partial_amap_no_success_points"));
         } else if (hasFallback) {
-            preview.message = "部分路段未获取到高德路线，已按节点直线展示";
+            preview.message = "部分路段未获取到高德路线，已显示成功路段";
+            Log.d(TAG, "[RouteMap] use partial amap polyline source=amap_segments points="
+                    + preview.polylinePoints.size()
+                    + ", failedSegments=" + countFallbackSegments(state));
         } else {
             preview.message = "已生成高德步行路线";
+            Log.d(TAG, "[RouteMap] use existing polyline source=amap_segments points="
+                    + preview.polylinePoints.size());
         }
 
         updateRouteCard(preview);
@@ -3415,6 +5631,19 @@ public class MainActivity extends Activity {
         if (routeExpandedOverlay != null) {
             showRouteExpandedPanel(false);
         }
+    }
+
+    private int countFallbackSegments(RouteSegmentRequestState state) {
+        if (state == null || state.results == null) {
+            return 0;
+        }
+        int count = 0;
+        for (RouteSegmentResult segment : state.results.values()) {
+            if (segment != null && segment.fallbackLine) {
+                count++;
+            }
+        }
+        return count;
     }
 
     private void drawFallbackPolyline(RoutePreviewData preview) {
@@ -3435,21 +5664,34 @@ public class MainActivity extends Activity {
 
         clearRouteMapOverlays();
 
+        List<RouteNode> displayNodes = buildRoutePlanningNodes(preview.routePreviewStartPoint, currentRoute);
+        if (displayNodes.size() == 0) {
+            displayNodes = preview.nodes;
+        }
         List<LatLng> boundsPoints = getRouteDrawablePoints(currentRoute);
+        if (getRoutePolylinePoints(currentRoute).size() < 2) {
+            boundsPoints.clear();
+            for (RouteNode node : displayNodes) {
+                LatLng latLng = toLatLng(node);
+                if (latLng != null) {
+                    appendLatLngDedup(boundsPoints, latLng);
+                }
+            }
+        }
         drawRoutePolyline(currentRoute);
-        drawRouteMarkers(preview.nodes);
+        drawRouteMarkers(displayNodes);
 
         RouteNode startPoint = preview.routePreviewStartPoint;
         // 只有当“游客当前位置/手动模拟起点”和路线第一个景点不是同一个点时，才额外画一个“我”。
         // 否则地图上会同时出现“我”和路线节点“起”，看起来像两个起点。
-        boolean drawSeparateStartMarker = shouldDrawSeparateRouteStartMarker(startPoint, preview.nodes);
+        boolean drawSeparateStartMarker = shouldDrawSeparateRouteStartMarker(startPoint, displayNodes);
         if (drawSeparateStartMarker) {
             LatLng latLng = toLatLng(startPoint);
             if (latLng != null) {
                 Marker marker = routeAMap.addMarker(new MarkerOptions()
                         .position(latLng)
-                        .title("当前位置：" + getRouteNodeName(startPoint))
-                        .icon(createRouteMarkerIcon("我", Color.rgb(245, 158, 11), BitmapDescriptorFactory.HUE_YELLOW)));
+                        .title("当前起点：" + getRouteNodeName(startPoint))
+                        .icon(createRouteMarkerIcon(routeGuideActive ? "我" : "起", Color.rgb(245, 158, 11), BitmapDescriptorFactory.HUE_YELLOW)));
                 marker.setObject(startPoint);
                 routePreviewMarkers.add(marker);
                 boundsPoints.add(latLng);
@@ -3563,7 +5805,7 @@ public class MainActivity extends Activity {
             if (isCurrentNode && !currentMeDrawn) {
                 hue = BitmapDescriptorFactory.HUE_YELLOW;
                 markerColor = Color.rgb(245, 158, 11);
-                markerLabel = "我";
+                markerLabel = routeGuideActive ? "我" : "起";
                 currentMeDrawn = true;
             } else if (i == 0 && !hasSeparateStart) {
                 hue = BitmapDescriptorFactory.HUE_GREEN;
@@ -3591,8 +5833,8 @@ public class MainActivity extends Activity {
         if (currentLatLng != null && !currentMeDrawn) {
             Marker marker = routeAMap.addMarker(new MarkerOptions()
                     .position(currentLatLng)
-                    .title("当前位置：" + getRouteNodeName(currentNode))
-                    .icon(createRouteMarkerIcon("我", Color.rgb(245, 158, 11), BitmapDescriptorFactory.HUE_YELLOW)));
+                    .title((routeGuideActive ? "当前位置：" : "当前起点：") + getRouteNodeName(currentNode))
+                    .icon(createRouteMarkerIcon(routeGuideActive ? "我" : "起", Color.rgb(245, 158, 11), BitmapDescriptorFactory.HUE_YELLOW)));
             marker.setObject(currentNode);
             routePreviewMarkers.add(marker);
             currentMeDrawn = true;
@@ -3636,8 +5878,9 @@ public class MainActivity extends Activity {
         if (routeAMap == null) {
             return;
         }
-        List<LatLng> points = getRouteDrawablePoints(route);
+        List<LatLng> points = getRoutePolylinePoints(route);
         if (points.size() < 2) {
+            Log.d(TAG, "[RouteMap] fallback nodes only, skip direct polyline reason=no_real_polyline");
             return;
         }
         boolean fallback = currentRoutePreview != null && currentRoutePreview.partialFallback;
@@ -3648,16 +5891,35 @@ public class MainActivity extends Activity {
         routePreviewPolylines.add(polyline);
     }
 
-    private List<LatLng> getRouteDrawablePoints(RouteInfo route) {
+    private List<LatLng> getRoutePolylinePoints(RouteInfo route) {
         List<LatLng> result = new ArrayList<>();
-        if (route != null && route.rawPolylinePoints != null && route.rawPolylinePoints.size() >= 2) {
+        if (shouldUseRawRoutePolyline(route, currentRoutePreview)) {
             result.addAll(route.rawPolylinePoints);
             return result;
         }
         if (currentRoutePreview != null
                 && currentRoutePreview.polylinePoints != null
-                && currentRoutePreview.polylinePoints.size() >= 2) {
+                && currentRoutePreview.polylinePoints.size() >= 2
+                && currentRoutePreview.amapRouteReady) {
             result.addAll(currentRoutePreview.polylinePoints);
+        }
+        return result;
+    }
+
+    private boolean shouldUseRawRoutePolyline(RouteInfo route, RoutePreviewData preview) {
+        if (route == null || route.rawPolylinePoints == null || route.rawPolylinePoints.size() < 2) {
+            return false;
+        }
+        RouteNode startPoint = preview == null ? null : preview.routePreviewStartPoint;
+        int startIndex = findRouteNodeIndex(route.nodes, startPoint);
+        return startIndex <= 0;
+    }
+
+    private List<LatLng> getRouteDrawablePoints(RouteInfo route) {
+        List<LatLng> result = new ArrayList<>();
+        List<LatLng> polylinePoints = getRoutePolylinePoints(route);
+        if (polylinePoints.size() >= 2) {
+            result.addAll(polylinePoints);
             return result;
         }
         if (route != null && route.nodes != null) {
@@ -3742,7 +6004,7 @@ public class MainActivity extends Activity {
             routeCardMetaText.setText(formatRouteMeta(currentRoute));
         }
         if (routeCardStartNextText != null) {
-            routeCardStartNextText.setText(getRouteMapStatusText());
+            routeCardStartNextText.setText(formatRouteStartNextText(currentRoute));
         }
         if (routeStartButton != null) {
             boolean hasNodes = currentRoute.nodes != null && currentRoute.nodes.size() > 0;
@@ -3771,6 +6033,10 @@ public class MainActivity extends Activity {
 
     private RouteNode resolveRoutePreviewStartPoint(RouteInfo route) {
         RouteNode selectedStart = createRouteStartNode();
+        RouteNode matchedSelectedStart = findRouteNodeByRouteStart(route);
+        if (matchedSelectedStart != null && matchedSelectedStart.hasLocation) {
+            return copyRouteNode(matchedSelectedStart);
+        }
         if (selectedStart != null && selectedStart.hasLocation) {
             return selectedStart;
         }
@@ -3885,6 +6151,17 @@ public class MainActivity extends Activity {
 
     private List<RouteNode> buildRoutePlanningNodes(RouteNode startPoint, RouteInfo route) {
         List<RouteNode> result = new ArrayList<>();
+        int routeStartIndex = findRouteNodeIndex(route == null ? null : route.nodes, startPoint);
+        if (routeStartIndex >= 0 && route != null && route.nodes != null) {
+            for (int i = routeStartIndex; i < route.nodes.size(); i++) {
+                RouteNode node = route.nodes.get(i);
+                if (node != null) {
+                    result.add(node);
+                }
+            }
+            return result;
+        }
+
         if (startPoint != null && startPoint.hasLocation) {
             result.add(startPoint);
         }
@@ -3903,6 +6180,47 @@ public class MainActivity extends Activity {
             }
         }
         return result;
+    }
+
+    private void alignRouteStartState(RouteInfo route) {
+        if (route == null || route.nodes == null || route.nodes.size() == 0) {
+            currentRouteNodeIndex = -1;
+            logRouteState(route);
+            return;
+        }
+
+        int matchedIndex = findRouteNodeIndexByRouteStart(route);
+        if (matchedIndex < 0) {
+            RouteNode previewStart = currentRoutePreview == null ? null : currentRoutePreview.routePreviewStartPoint;
+            matchedIndex = findRouteNodeIndex(route.nodes, previewStart);
+        }
+        if (matchedIndex < 0) {
+            matchedIndex = 0;
+        }
+        currentRouteNodeIndex = matchedIndex;
+        routeDemoNodeIndex = matchedIndex;
+        currentDemoRouteNode = route.nodes.get(matchedIndex);
+        Log.d(TAG, "[RouteStart] matched route node index=" + matchedIndex
+                + ", nodeName=" + getRouteNodeName(currentDemoRouteNode));
+        logRouteState(route);
+    }
+
+    private RouteNode findRouteNodeByRouteStart(RouteInfo route) {
+        int index = findRouteNodeIndexByRouteStart(route);
+        if (index >= 0 && route != null && route.nodes != null && index < route.nodes.size()) {
+            return route.nodes.get(index);
+        }
+        return null;
+    }
+
+    private void logRouteState(RouteInfo route) {
+        RouteNode current = getCurrentNavigationNode(route);
+        RouteNode next = getNextNavigationNode(route);
+        RouteNode first = route == null || route.nodes == null || route.nodes.size() == 0 ? null : route.nodes.get(0);
+        Log.d(TAG, "[RouteState] currentRouteNodeIndex=" + currentRouteNodeIndex
+                + ", current=" + getRouteNodeName(current)
+                + ", next=" + getRouteNodeName(next)
+                + ", routeFirst=" + getRouteNodeName(first));
     }
 
     private boolean isSameRouteNode(RouteNode left, RouteNode right) {
@@ -4034,7 +6352,7 @@ public class MainActivity extends Activity {
         routeCardReasonText.setVisibility(View.VISIBLE);
         routeCardMetaText.setText(formatRouteMeta(route));
         if (routeCardStartNextText != null) {
-            routeCardStartNextText.setText(getRouteMapStatusText());
+            routeCardStartNextText.setText(formatRouteStartNextText(route));
             routeCardStartNextText.setVisibility(View.VISIBLE);
         }
         if (routeMapHolder != null) {
@@ -4279,8 +6597,9 @@ public class MainActivity extends Activity {
             @Override
             public void onClick(View view) {
                 writeRouteCardEvent("map_card_close", route, null);
+                writeRouteCardEvent("ROUTE_REJECT", route, null);
                 dismissRouteExpandedPanel();
-                hideRouteCard();
+                hideRouteCard("user_close_expanded_route_card");
             }
         });
         changeStartButton.setOnClickListener(new View.OnClickListener() {
@@ -4383,6 +6702,10 @@ public class MainActivity extends Activity {
         }
         if (route.nodes == null || route.nodes.size() == 0) {
             showToast("暂无可展示路线");
+            return;
+        }
+        if (!shouldShowOnsiteRouteCard(route, route.nodes)) {
+            showToast("该路线仅作为游览前建议，现场导览中不进入导航");
             return;
         }
 
@@ -4513,7 +6836,7 @@ public class MainActivity extends Activity {
             voiceGuidePanel.setVisibility(View.GONE);
         }
 
-        renderRouteOnMap(route);
+        buildRoutePreviewWithAmap(route);
         showRouteBottomSheet(route);
         trackRouteEvent("route_map_open", route, null);
     }
@@ -4695,6 +7018,10 @@ public class MainActivity extends Activity {
             showToast("暂无可开始的路线");
             return;
         }
+        if (!shouldShowOnsiteRouteCard(route, route.nodes)) {
+            showToast("该路线仅作为游览前建议，不能开始现场导航");
+            return;
+        }
         currentRoute = route;
         boolean firstTime = !routeGuideActive || activeRouteNodes.size() == 0 || currentRouteNodeIndex < 0;
         if (!initializeRouteNavigationState(route)) {
@@ -4708,14 +7035,17 @@ public class MainActivity extends Activity {
             showToast("地图暂不可用，已按推荐节点顺序展示");
             return;
         }
+        reportRouteUseIfNeeded(route, "start_navigation");
+        trackRouteEvent("ROUTE_ACCEPT", route, null);
+        trackRouteEvent("ROUTE_START", route, null);
         trackRouteEvent("navigation_start", route, null);
         if (routeAMap == null) {
             requestPendingRouteNavigationRefresh();
         }
         renderRouteCard(route);
         updateRouteDemoController(route);
-        Log.d(TAG, "[RouteNav] start firstTime=" + firstTime
-                + ", currentIndex=" + currentRouteNodeIndex
+        Log.d(TAG, "[RouteNav] start navigation currentIndex=" + currentRouteNodeIndex
+                + ", firstTime=" + firstTime
                 + ", current=" + getRouteNodeName(getCurrentNavigationNode(route))
                 + ", next=" + getRouteNodeName(getNextNavigationNode(route)));
         enterNavigationMode(route);
@@ -4744,6 +7074,7 @@ public class MainActivity extends Activity {
         routeDemoNodeIndex = index;
         currentDemoRouteNode = activeRouteNodes.get(index);
         applyDemoNodeToCurrentContext(currentDemoRouteNode);
+        logRouteState(route);
         return true;
     }
 
@@ -5126,6 +7457,10 @@ public class MainActivity extends Activity {
         if (node == null) {
             return;
         }
+        if (currentRoute == null || !shouldShowOnsiteRouteCard(currentRoute, currentRoute.nodes)) {
+            showToast("该路线不能进入现场节点导览");
+            return;
+        }
         if (currentRoute != null && currentRoute.nodes != null) {
             for (int i = 0; i < currentRoute.nodes.size(); i++) {
                 if (isSameRouteNode(node, currentRoute.nodes.get(i))) {
@@ -5151,6 +7486,7 @@ public class MainActivity extends Activity {
         } else {
             showRouteBottomSheet(currentRoute);
         }
+        logRouteState(currentRoute);
         showToast((currentRouteNodeIndex + 1) + ". " + getRouteNodeName(node) + " · 点击讲解该景点");
         trackRouteEvent("route_spot_click", currentRoute, node);
     }
@@ -5232,13 +7568,16 @@ public class MainActivity extends Activity {
             return "正在生成高德步行路线...";
         }
         if (preview.amapRouteReady && preview.partialFallback) {
-            return "部分路段未获取到高德路线，已按节点直线展示";
+            return firstNotEmpty(preview.message, "部分路段未获取到高德路线，已显示成功路段");
         }
         if (preview.amapRouteReady) {
             return "已生成高德步行路线";
         }
         if (preview.partialFallback && preview.polylinePoints != null && preview.polylinePoints.size() >= 2) {
-            return "高德路线暂不可用，已按推荐节点顺序展示";
+            return firstNotEmpty(preview.message, "部分路段未获取到高德路线，已显示成功路段");
+        }
+        if (preview.partialFallback && firstNotEmpty(preview.message).length() > 0) {
+            return preview.message;
         }
         return "当前路线缺少景点坐标，暂按推荐顺序模拟导览";
     }
@@ -5260,13 +7599,11 @@ public class MainActivity extends Activity {
     }
 
     private String formatRouteStartNextText(RouteInfo route) {
-        if (routeGuideActive) {
-            RouteNode current = getCurrentActiveRouteNode();
-            RouteNode next = getNextActiveRouteNode();
-            return "路线导览中 · 当前：" + (current == null ? "当前起点" : getRouteNodeName(current))
-                    + " · 下一站：" + (next == null ? "暂无下一站" : getRouteNodeName(next));
-        }
-        return "当前起点：" + getRoutePreviewStartName() + " · 推荐游览：" + formatRecommendedRouteText(route);
+        RouteNode current = getCurrentNavigationNode(route);
+        RouteNode next = getNextNavigationNode(route);
+        String currentName = firstNotEmpty(getRouteNodeName(current), getRoutePreviewStartName(), "当前起点");
+        String nextName = next == null ? "暂无下一站" : getRouteNodeName(next);
+        return "当前：" + currentName + " · 下一站：" + nextName;
     }
 
     private RouteNode getNextRouteNodeForDisplay(RouteInfo route) {
@@ -5330,7 +7667,7 @@ public class MainActivity extends Activity {
             }
         }
         if (route == null) {
-            return "比赛演示中将按节点模拟前进";
+            return "暂无路线统计";
         }
         StringBuilder builder = new StringBuilder();
         if (route.totalDistanceM.length() > 0) {
@@ -5345,9 +7682,9 @@ public class MainActivity extends Activity {
             builder.append(route.nodes.size()).append(" 个景点");
         }
         if (builder.length() == 0) {
-            return "比赛演示中将按节点模拟前进";
+            return "暂无路线统计";
         }
-        return builder.toString() + " · 比赛演示中将按节点模拟前进";
+        return builder.toString();
     }
 
     private String getRoutePreviewStartName() {
@@ -5362,17 +7699,82 @@ public class MainActivity extends Activity {
             return "暂无推荐节点";
         }
         StringBuilder builder = new StringBuilder();
-        int maxCount = Math.min(route.nodes.size(), 4);
+        int startIndex = currentRouteNodeIndex >= 0 && currentRouteNodeIndex < route.nodes.size()
+                ? currentRouteNodeIndex
+                : 0;
+        int maxCount = Math.min(route.nodes.size() - startIndex, 5);
         for (int i = 0; i < maxCount; i++) {
             if (i > 0) {
-                builder.append(" -> ");
+                builder.append(" → ");
             }
-            builder.append(getRouteNodeName(route.nodes.get(i)));
+            builder.append(getRouteNodeName(route.nodes.get(startIndex + i)));
         }
-        if (route.nodes.size() > maxCount) {
-            builder.append(" -> ...");
+        if (route.nodes.size() > startIndex + maxCount) {
+            builder.append(" → ...");
+        }
+        String reason = buildRouteRecommendReason(route);
+        if (reason.length() > 0) {
+            builder.append("\n依据：").append(limitRouteCardText(reason, 42));
         }
         return builder.toString();
+    }
+
+    private String limitRouteCardText(String text, int maxLength) {
+        String value = safeString(text).replace("\n", " ").replace("\r", " ").trim();
+        if (maxLength <= 0 || value.length() <= maxLength) {
+            return value;
+        }
+        return value.substring(0, maxLength) + "...";
+    }
+
+    private String buildRouteRecommendReason(RouteInfo route) {
+        if (route == null) {
+            return "";
+        }
+        String reason = firstNotEmpty(route.recommendReason, route.reason);
+        if (reason.length() > 0) {
+            return reason;
+        }
+        if (route.matchedTags == null || route.matchedTags.isEmpty()) {
+            return "";
+        }
+        List<String> names = new ArrayList<>();
+        for (String code : route.matchedTags) {
+            String name = mapMatchedTagName(code);
+            if (name.length() > 0 && !names.contains(name)) {
+                names.add(name);
+            }
+        }
+        if (names.isEmpty()) {
+            return "";
+        }
+        StringBuilder builder = new StringBuilder("根据您偏好");
+        for (int i = 0; i < names.size() && i < 4; i++) {
+            if (i > 0) {
+                builder.append("、");
+            }
+            builder.append(names.get(i));
+        }
+        builder.append("，为您推荐这条路线。");
+        return builder.toString();
+    }
+
+    private String mapMatchedTagName(String code) {
+        String key = safeString(code).trim();
+        if (key.length() == 0) return "";
+        if ("history_culture".equals(key)) return "历史文化";
+        if ("nature".equals(key)) return "自然风光";
+        if ("photo".equals(key)) return "拍照";
+        if ("deep_explanation".equals(key)) return "深度讲解";
+        if ("avoid_crowd".equals(key)) return "避开拥挤";
+        if ("fewer_steps".equals(key)) return "少走台阶";
+        if ("many_steps".equals(key)) return "台阶较多";
+        if ("low_intensity".equals(key)) return "低强度";
+        if ("elder_friendly".equals(key)) return "老人友好";
+        if ("family_friendly".equals(key)) return "亲子友好";
+        if ("accessibility".equals(key)) return "无障碍";
+        if (key.matches("[A-Za-z0-9_\\-]+")) return "";
+        return key;
     }
 
     private String formatDistanceText(float distanceMeter) {
@@ -5401,6 +7803,11 @@ public class MainActivity extends Activity {
     }
 
     private void resetRouteDemoState() {
+        resetRouteDemoState("legacy_call");
+    }
+
+    private void resetRouteDemoState(String reason) {
+        Log.d(TAG, "[RouteNav] clear route state reason=" + safeString(reason));
         routeDemoRequesting = false;
         routeDemoNodeIndex = -1;
         currentDemoRouteNode = null;
@@ -5461,6 +7868,10 @@ public class MainActivity extends Activity {
             showToast("请先获取路线推荐节点");
             return;
         }
+        if (!shouldShowOnsiteRouteCard(currentRoute, currentRoute.nodes)) {
+            showToast("该路线仅作为游览前建议，不能模拟现场路线");
+            return;
+        }
         if (guideEnded) {
             showToast("本次现场导览已结束");
             return;
@@ -5486,13 +7897,22 @@ public class MainActivity extends Activity {
             return;
         }
 
+        int startIndex = findRouteNodeIndex(activeRouteNodes, startPoint);
+        if (startIndex < 0) {
+            startIndex = currentRouteNodeIndex >= 0 && currentRouteNodeIndex < activeRouteNodes.size()
+                    ? currentRouteNodeIndex
+                    : 0;
+        }
+
         routeGuideActive = true;
-        currentRouteNodeIndex = 0;
-        routeDemoNodeIndex = 0;
-        currentDemoRouteNode = activeRouteNodes.get(0);
+        currentRouteNodeIndex = startIndex;
+        routeDemoNodeIndex = startIndex;
+        currentDemoRouteNode = activeRouteNodes.get(startIndex);
         applyDemoNodeToCurrentContext(currentDemoRouteNode);
+        logRouteState(currentRoute);
         dismissRouteExpandedPanel();
         renderRouteCard(currentRoute);
+        reportRouteUseIfNeeded(currentRoute, "start_node_guide");
 
         RouteNode current = getCurrentActiveRouteNode();
         RouteNode next = getNextActiveRouteNode();
@@ -5512,6 +7932,10 @@ public class MainActivity extends Activity {
             showToast("路线导览正在处理，请稍候");
             return;
         }
+        if (currentRoute == null || !shouldShowOnsiteRouteCard(currentRoute, currentRoute.nodes)) {
+            showToast("该路线不能模拟到达下一站");
+            return;
+        }
         if (!ensureOnsiteCoreWriteReady()) {
             return;
         }
@@ -5526,8 +7950,8 @@ public class MainActivity extends Activity {
         final RouteNode previousNode = firstNotNull(getCurrentActiveRouteNode(), currentDemoRouteNode);
         final RouteNode nextNode = next;
         final int nextIndex = currentRouteNodeIndex + 1;
-        Log.d(TAG, "[RouteDemo] arrive previous=" + getRouteNodeName(previousNode)
-                + ", next=" + getRouteNodeName(nextNode));
+        Log.d(TAG, "[RouteNav] simulate next from=" + getRouteNodeName(previousNode)
+                + " to=" + getRouteNodeName(nextNode));
 
         routeDemoRequesting = true;
         updateRouteDemoController(route);
@@ -5559,11 +7983,15 @@ public class MainActivity extends Activity {
                             currentDemoRouteNode = nextNode;
                             applyDemoNodeToCurrentContext(nextNode);
                             renderRouteCard(route);
+                            if (routeCardContainer != null && !routeMapModeActive) {
+                                routeCardContainer.setVisibility(View.VISIBLE);
+                            }
                             refreshRouteMapForRouteState();
                             speakRouteGuideText("已到达" + getRouteNodeName(nextNode) + "，下面为你讲解这里的特色。");
                             if (!previousLeaveOk) {
                                 showToast("已到达新景点，但上一景点离开记录写入失败");
                             }
+                            Log.d(TAG, "[RouteNav] keep route card after spot explain");
                             askGuideForCurrentNode(nextNode);
                         } else {
                             renderRouteCard(route);
@@ -5578,12 +8006,11 @@ public class MainActivity extends Activity {
     private void finishSimulatedRouteGuide() {
         boolean completed = routeGuideActive && getNextActiveRouteNode() == null;
         if (!routeGuideActive) {
-            resetRouteDemoState();
-            renderRouteCard(currentRoute);
-            showRouteGuideEndedState(false);
+            hideRouteCard("user_end_route_without_active_navigation");
             return;
         }
         exitNavigationMode();
+        Log.d(TAG, "[RouteNav] clear route state reason=user_end_route_navigation");
         routeGuideActive = false;
         routeNavigationModeActive = false;
         routeDemoRequesting = false;
@@ -5591,9 +8018,9 @@ public class MainActivity extends Activity {
         routeDemoNodeIndex = currentRoute == null || currentRoute.nodes == null ? -1 : currentRoute.nodes.size();
         currentDemoRouteNode = null;
         activeRouteNodes.clear();
-        renderRouteCard(currentRoute);
-        showRouteGuideEndedState(completed);
+        hideRouteCard("user_end_route_navigation");
         if (completed) {
+            trackRouteEvent("ROUTE_COMPLETE", currentRoute, null);
             speakRouteGuideText("本次推荐路线已完成，你可以继续提问或结束导览。");
         } else {
             speakRouteGuideText("已结束本条路线，你可以继续提问或重新开始路线导航。");
@@ -5643,7 +8070,7 @@ public class MainActivity extends Activity {
             showToast("数字人正在处理，请稍候");
             return;
         }
-        askGuideInternal("请讲解一下【" + nodeName + "】", true, true);
+        askGuideInternal("请讲解一下【" + nodeName + "】", true, true, "route_navigation_step");
     }
 
     private RouteNode getCurrentActiveRouteNode() {
@@ -5675,6 +8102,10 @@ public class MainActivity extends Activity {
         }
         if (currentRoute == null || currentRoute.nodes == null || currentRoute.nodes.size() == 0) {
             showToast("请先获取路线推荐节点");
+            return;
+        }
+        if (!shouldShowOnsiteRouteCard(currentRoute, currentRoute.nodes)) {
+            showToast("该路线不能模拟到达下一站");
             return;
         }
         if (!ensureOnsiteCoreWriteReady()) {
@@ -5882,6 +8313,8 @@ public class MainActivity extends Activity {
         routeStartCurrentSpotName = firstNotEmpty(getRouteNodeName(node), routeStartCurrentSpotName, "当前景点");
         routeStartLatitude = firstNotEmpty(node.latitude, routeStartLatitude);
         routeStartLongitude = firstNotEmpty(node.longitude, routeStartLongitude);
+        latitude = firstNotEmpty(node.latitude, latitude);
+        longitude = firstNotEmpty(node.longitude, longitude);
         updateGuideContext();
 
         if (targetText != null) {
@@ -6508,6 +8941,7 @@ public class MainActivity extends Activity {
                 + ", spotId=" + spotIdText
                 + ", spotName=" + spotNameText
                 + ", planId=" + (route == null ? "" : safeString(route.planId))
+                + ", routeId=" + resolveRouteEventRouteId(route)
                 + ", routeName=" + (route == null ? "" : safeString(route.routeName))
                 + ", locationSource=" + DEMO_LOCATION_SOURCE
                 + ", trigger=" + DEMO_TRIGGER);
@@ -6547,6 +8981,9 @@ public class MainActivity extends Activity {
                     requestJson.put("spot_name", safeString(spotNameText));
                     requestJson.put("planId", route == null ? "" : safeString(route.planId));
                     requestJson.put("plan_id", route == null ? "" : safeString(route.planId));
+                    String routeId = resolveRouteEventRouteId(route);
+                    requestJson.put("routeId", routeId);
+                    requestJson.put("route_id", routeId);
                     requestJson.put("routeName", route == null ? "" : safeString(route.routeName));
                     requestJson.put("route_name", route == null ? "" : safeString(route.routeName));
                     requestJson.put("entityType", node == null ? "VISIT" : "SPOT");
@@ -6569,6 +9006,12 @@ public class MainActivity extends Activity {
                     extra.put("source", GUIDE_SOURCE);
                     extra.put("routeNodeOrder", node == null ? "" : safeString(node.order));
                     extra.put("route_node_order", node == null ? "" : safeString(node.order));
+                    extra.put("routeId", routeId);
+                    extra.put("route_id", routeId);
+                    extra.put("profileVersion", route == null ? "" : safeString(route.profileVersion));
+                    extra.put("profile_version", route == null ? "" : safeString(route.profileVersion));
+                    extra.put("recommendReason", route == null ? "" : buildRouteRecommendReason(route));
+                    extra.put("recommend_reason", route == null ? "" : buildRouteRecommendReason(route));
                     requestJson.put("extra", extra);
 
                     URL url = new URL(eventUrl);
@@ -7420,12 +9863,16 @@ public class MainActivity extends Activity {
                 + ", routeStartLatitude=" + routeStartLatitude
                 + ", routeStartLongitude=" + routeStartLongitude
                 + "，不写入 spot_enter");
+        Log.d(TAG, "[RouteStart] selected start spotId=" + routeStartCurrentSpotId
+                + ", spotName=" + routeStartCurrentSpotName
+                + ", lng=" + routeStartLongitude
+                + ", lat=" + routeStartLatitude);
         showToast("路线起点已设为：" + routeStartCurrentSpotName);
     }
 
     private void refreshRouteCardForRouteStartChanged() {
         if (currentRoute != null && routeCardContainer != null && routeCardContainer.getVisibility() == View.VISIBLE) {
-            resetRouteDemoState();
+            resetRouteDemoState("route_start_changed");
             currentRoutePreview = createInitialRoutePreview(currentRoute);
             currentRoute.preview = currentRoutePreview;
             renderRouteCard(currentRoute);
@@ -7466,6 +9913,7 @@ public class MainActivity extends Activity {
                 + ", spotId=" + spotId
                 + ", spotName=" + spotName
                 + ", planId=" + (route == null ? "" : safeString(route.planId))
+                + ", routeId=" + resolveRouteEventRouteId(route)
                 + ", routeName=" + (route == null ? "" : safeString(route.routeName)));
         postRouteCardEvent(eventName, route, node, spotId, spotName);
     }
@@ -7494,9 +9942,47 @@ public class MainActivity extends Activity {
         trackRouteEvent(eventName, currentRoute, null);
     }
 
+    private void reportRouteUseIfNeeded(RouteInfo route, String trigger) {
+        String routeId = getProvidedRouteId(route);
+        boolean canReport = routeId.length() > 0
+                && isDynamicInParkRoute(route)
+                && isInParkRouteContext(route)
+                && ("start_navigation".equals(safeString(trigger))
+                    || "start_node_guide".equals(safeString(trigger)));
+        if (!canReport) {
+            Log.d(TAG, "[RouteUse] skip routeId=" + routeId
+                    + ", routeMode=" + (route == null ? "" : route.routeMode)
+                    + ", visitStatus=" + (route == null ? "" : route.visitStatus)
+                    + ", trigger=" + safeString(trigger));
+            return;
+        }
+        if (routeId.equals(lastReportedRouteUseId)) {
+            Log.d(TAG, "[RouteUse] skip duplicate routeId=" + routeId);
+            return;
+        }
+        if (!hasRouteEventWriteContext()) {
+            Log.d(TAG, "[RouteUse] skip missing context routeId=" + routeId);
+            return;
+        }
+        lastReportedRouteUseId = routeId;
+        Log.d(TAG, "[RouteUse] report start routeId=" + routeId + ", trigger=" + safeString(trigger));
+        trackRouteEvent("ROUTE_USE", route, null);
+    }
+
+    private String getProvidedRouteId(RouteInfo route) {
+        if (route == null) {
+            return "";
+        }
+        return firstNotEmpty(route.originalRouteId, route.localRouteIdGenerated ? "" : route.routeId);
+    }
+
     private String getRoutePlanEventKey(RouteInfo route) {
         if (route == null) {
             return "";
+        }
+        String routeId = resolveRouteEventRouteId(route);
+        if (routeId.length() > 0) {
+            return routeId;
         }
         String planId = safeString(route.planId);
         if (planId.length() > 0) {
@@ -7514,12 +10000,21 @@ public class MainActivity extends Activity {
         return "local_" + Math.abs(builder.toString().hashCode());
     }
 
+    private String resolveRouteEventRouteId(RouteInfo route) {
+        if (route == null) {
+            return "";
+        }
+        ensureRouteId(route);
+        return firstNotEmpty(route.routeId, route.planId);
+    }
+
     private void postRouteCardEvent(final String eventName, final RouteInfo route, final RouteNode node, final String spotId, final String spotName) {
         new Thread(new Runnable() {
             @Override
             public void run() {
                 HttpURLConnection connection = null;
                 try {
+                    boolean routeUseEvent = "ROUTE_USE".equalsIgnoreCase(safeString(eventName));
                     String eventUrl = buildBehaviorEventUrl();
                     JSONObject requestJson = new JSONObject();
                     requestJson.put("eventType", safeString(eventName));
@@ -7544,6 +10039,17 @@ public class MainActivity extends Activity {
                     requestJson.put("spot_name", safeString(spotName));
                     requestJson.put("planId", route == null ? "" : safeString(route.planId));
                     requestJson.put("plan_id", route == null ? "" : safeString(route.planId));
+                    String routeId = resolveRouteEventRouteId(route);
+                    requestJson.put("routeId", routeId);
+                    requestJson.put("route_id", routeId);
+                    requestJson.put("entityType", route == null ? "ROUTE" : (node == null ? "ROUTE" : "SPOT"));
+                    requestJson.put("entity_type", route == null ? "ROUTE" : (node == null ? "ROUTE" : "SPOT"));
+                    requestJson.put("entityId", node == null ? routeId : firstNotEmpty(spotId, node == null ? "" : getRouteNodeScenicId(node)));
+                    requestJson.put("entity_id", node == null ? routeId : firstNotEmpty(spotId, node == null ? "" : getRouteNodeScenicId(node)));
+                    requestJson.put("objectType", route == null ? "ROUTE" : (node == null ? "ROUTE" : "SPOT"));
+                    requestJson.put("object_type", route == null ? "ROUTE" : (node == null ? "ROUTE" : "SPOT"));
+                    requestJson.put("objectId", node == null ? routeId : firstNotEmpty(spotId, node == null ? "" : getRouteNodeScenicId(node)));
+                    requestJson.put("object_id", node == null ? routeId : firstNotEmpty(spotId, node == null ? "" : getRouteNodeScenicId(node)));
                     requestJson.put("routeName", route == null ? "" : safeString(route.routeName));
                     requestJson.put("route_name", route == null ? "" : safeString(route.routeName));
                     requestJson.put("source", ROUTE_EVENT_SOURCE);
@@ -7554,6 +10060,25 @@ public class MainActivity extends Activity {
                         putCoordinateIfPresent(requestJson, "latitude", node.latitude);
                         putCoordinateIfPresent(requestJson, "longitude", node.longitude);
                     }
+
+                    JSONObject extra = new JSONObject();
+                    extra.put("routeId", routeId);
+                    extra.put("route_id", routeId);
+                    extra.put("routeName", route == null ? "" : safeString(route.routeName));
+                    extra.put("route_name", route == null ? "" : safeString(route.routeName));
+                    extra.put("profileVersion", route == null ? "" : safeString(route.profileVersion));
+                    extra.put("profile_version", route == null ? "" : safeString(route.profileVersion));
+                    extra.put("recommendReason", route == null ? "" : buildRouteRecommendReason(route));
+                    extra.put("recommend_reason", route == null ? "" : buildRouteRecommendReason(route));
+                    if (route != null && route.matchedTags != null && !route.matchedTags.isEmpty()) {
+                        JSONArray tags = new JSONArray();
+                        for (String tag : route.matchedTags) {
+                            tags.put(tag);
+                        }
+                        extra.put("matchedTags", tags);
+                        extra.put("matched_tags", tags);
+                    }
+                    requestJson.put("extra", extra);
 
                     URL url = new URL(eventUrl);
                     connection = (HttpURLConnection) url.openConnection();
@@ -7579,16 +10104,30 @@ public class MainActivity extends Activity {
                             : connection.getErrorStream());
 
                     if (responseCode >= 200 && responseCode < 300) {
-                        Log.d(TAG, "[RouteCardEvent] 上报成功 event=" + eventName + ", response=" + responseText);
+                        if (routeUseEvent) {
+                            Log.d(TAG, "[RouteUse] reported routeId=" + routeId);
+                        } else {
+                            Log.d(TAG, "[RouteCardEvent] 上报成功 event=" + eventName + ", response=" + responseText);
+                        }
                     } else {
-                        Log.e(TAG, "[RouteCardEvent] 上报失败 event=" + eventName
-                                + ", code=" + responseCode
-                                + ", url=" + eventUrl
-                                + ", response=" + responseText);
+                        if (routeUseEvent) {
+                            Log.e(TAG, "[RouteUse] report failed routeId=" + routeId
+                                    + ", code=" + responseCode
+                                    + ", response=" + responseText);
+                        } else {
+                            Log.e(TAG, "[RouteCardEvent] 上报失败 event=" + eventName
+                                    + ", code=" + responseCode
+                                    + ", url=" + eventUrl
+                                    + ", response=" + responseText);
+                        }
                     }
                 } catch (Exception e) {
-                    Log.e(TAG, "[RouteCardEvent] 上报异常 event=" + eventName
-                            + ", url=" + buildBehaviorEventUrl(), e);
+                    if ("ROUTE_USE".equalsIgnoreCase(safeString(eventName))) {
+                        Log.e(TAG, "[RouteUse] report failed routeId=" + getProvidedRouteId(route), e);
+                    } else {
+                        Log.e(TAG, "[RouteCardEvent] 上报异常 event=" + eventName
+                                + ", url=" + buildBehaviorEventUrl(), e);
+                    }
                 } finally {
                     if (connection != null) {
                         connection.disconnect();
@@ -7931,6 +10470,18 @@ public class MainActivity extends Activity {
                 getSafeExtra(intent, "visit_preference")
         );
 
+        estimatedDuration = firstNotEmpty(
+                getSafeExtra(intent, "estimatedDuration"),
+                getSafeExtra(intent, "estimated_duration"),
+                getSafeExtra(intent, "travelDuration"),
+                getSafeExtra(intent, "travel_duration")
+        );
+        availableMinutes = firstNotEmpty(
+                normalizeAvailableMinutesText(getSafeExtra(intent, "availableMinutes")),
+                normalizeAvailableMinutesText(getSafeExtra(intent, "available_minutes")),
+                normalizeAvailableMinutesText(estimatedDuration)
+        );
+
         contextType = firstNotEmpty(
                 getSafeExtra(intent, "contextType"),
                 getSafeExtra(intent, "context_type")
@@ -8098,6 +10649,13 @@ public class MainActivity extends Activity {
                 behaviorBackendBaseUrl,
                 getBaseUrlFromFullUrl(GUIDE_CHAT_URL)
         );
+        aiBaseUrl = firstNotEmpty(
+                getSafeExtra(intent, "aiBaseUrl"),
+                getSafeExtra(intent, "ai_base_url"),
+                getSafeExtra(intent, "aiApiBaseUrl"),
+                getSafeExtra(intent, "ai_api_base_url"),
+                getDigitalHumanConfigText(digitalHumanConfigJson, "aiBaseUrl", "ai_base_url")
+        );
         behaviorEventPath = firstNotEmpty(
                 getSafeExtra(intent, "behaviorEventPath"),
                 behaviorEventPath,
@@ -8147,6 +10705,8 @@ public class MainActivity extends Activity {
         Log.d(TAG, "groupSize=" + groupSize);
         Log.d(TAG, "travelType=" + travelType);
         Log.d(TAG, "visitPreference=" + visitPreference);
+        Log.d(TAG, "estimatedDuration=" + estimatedDuration);
+        Log.d(TAG, "availableMinutes=" + availableMinutes);
         Log.d(TAG, "appUserId = " + appUserId);
         Log.d(TAG, "loginUserId = " + loginUserId);
         Log.d(TAG, "visitorId = " + visitorId);
@@ -8418,6 +10978,17 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void applyAuthorizationHeader(Request.Builder builder) {
+        if (builder == null) {
+            return;
+        }
+
+        String authorization = buildAuthorizationHeader();
+        if (authorization.length() > 0) {
+            builder.header("Authorization", authorization);
+        }
+    }
+
     private boolean ensureGuideAuthReady() {
         if (!hasAuthToken()) {
             showGuideAuthError("登录状态失效，请返回首页重新进入导览");
@@ -8618,6 +11189,32 @@ public class MainActivity extends Activity {
 
     private boolean isOnsiteMode() {
         return isOnsiteGuide;
+    }
+
+    private String normalizeVisitStatusForContract(String status) {
+        String text = safeString(status).trim();
+        if (text.length() == 0) {
+            return VISIT_STATUS_NOT_ARRIVED;
+        }
+        String upper = text.toUpperCase(Locale.ROOT);
+        if (VISIT_STATUS_IN_PARK.equals(upper)
+                || "IN_AREA".equals(upper)
+                || "ARRIVED".equals(upper)
+                || "VISITING".equals(upper)
+                || "ONSITE".equals(upper)) {
+            return VISIT_STATUS_IN_PARK;
+        }
+        if (VISIT_STATUS_NOT_ARRIVED.equals(upper)
+                || "NOT_IN_AREA".equals(upper)
+                || "OUT_OF_PARK".equals(upper)
+                || "OUTSIDE".equals(upper)) {
+            return VISIT_STATUS_NOT_ARRIVED;
+        }
+        return upper;
+    }
+
+    private boolean isInParkVisitStatus(String status) {
+        return VISIT_STATUS_IN_PARK.equals(normalizeVisitStatusForContract(status));
     }
 
     /**
@@ -9145,10 +11742,13 @@ public class MainActivity extends Activity {
             return;
         }
         String audioUrl = guideResponse.audioUrl == null ? "" : guideResponse.audioUrl.trim();
-        String audioStatus = guideResponse.audioStatus == null ? "" : guideResponse.audioStatus.trim();
+        String audioStatus = firstNotEmpty(guideResponse.audioStatus, guideResponse.ttsStatus);
         Log.d(TAG, "[AudioPlay] final response audioStatus=" + safeString(audioStatus)
                 + ", audioUrl=" + safeString(audioUrl)
                 + ", ttsTaskId=" + safeString(guideResponse.ttsTaskId)
+                + ", ttsError=" + safeString(guideResponse.ttsError)
+                + ", mouthStatus=" + safeString(guideResponse.mouthStatus)
+                + ", mouthError=" + safeString(guideResponse.mouthError)
                 + ", mouthFrames=" + (guideResponse.mouthFrames == null ? 0 : guideResponse.mouthFrames.size()));
         if (audioUrl.length() > 0) {
             playAudioUrl(audioUrl, guideResponse);
@@ -9517,37 +12117,60 @@ public class MainActivity extends Activity {
     }
 
     private String resolveAudioUrl(String audioUrl) {
-        if (audioUrl == null) return "";
-        String url = audioUrl.trim();
+        String url = safeString(audioUrl).trim();
+        if (url.length() == 0) {
+            return "";
+        }
         try {
-            URL chatUrl = new URL(GUIDE_CHAT_URL);
-            String baseUrl = chatUrl.getProtocol() + "://" + chatUrl.getHost();
-            if (chatUrl.getPort() > 0) baseUrl += ":" + chatUrl.getPort();
-
-            if (url.startsWith("//")) {
-                return chatUrl.getProtocol() + ":" + url;
-            }
-
             if (url.startsWith("http://") || url.startsWith("https://")) {
-                URL parsed = new URL(url);
-                String host = parsed.getHost();
-                if ("localhost".equalsIgnoreCase(host) || "127.0.0.1".equals(host)) {
-                    String hostBase = chatUrl.getProtocol() + "://" + chatUrl.getHost();
-                    if (parsed.getPort() > 0) {
-                        hostBase += ":" + parsed.getPort();
-                    } else if (chatUrl.getPort() > 0) {
-                        hostBase += ":" + chatUrl.getPort();
-                    }
-                    String file = parsed.getFile();
-                    return hostBase + (file == null ? "" : file);
-                }
                 return url;
             }
 
-            if (url.startsWith("/")) return baseUrl + url;
-            return baseUrl + "/" + url;
+            String aiBase = trimTrailingSlash(aiBaseUrl);
+            if (aiBase.length() == 0) {
+                Log.w(TAG, "[SSE][Audio] AI_BASE_URL missing, skip relative audioUrl=" + safeString(url));
+                return "";
+            }
+
+            URL aiUrl = new URL(aiBase);
+            String aiOrigin = aiUrl.getProtocol() + "://" + aiUrl.getHost();
+            if (aiUrl.getPort() > 0) {
+                aiOrigin += ":" + aiUrl.getPort();
+            }
+            if (url.startsWith("//")) {
+                return aiUrl.getProtocol() + ":" + url;
+            }
+            if (url.startsWith("/")) {
+                return aiOrigin + url;
+            }
+            return aiOrigin + "/" + url;
         } catch (Exception e) {
-            return url;
+            Log.w(TAG, "[SSE][Audio] resolve audioUrl failed, skip audioUrl=" + safeString(url)
+                    + ", aiBaseUrl=" + safeString(aiBaseUrl)
+                    + ", message=" + e.getMessage());
+            return "";
+        }
+    }
+
+    private String trimTrailingSlash(String value) {
+        String text = safeString(value).trim();
+        while (text.endsWith("/")) {
+            text = text.substring(0, text.length() - 1);
+        }
+        return text;
+    }
+
+    private void releaseMediaPlayerOnly() {
+        try {
+            if (mediaPlayer != null) {
+                Log.d(TAG, "[SSE][Audio] release MediaPlayer isPlaying=" + mediaPlayer.isPlaying());
+                if (mediaPlayer.isPlaying()) mediaPlayer.stop();
+                mediaPlayer.release();
+                mediaPlayer = null;
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "[SSE][Audio] release MediaPlayer failed: " + e.getMessage());
+            mediaPlayer = null;
         }
     }
 
@@ -9555,15 +12178,7 @@ public class MainActivity extends Activity {
         stopBackendAudioSpeaking();
         stopMouthSync();
         currentTtsUtteranceId = "";
-        try {
-            if (mediaPlayer != null) {
-                if (mediaPlayer.isPlaying()) mediaPlayer.stop();
-                mediaPlayer.release();
-                mediaPlayer = null;
-            }
-        } catch (Exception ignored) {
-            mediaPlayer = null;
-        }
+        releaseMediaPlayerOnly();
         try {
             if (textToSpeech != null) textToSpeech.stop();
         } catch (Exception ignored) {
@@ -9841,6 +12456,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onStop() {
         super.onStop();
+        Log.d(TAG, "[SSE][Lifecycle] onStop " + getSseLifecycleState());
         if (voiceFlowActive || recording) {
             Log.d(TAG, "语音流程中，跳过 Live2D onStop，避免黑屏");
             return;
@@ -9851,7 +12467,9 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        Log.d(TAG, "[SSE][Lifecycle] onDestroy " + getSseLifecycleState());
         releaseRecorder();
+        cancelCurrentSseRound("destroy");
         stopCurrentAudio();
         if (textToSpeech != null) {
             textToSpeech.stop();
@@ -9880,19 +12498,47 @@ public class MainActivity extends Activity {
         String answer = "";
         String audioUrl = "";
         String audioStatus = "";
+        String ttsStatus = "";
         String ttsTaskId = "";
         long audioDurationMs = 0L;
         String conversationId = "";
         String messageId = "";
         String ttsError = "";
+        String mouthStatus = "";
+        String mouthError = "";
+        String interactionCategory = "";
+        String answerStatus = "";
+        String fallbackReason = "";
+        String issueCategory = "";
+        String issueType = "";
+        String knowledgeGapCandidate = "";
+        boolean requiresAdminAction = false;
+        String grounding = "";
+        String sources = "";
         String action = "";
         String actionCode = "";
         String emotion = "";
         String emotionCode = "";
+        boolean routeIntent = false;
         RouteInfo route;
         List<String> suggestions = new ArrayList<>();
         List<MouthSyncManager.MouthFrame> mouthFrames = new ArrayList<>();
         List<MouthSyncController.MouthFrame> controllerMouthFrames = new ArrayList<>();
+    }
+
+    private static class SpeechChunk {
+        String messageId = "";
+        String chunkId = "";
+        int roundSeq = 0;
+        int chunkIndex = 0;
+        String text = "";
+        String audioUrl = "";
+        long durationMs = 0L;
+        boolean isLast = false;
+        String action = "";
+        String emotion = "";
+        List<MouthSyncManager.MouthFrame> mouthFrames = new ArrayList<MouthSyncManager.MouthFrame>();
+        List<MouthSyncController.MouthFrame> controllerMouthFrames = new ArrayList<MouthSyncController.MouthFrame>();
     }
 
     private static class VisitEndResult {
@@ -9902,18 +12548,28 @@ public class MainActivity extends Activity {
     }
 
     private static class RouteInfo {
+        String schemaVersion = "";
         String planId = "";
+        String routeId = "";
+        String originalRouteId = "";
+        boolean localRouteIdGenerated = false;
         String routeName = "";
         String reason = "";
+        String recommendReason = "";
+        String profileVersion = "";
         String totalDistanceM = "";
         String estimatedDurationMin = "";
         String mapAction = "";
         String routeMapReady = "";
         String routeMode = "";
         String visitStatus = "";
+        String algorithmVersion = "";
+        boolean routeIntent = false;
+        boolean hasShouldShowRouteCard = false;
         boolean shouldShowRouteCard = false;
         boolean isOfficialTemplate = false;
         RoutePreviewData preview;
+        List<String> matchedTags = new ArrayList<>();
         List<LatLng> rawPolylinePoints = new ArrayList<>();
         List<RouteNode> nodes = new ArrayList<>();
     }
@@ -9925,10 +12581,16 @@ public class MainActivity extends Activity {
         int orderNumber = 0;
         String scenicId = "";
         String spotId = "";
+        String facilityId = "";
+        String sceneCode = "";
+        String nodeType = "";
         String spotName = "";
         String scenicName = "";
+        String displayName = "";
         String guideText = "";
         String recommendedStayMin = "";
+        String distanceFromPreviousMeters = "";
+        String estimatedWalkMinutes = "";
         String latitude = "";
         String longitude = "";
         double latitudeValue = Double.NaN;

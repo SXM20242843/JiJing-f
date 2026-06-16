@@ -5,10 +5,50 @@
       <view class="hero-bg-circle hero-bg-circle-2"></view>
 
       <view class="hero-content">
-        <view class="hero-badge">AI DIGITAL GUIDE</view>
-        <view class="hero-title">AI数字人智慧导览使用指南</view>
+        <view class="hero-badge">JIJING SMART GUIDE</view>
+        <view class="hero-title">即境三阶段智慧导览流程</view>
         <view class="hero-subtitle">
-          面向景区游客提供智能讲解、语音问答、路线咨询与个性化导览服务
+          覆盖游览前规划、现场 AI 数字人导览、游览后报告生成，形成完整智慧文旅闭环。
+        </view>
+      </view>
+    </view>
+
+    <view class="section-header">
+      <view class="section-title">三阶段闭环</view>
+      <view class="section-more">完整体验链路</view>
+    </view>
+
+    <view class="stage-list">
+      <view class="stage-card card stage-before">
+        <view class="stage-index">01</view>
+        <view class="stage-main">
+          <view class="stage-tag">游览前</view>
+          <view class="stage-title">行前规划</view>
+          <view class="stage-desc">
+            未到达景区时，可通过首页、景区列表和 AI 助手查询景区信息、了解景点内容、咨询路线建议。
+          </view>
+        </view>
+      </view>
+
+      <view class="stage-card card stage-onsite">
+        <view class="stage-index">02</view>
+        <view class="stage-main">
+          <view class="stage-tag">现场中</view>
+          <view class="stage-title">AI 数字人现场导览</view>
+          <view class="stage-desc">
+            到达景区后，可结合 GPS/NFC 或演示进入景区开启现场导览，体验数字人讲解、语音问答和路线推荐。
+          </view>
+        </view>
+      </view>
+
+      <view class="stage-card card stage-report">
+        <view class="stage-index">03</view>
+        <view class="stage-main">
+          <view class="stage-tag">游览后</view>
+          <view class="stage-title">自动生成游玩报告</view>
+          <view class="stage-desc">
+            结束导览后，系统会汇总景点停留、AI 对话、路线记录、消费记录等信息，生成本次游玩报告。
+          </view>
         </view>
       </view>
     </view>
@@ -20,42 +60,54 @@
 
     <view class="ability-grid">
       <view class="ability-card card">
+        <view class="ability-icon">🧭</view>
+        <view class="ability-title">行前规划</view>
+        <view class="ability-desc">支持景区查询、景点了解、路线咨询和出行建议。</view>
+      </view>
+
+      <view class="ability-card card">
         <view class="ability-icon">🤖</view>
         <view class="ability-title">数字人讲解</view>
-        <view class="ability-desc">通过 AI 数字人提供更自然的景区讲解体验</view>
+        <view class="ability-desc">进入现场导览后，由 AI 数字人提供沉浸式讲解。</view>
       </view>
 
       <view class="ability-card card">
         <view class="ability-icon">🎙️</view>
         <view class="ability-title">语音问答</view>
-        <view class="ability-desc">支持文字与语音提问，提升游客交互效率</view>
+        <view class="ability-desc">支持文字与语音提问，获取景区讲解和游客服务回答。</view>
       </view>
 
       <view class="ability-card card">
-        <view class="ability-icon">🧭</view>
-        <view class="ability-title">智能导览</view>
-        <view class="ability-desc">结合景区内容，为游客提供导览与咨询服务</view>
+        <view class="ability-icon">🗺️</view>
+        <view class="ability-title">路线推荐</view>
+        <view class="ability-desc">明确提出路线需求后，系统生成推荐路线和节点讲解。</view>
       </view>
 
       <view class="ability-card card">
         <view class="ability-icon">📍</view>
-        <view class="ability-title">景点讲解</view>
-        <view class="ability-desc">支持在景区或景点详情页发起专属讲解</view>
+        <view class="ability-title">位置识别</view>
+        <view class="ability-desc">到达景区后可结合 GPS/NFC 识别当前位置并触发现场导览。</view>
+      </view>
+
+      <view class="ability-card card">
+        <view class="ability-icon">📊</view>
+        <view class="ability-title">游玩报告</view>
+        <view class="ability-desc">结束导览后，自动沉淀本次游玩记录和报告内容。</view>
       </view>
     </view>
 
     <view class="section-header">
       <view class="section-title">推荐使用流程</view>
-      <view class="section-more">4步快速体验</view>
+      <view class="section-more">6步完整体验</view>
     </view>
 
     <view class="process-card card">
       <view class="process-item">
         <view class="process-index">01</view>
         <view class="process-main">
-          <view class="process-title">浏览景区内容</view>
+          <view class="process-title">游览前查询景区</view>
           <view class="process-desc">
-            在首页点击“景区导览”，查看全部景区或热门推荐景区。
+            在首页、景区列表或 AI 助手中查看热门景区、景点详情和基础服务信息。
           </view>
         </view>
       </view>
@@ -63,9 +115,9 @@
       <view class="process-item">
         <view class="process-index">02</view>
         <view class="process-main">
-          <view class="process-title">进入景区或景点详情</view>
+          <view class="process-title">进行行前规划</view>
           <view class="process-desc">
-            查看景区简介、景点数量、热度标签和相关说明内容。
+            可向 AI 助手提问，例如“介绍灵山胜境”或“帮我规划灵山胜境路线”。
           </view>
         </view>
       </view>
@@ -73,9 +125,9 @@
       <view class="process-item">
         <view class="process-index">03</view>
         <view class="process-main">
-          <view class="process-title">发起 AI 数字人讲解</view>
+          <view class="process-title">到达景区并开启导览</view>
           <view class="process-desc">
-            点击“AI讲解”后，系统会携带当前景区信息进入 AI 导览助手。
+            APP 识别进入景区后，可提交本次出行信息并开启 AI 数字人现场导览。
           </view>
         </view>
       </view>
@@ -83,9 +135,29 @@
       <view class="process-item">
         <view class="process-index">04</view>
         <view class="process-main">
-          <view class="process-title">文字或语音提问</view>
+          <view class="process-title">现场景点讲解与问答</view>
           <view class="process-desc">
-            游客可以通过文字或语音向 AI 数字人提问，获取景区讲解与出行建议。
+            到达景点后可获取景点讲解，也可以通过文字或语音向数字人继续提问。
+          </view>
+        </view>
+      </view>
+
+      <view class="process-item">
+        <view class="process-index">05</view>
+        <view class="process-main">
+          <view class="process-title">按需生成路线推荐</view>
+          <view class="process-desc">
+            需要路线时，主动提出“推荐路线”或“规划路线”，系统才会生成路线卡片。
+          </view>
+        </view>
+      </view>
+
+      <view class="process-item">
+        <view class="process-index">06</view>
+        <view class="process-main">
+          <view class="process-title">结束导览查看报告</view>
+          <view class="process-desc">
+            点击结束导览后，系统会生成游玩报告，可查看景点停留、AI 对话、路线和消费记录。
           </view>
         </view>
       </view>
@@ -93,16 +165,36 @@
 
     <view class="section-header">
       <view class="section-title">功能说明</view>
-      <view class="section-more">常用操作</view>
+      <view class="section-more">常见问题</view>
     </view>
 
     <view class="help-card card">
       <view class="help-item">
-        <view class="help-icon">🤖</view>
+        <view class="help-icon">💬</view>
         <view class="help-main">
-          <view class="help-title">如何进入 AI 导览？</view>
+          <view class="help-title">AI 助手和现场导览有什么区别？</view>
           <view class="help-desc">
-            可以在首页点击“AI助手”，也可以在景区详情或景点详情页中点击“AI讲解”，进入数字人导览页面。
+            AI 助手主要用于游览前咨询和规划；现场导览需要进入景区后开启，会创建本次导览并记录游玩过程。
+          </view>
+        </view>
+      </view>
+
+      <view class="help-item">
+        <view class="help-icon">📍</view>
+        <view class="help-main">
+          <view class="help-title">如何开启现场导览？</view>
+          <view class="help-desc">
+            到达景区后，首页会提示开启智能导览；演示时也可以点击首页“演示进入景区”体验完整流程。
+          </view>
+        </view>
+      </view>
+
+      <view class="help-item">
+        <view class="help-icon">🗺️</view>
+        <view class="help-main">
+          <view class="help-title">为什么没有自动弹出路线？</view>
+          <view class="help-desc">
+            普通景点讲解不会自动生成路线。只有明确提出“推荐路线”或“规划路线”时，才会生成路线建议。
           </view>
         </view>
       </view>
@@ -110,50 +202,45 @@
       <view class="help-item">
         <view class="help-icon">🎙️</view>
         <view class="help-main">
-          <view class="help-title">如何语音提问？</view>
+          <view class="help-title">语音问答失败怎么办？</view>
           <view class="help-desc">
-            进入 AI 数字人导览页面后，点击语音按钮开始提问，系统会识别游客问题并生成讲解回答。
+            请检查麦克风权限、网络连接和语音服务状态；也可以切换为文字输入继续提问。
           </view>
         </view>
       </view>
 
       <view class="help-item">
-        <view class="help-icon">⭐</view>
+        <view class="help-icon">📊</view>
         <view class="help-main">
-          <view class="help-title">如何收藏景区或景点？</view>
+          <view class="help-title">在哪里查看游玩报告？</view>
           <view class="help-desc">
-            在景区或景点详情页点击收藏按钮，即可将当前内容加入收藏，方便后续快速查看。
-          </view>
-        </view>
-      </view>
-
-      <view class="help-item">
-        <view class="help-icon">👤</view>
-        <view class="help-main">
-          <view class="help-title">如何查看个人记录？</view>
-          <view class="help-desc">
-            进入“个人中心”，可以查看我的收藏、浏览记录、AI 咨询记录等个人使用信息。
+            结束导览后会自动进入报告页，也可以在首页的报告卡片或个人中心入口查看历史记录。
           </view>
         </view>
       </view>
     </view>
 
     <view class="tips-card card">
-      <view class="tips-title">使用建议</view>
+      <view class="tips-title">演示建议</view>
       <view class="tips-desc">
-        推荐在景区详情页或景点详情页中发起 AI 数字人讲解，这样系统可以结合当前景区内容生成更准确、更贴近场景的回答。
+        比赛演示时建议按“游览前问 AI → 演示进入景区 → 开启现场导览 → 推荐路线 → 结束导览查看报告”的顺序展示，更容易体现完整闭环。
       </view>
     </view>
 
-    <view class="action-card card" @click="goGuide">
-      <view class="action-left">
-        <view class="action-icon">AI</view>
+    <view class="action-card card">
+      <view class="action-header">
+        <view class="action-icon">即</view>
         <view class="action-info">
-          <view class="action-title">立即体验 AI 数字人导览</view>
-          <view class="action-desc">进入导览助手，开始智能讲解与语音问答</view>
+          <view class="action-title">开始使用即境导览</view>
+          <view class="action-desc">先做行前规划，或回到首页体验现场导览闭环。</view>
         </view>
       </view>
-      <view class="action-btn">进入</view>
+
+      <view class="action-buttons">
+        <view class="action-btn primary" @click="goGuide">打开 AI 助手</view>
+        <view class="action-btn" @click="goScenicList">查看景区列表</view>
+        <view class="action-btn ghost" @click="goHome">回到首页</view>
+      </view>
     </view>
   </view>
 </template>
@@ -162,6 +249,18 @@
 function goGuide() {
   uni.switchTab({
     url: '/pages/guide/guide'
+  })
+}
+
+function goScenicList() {
+  uni.switchTab({
+    url: '/pages/scenic/scenic'
+  })
+}
+
+function goHome() {
+  uni.switchTab({
+    url: '/pages/index/index'
   })
 }
 </script>
@@ -254,6 +353,76 @@ function goGuide() {
 .section-more {
   font-size: 23rpx;
   color: #9ca3af;
+}
+
+.stage-list {
+  margin-bottom: 28rpx;
+}
+
+.stage-card {
+  display: flex;
+  padding: 26rpx 24rpx;
+  margin-bottom: 18rpx;
+  border: 1rpx solid rgba(47, 128, 237, 0.08);
+}
+
+.stage-card:last-child {
+  margin-bottom: 0;
+}
+
+.stage-index {
+  width: 72rpx;
+  height: 72rpx;
+  border-radius: 24rpx;
+  background: #eff6ff;
+  color: #2f80ed;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26rpx;
+  font-weight: 800;
+  margin-right: 22rpx;
+  flex-shrink: 0;
+}
+
+.stage-main {
+  flex: 1;
+}
+
+.stage-tag {
+  display: inline-flex;
+  padding: 5rpx 14rpx;
+  border-radius: 999rpx;
+  background: #eff6ff;
+  color: #2f80ed;
+  font-size: 21rpx;
+  margin-bottom: 8rpx;
+}
+
+.stage-title {
+  font-size: 30rpx;
+  font-weight: 800;
+  color: #1f2937;
+  line-height: 1.45;
+}
+
+.stage-desc {
+  margin-top: 8rpx;
+  font-size: 24rpx;
+  color: #6b7280;
+  line-height: 1.7;
+}
+
+.stage-onsite .stage-index,
+.stage-onsite .stage-tag {
+  background: #ecfdf5;
+  color: #16a34a;
+}
+
+.stage-report .stage-index,
+.stage-report .stage-tag {
+  background: #fff7ed;
+  color: #ea580c;
 }
 
 .ability-grid {
@@ -392,16 +561,12 @@ function goGuide() {
 
 .action-card {
   padding: 26rpx 24rpx;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
   margin-bottom: 30rpx;
 }
 
-.action-left {
+.action-header {
   display: flex;
   align-items: center;
-  flex: 1;
 }
 
 .action-icon {
@@ -437,13 +602,31 @@ function goGuide() {
   line-height: 1.5;
 }
 
+.action-buttons {
+  display: flex;
+  gap: 14rpx;
+  margin-top: 24rpx;
+}
+
 .action-btn {
-  flex-shrink: 0;
-  margin-left: 16rpx;
-  padding: 14rpx 24rpx;
+  flex: 1;
+  height: 72rpx;
   border-radius: 999rpx;
+  background: #f3f4f6;
+  color: #4b5563;
+  font-size: 24rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.action-btn.primary {
   background: #2f80ed;
   color: #ffffff;
-  font-size: 24rpx;
+}
+
+.action-btn.ghost {
+  background: #ecfdf5;
+  color: #16a34a;
 }
 </style>

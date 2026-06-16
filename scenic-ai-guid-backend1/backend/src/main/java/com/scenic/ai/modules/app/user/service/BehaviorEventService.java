@@ -115,6 +115,11 @@ public class BehaviorEventService {
                 extraMap.put("planId", request.getPlanIdText());
             }
 
+            if (!request.getRouteIdText().isEmpty()) {
+                extraMap.put("routeId", request.getRouteIdText());
+                extraMap.put("route_id", request.getRouteIdText());
+            }
+
             if (!request.getRouteNameText().isEmpty()) {
                 extraMap.put("routeName", request.getRouteNameText());
             }

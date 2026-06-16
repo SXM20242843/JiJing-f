@@ -45,6 +45,8 @@ public class BehaviorEventRequest {
     public String planId;
     public String route_plan_id;
     public String routePlanId;
+    public String route_id;
+    public String routeId;
 
     public String route_name;
     public String routeName;
@@ -164,10 +166,13 @@ public class BehaviorEventRequest {
     public String getEntityIdText() {
         if (entity_id != null && !entity_id.trim().isEmpty()) return entity_id.trim();
         if (entityId != null && !entityId.trim().isEmpty()) return entityId.trim();
+        String routeIdText = getRouteIdText();
+        if ("ROUTE".equalsIgnoreCase(getEntityTypeText()) && !routeIdText.isEmpty()) return routeIdText;
         String sceneCodeText = getSceneCodeText();
         if (!sceneCodeText.isEmpty()) return sceneCodeText;
         String areaCodeText = getAreaCodeText();
         if (!areaCodeText.isEmpty()) return areaCodeText;
+        if (!routeIdText.isEmpty()) return routeIdText;
         return "";
     }
 
@@ -195,6 +200,12 @@ public class BehaviorEventRequest {
         if (planId != null && !planId.trim().isEmpty()) return planId.trim();
         if (route_plan_id != null && !route_plan_id.trim().isEmpty()) return route_plan_id.trim();
         if (routePlanId != null && !routePlanId.trim().isEmpty()) return routePlanId.trim();
+        return "";
+    }
+
+    public String getRouteIdText() {
+        if (route_id != null && !route_id.trim().isEmpty()) return route_id.trim();
+        if (routeId != null && !routeId.trim().isEmpty()) return routeId.trim();
         return "";
     }
 

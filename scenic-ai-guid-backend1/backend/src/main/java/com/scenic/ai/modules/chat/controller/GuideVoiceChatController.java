@@ -102,6 +102,12 @@ public class GuideVoiceChatController {
             @RequestParam(value = "current_longitude", required = false) String currentLongitudeSnake,
             @RequestParam(value = "locationContext", required = false) String locationContextCamel,
             @RequestParam(value = "location_context", required = false) String locationContextSnake,
+            @RequestParam(value = "availableMinutes", required = false) String availableMinutesCamel,
+            @RequestParam(value = "available_minutes", required = false) String availableMinutesSnake,
+            @RequestParam(value = "estimatedDuration", required = false) String estimatedDurationCamel,
+            @RequestParam(value = "estimated_duration", required = false) String estimatedDurationSnake,
+            @RequestParam(value = "travelParty", required = false) String travelPartyCamel,
+            @RequestParam(value = "travel_party", required = false) String travelPartySnake,
 
             // ========== 新增三个表单字段 ==========
             @RequestParam(value = "groupSize", required = false) String groupSize,
@@ -147,6 +153,13 @@ public class GuideVoiceChatController {
         String finalLatitude = firstNotBlank(latitude, lat, currentLatitudeCamel, currentLatitudeSnake);
         String finalLongitude = firstNotBlank(longitude, lng, lon, currentLongitudeCamel, currentLongitudeSnake);
         String finalLocationContext = firstNotBlank(locationContextCamel, locationContextSnake);
+        Integer finalAvailableMinutes = parseAvailableMinutes(firstNotBlank(
+                availableMinutesCamel,
+                availableMinutesSnake,
+                estimatedDurationCamel,
+                estimatedDurationSnake
+        ));
+        String finalTravelParty = firstNotBlank(travelPartyCamel, travelPartySnake);
 
         // 解析三个新字段
         String finalGroupSize = firstNotBlank(groupSize, groupSizeSnake);
@@ -154,7 +167,7 @@ public class GuideVoiceChatController {
         String finalVisitPreference = firstNotBlank(visitPreference, visitPreferenceSnake);
 
         try {
-            finalUserId = appUserService.resolveRequiredUserId(
+            finalUserId = resolveGuideVoiceUserId(
                     authorization,
                     firstNotBlank(finalUserId, finalLoginUserId, finalVisitorId)
             );
@@ -197,7 +210,9 @@ public class GuideVoiceChatController {
                 finalIsInsideArea,
                 finalLatitude,
                 finalLongitude,
-                finalLocationContext
+                finalLocationContext,
+                finalAvailableMinutes,
+                finalTravelParty
         );
 
         return ApiResponse.success(response);
@@ -219,6 +234,25 @@ public class GuideVoiceChatController {
         return null;
     }
 
+    private String resolveGuideVoiceUserId(String authorization, String providedUserId) {
+        try {
+            return appUserService.resolveRequiredUserId(authorization, providedUserId);
+        } catch (IllegalArgumentException e) {
+            if (isAnonymousLike(providedUserId)) {
+                return firstNotBlank(providedUserId, "anonymous");
+            }
+            throw e;
+        }
+    }
+
+    private boolean isAnonymousLike(String userId) {
+        String value = userId == null ? "" : userId.trim().toLowerCase();
+        return value.isEmpty()
+                || "anonymous".equals(value)
+                || value.startsWith("visitor_")
+                || value.startsWith("android-live2d-");
+    }
+
     private Long parseLong(String value) {
         if (value == null || value.trim().isEmpty()) {
             return null;
@@ -226,6 +260,32 @@ public class GuideVoiceChatController {
 
         try {
             return Long.parseLong(value.trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private Integer parseAvailableMinutes(String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return null;
+        }
+        String text = value.trim();
+        if (text.contains("全天")) {
+            return 360;
+        }
+        if (text.contains("半天")) {
+            return 180;
+        }
+        String digits = text.replaceAll("[^0-9]", "");
+        if (digits.isEmpty()) {
+            return null;
+        }
+        try {
+            int number = Integer.parseInt(digits);
+            if (text.contains("小时")) {
+                return number * 60;
+            }
+            return number;
         } catch (NumberFormatException e) {
             return null;
         }

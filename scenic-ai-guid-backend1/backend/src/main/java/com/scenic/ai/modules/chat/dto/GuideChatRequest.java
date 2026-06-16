@@ -1,6 +1,8 @@
 package com.scenic.ai.modules.chat.dto;
 
 import com.fasterxml.jackson.annotation.JsonAlias;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
 
@@ -11,6 +13,8 @@ import java.util.Map;
 @Data
 public class GuideChatRequest {
 
+    private static final ObjectMapper FLEXIBLE_OBJECT_MAPPER = new ObjectMapper();
+
     @JsonAlias({"session_id"})
     private String sessionId;
 
@@ -19,6 +23,9 @@ public class GuideChatRequest {
 
     @JsonAlias({"visit_id"})
     private String visitId;
+
+    @JsonAlias({"visit_no", "visitNo"})
+    private String visitNo;
 
     @JsonAlias({"mode", "guide_mode", "guideMode"})
     private String mode;
@@ -43,6 +50,9 @@ public class GuideChatRequest {
 
     @NotBlank(message = "问题不能为空")
     private String question;
+
+    @JsonAlias({"raw_question", "rawQuestion"})
+    private String rawQuestion;
 
     @JsonAlias({"scenic_name"})
     private String scenicName;
@@ -94,6 +104,8 @@ public class GuideChatRequest {
     @JsonAlias({"route", "is_route", "isRoute"})
     private Boolean route;
 
+    private Object routePayload;
+
     @JsonAlias({"route_intent", "routeIntent"})
     private Boolean routeIntent;
 
@@ -112,17 +124,30 @@ public class GuideChatRequest {
     @JsonAlias({"is_inside_area", "isInsideArea"})
     private Boolean isInsideArea;
 
+    private Object context;
+
     @JsonAlias({"location_context", "locationContext"})
-    private Map<String, Object> locationContext;
+    private Object locationContext;
 
     @JsonAlias({"network_context", "networkContext"})
-    private Map<String, Object> networkContext;
+    private Object networkContext;
+
+    private Object options;
+
+    @JsonAlias({"short_term_context", "shortTermContext"})
+    private Object shortTermContext;
 
     @JsonAlias({"preference_tags", "preferenceTags"})
     private List<String> preferenceTags;
 
     @JsonAlias({"available_minutes", "availableMinutes"})
     private Integer availableMinutes;
+
+    @JsonAlias({"remaining_minutes", "remainingMinutes"})
+    private Integer remainingMinutes;
+
+    @JsonAlias({"travel_party", "travelParty"})
+    private Object travelParty;
 
     @JsonAlias({"user_profile", "userProfile"})
     private Object userProfile;
@@ -141,6 +166,20 @@ public class GuideChatRequest {
 
     @JsonAlias({"recent_behaviors", "recentBehaviors"})
     private Object recentBehaviors;
+
+    private Object location;
+
+    @JsonAlias({"accuracy_meters", "accuracyMeters", "gps_accuracy_m", "gpsAccuracyM"})
+    private BigDecimal accuracyMeters;
+
+    @JsonAlias({"current_spot", "currentSpot"})
+    private Object currentSpot;
+
+    @JsonAlias({"profile_snapshot", "profileSnapshot"})
+    private Object profileSnapshot;
+
+    @JsonAlias({"current_visit_context", "currentVisitContext"})
+    private Object currentVisitContext;
 
     // ========== 新增三个表单字段 ==========
     @JsonAlias({"group_size"})
@@ -251,6 +290,101 @@ public class GuideChatRequest {
                 parkId = text;
             }
         }
+    }
+
+    public void setClientContext(Object value) {
+        this.clientContext = toFlexibleMap(value);
+    }
+
+    public void setRoute(Object value) {
+        this.routePayload = normalizeFlexibleObject(value);
+        this.route = readRouteEnabled(value);
+    }
+
+    private Boolean readRouteEnabled(Object value) {
+        if (value instanceof Boolean bool) {
+            return bool;
+        }
+        if (value instanceof Number number) {
+            return number.intValue() != 0;
+        }
+        Object normalized = normalizeFlexibleObject(value);
+        if (normalized instanceof Map<?, ?> rawMap) {
+            Object enabled = firstMapValue(rawMap, "enabled", "route", "isRoute", "is_route");
+            if (enabled != null) {
+                return readBooleanValue(enabled);
+            }
+            return null;
+        }
+        return readBooleanValue(normalized);
+    }
+
+    private Boolean readBooleanValue(Object value) {
+        if (value instanceof Boolean bool) {
+            return bool;
+        }
+        if (value instanceof Number number) {
+            return number.intValue() != 0;
+        }
+        if (value == null) {
+            return null;
+        }
+        String text = String.valueOf(value).trim().toLowerCase();
+        if ("true".equals(text) || "1".equals(text) || "yes".equals(text) || "y".equals(text) || "是".equals(text)) {
+            return true;
+        }
+        if ("false".equals(text) || "0".equals(text) || "no".equals(text) || "n".equals(text) || "否".equals(text)) {
+            return false;
+        }
+        return null;
+    }
+
+    private Object firstMapValue(Map<?, ?> map, String... keys) {
+        if (map == null || keys == null) {
+            return null;
+        }
+        for (String key : keys) {
+            if (map.containsKey(key)) {
+                return map.get(key);
+            }
+        }
+        return null;
+    }
+
+    private Map<String, Object> toFlexibleMap(Object value) {
+        Object normalized = normalizeFlexibleObject(value);
+        if (normalized instanceof Map<?, ?> rawMap) {
+            return FLEXIBLE_OBJECT_MAPPER.convertValue(rawMap, new TypeReference<Map<String, Object>>() {
+            });
+        }
+        if (normalized == null) {
+            return null;
+        }
+        Map<String, Object> fallback = new java.util.LinkedHashMap<>();
+        fallback.put("_raw", normalized);
+        return fallback;
+    }
+
+    private Object normalizeFlexibleObject(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (!(value instanceof String text)) {
+            return value;
+        }
+        String trimmed = text.trim();
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+        if ((trimmed.startsWith("{") && trimmed.endsWith("}"))
+                || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
+            try {
+                return FLEXIBLE_OBJECT_MAPPER.readValue(trimmed, Object.class);
+            } catch (Exception ignored) {
+                return trimmed;
+            }
+        }
+        return trimmed;
     }
 
     private String firstNotBlank(String... values) {

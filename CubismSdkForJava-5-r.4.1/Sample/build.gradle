@@ -77,5 +77,6 @@ dependencies {
     implementation project(":Framework:framework")
     implementation(fileTree(dir: '../Core/android', include: ['Live2DCubismCore.aar']))
 
+    implementation 'com.squareup.okhttp3:okhttp:3.12.13'
     implementation 'com.amap.api:3dmap-location-search:10.1.200_loc6.4.9_sea9.7.4'
 }
