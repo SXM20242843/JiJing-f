@@ -4706,6 +4706,19 @@ public class MainActivity extends Activity {
         route.isOfficialTemplate = getBooleanCompat(routeJson, "is_official_template", "isOfficialTemplate");
         route.algorithmVersion = getJsonText(routeJson, "algorithmVersion", "algorithm_version");
         route.rawPolylinePoints.addAll(parseRoutePolyline(routeJson));
+        if (route.rawPolylinePoints.size() >= 2) {
+            if (hasJsonKey(routeJson,
+                    "routePolyline", "route_polyline",
+                    "walkingPolyline", "walking_polyline",
+                    "amapPolyline", "amap_polyline",
+                    "mapPolyline", "map_polyline",
+                    "roadPolyline", "road_polyline",
+                    "polyline")) {
+                Log.d(TAG, "[RouteMap] using backend routePolyline points=" + route.rawPolylinePoints.size());
+            } else if (hasJsonKey(routeJson, "segments")) {
+                Log.d(TAG, "[RouteMap] using backend segments realPolylinePoints=" + route.rawPolylinePoints.size());
+            }
+        }
 
         JSONArray nodesArray = getJsonArray(routeJson,
                 "nodes",
@@ -4934,6 +4947,10 @@ public class MainActivity extends Activity {
         }
         if (value instanceof JSONObject) {
             JSONObject object = (JSONObject) value;
+            if (isFallbackRoutePolylineObject(object)) {
+                Log.d(TAG, "[RouteMap] ignore fallback route polyline object success=false/fallback=true");
+                return;
+            }
             double lat = parseDoubleOrNaN(getJsonText(object, "latitude", "lat"));
             double lon = parseDoubleOrNaN(getJsonText(object, "longitude", "lng", "lon"));
             if (isValidCoordinate(lat, lon)) {
@@ -4945,7 +4962,7 @@ public class MainActivity extends Activity {
                     "routePolyline", "route_polyline",
                     "walkingPolyline", "walking_polyline",
                     "amapPolyline", "amap_polyline",
-                    "path", "paths"
+                    "path", "paths", "segments", "steps"
             };
             for (String key : nestedKeys) {
                 if (object.has(key) && !object.isNull(key)) {
@@ -4978,6 +4995,21 @@ public class MainActivity extends Activity {
                 appendLatLngDedup(points, new LatLng(second, first));
             }
         }
+    }
+
+    private boolean isFallbackRoutePolylineObject(JSONObject object) {
+        if (object == null) {
+            return false;
+        }
+        if (hasJsonKey(object, "success", "successful") && !getBooleanCompat(object, "success", "successful")) {
+            return true;
+        }
+        if (getBooleanCompat(object, "fallback", "fallbackLine", "fallback_line", "isFallback", "is_fallback")) {
+            return true;
+        }
+        String source = getJsonText(object, "source", "routeMapSource", "route_map_source");
+        return "node_fallback".equalsIgnoreCase(source)
+                || "fallback".equalsIgnoreCase(source);
     }
 
     private String getJsonText(JSONObject object, String... keys) {
@@ -5334,16 +5366,28 @@ public class MainActivity extends Activity {
             currentRoutePreview = preview;
         }
 
+        final String routeId = getProvidedRouteId(route);
+        final List<RouteNode> effectiveRouteNodes = buildRoutePlanningNodes(preview.routePreviewStartPoint, route);
+        final List<RouteNode> locatedNodes = filterLocatedNodes(effectiveRouteNodes);
+        final int missingCoords = Math.max(0, effectiveRouteNodes.size() - locatedNodes.size());
+        Log.d(TAG, "[RouteMap] open routeId=" + routeId
+                + ", effectiveNodes=" + effectiveRouteNodes.size()
+                + ", nodesWithCoords=" + locatedNodes.size()
+                + ", missingCoords=" + missingCoords);
+
         int rawPolylineStartIndex = findRouteNodeIndex(route.nodes, preview.routePreviewStartPoint);
-        if (shouldUseRawRoutePolyline(route, preview)) {
+        List<LatLng> existingPolylinePoints = getEffectiveRawRoutePolylinePoints(route, preview);
+        if (existingPolylinePoints.size() >= 2) {
             preview.calculating = false;
             preview.amapRouteReady = true;
             preview.partialFallback = false;
             preview.message = "已生成高德步行路线";
             preview.polylinePoints.clear();
-            preview.polylinePoints.addAll(route.rawPolylinePoints);
-            Log.d(TAG, "[RouteMap] use existing polyline points="
-                    + route.rawPolylinePoints.size());
+            preview.polylinePoints.addAll(existingPolylinePoints);
+            Log.d(TAG, "[RouteMap] use existing polyline source=backend_route_polyline points="
+                    + existingPolylinePoints.size()
+                    + ", rawPoints=" + route.rawPolylinePoints.size()
+                    + ", startIndex=" + rawPolylineStartIndex);
             updateRouteCard(preview);
             drawRouteOnMap(preview);
             if (routeExpandedOverlay != null) {
@@ -5351,12 +5395,15 @@ public class MainActivity extends Activity {
             }
             return;
         } else if (route.rawPolylinePoints != null && route.rawPolylinePoints.size() >= 2) {
-            Log.d(TAG, "[RouteMap] skip raw polyline reason=start_index_shifted, startIndex=" + rawPolylineStartIndex);
+            LatLng startLatLng = toLatLng(preview.routePreviewStartPoint);
+            Log.d(TAG, "[RouteMap] skip raw polyline reason=start_mismatch"
+                    + ", startIndex=" + rawPolylineStartIndex
+                    + ", nearestDistanceM=" + formatDistanceMeterForLog(
+                    getNearestPolylineDistanceMeters(route.rawPolylinePoints, startLatLng))
+                    + ", rawPoints=" + route.rawPolylinePoints.size());
         }
 
         final int requestSeq = ++routePreviewRequestSeq;
-        final List<RouteNode> planningNodes = buildRoutePlanningNodes(preview.routePreviewStartPoint, route);
-        final List<RouteNode> locatedNodes = filterLocatedNodes(planningNodes);
 
         if (locatedNodes.size() < 2) {
             preview.calculating = false;
@@ -5364,7 +5411,11 @@ public class MainActivity extends Activity {
             preview.partialFallback = true;
             preview.message = "当前路线缺少景点坐标，暂按推荐顺序模拟导览";
             preview.polylinePoints.clear();
-            Log.d(TAG, "[RouteMap] fallback nodes only, skip direct polyline reason=located_nodes_lt_2");
+            Log.d(TAG, "[RouteMap] fallback nodes only, skip direct polyline reason=located_nodes_lt_2"
+                    + ", routeId=" + routeId
+                    + ", effectiveNodes=" + effectiveRouteNodes.size()
+                    + ", nodesWithCoords=" + locatedNodes.size()
+                    + ", missingCoords=" + missingCoords);
             drawRouteOnMap(preview);
             updateRouteCard(preview);
             return;
@@ -5378,6 +5429,8 @@ public class MainActivity extends Activity {
         updateRouteCard(preview);
         Log.d(TAG, "[RouteMap] fallback nodes only, skip direct polyline reason=waiting_amap");
         drawRouteOnMap(preview);
+        Log.d(TAG, "[RouteMap] start build amap walking route routeId=" + routeId);
+        Log.d(TAG, "[RouteMap] no backend real polyline, fallback android RouteSearchV2; check backend [AmapWalk] logs for status/info/infocode");
 
         if (routeAMap == null || routeMapView == null) {
             preview.calculating = false;
@@ -5390,10 +5443,10 @@ public class MainActivity extends Activity {
             return;
         }
 
-        requestWalkingRouteSegments(requestSeq, preview, locatedNodes);
+        requestWalkingRouteSegments(requestSeq, preview, locatedNodes, routeId);
     }
 
-    private void requestWalkingRouteSegments(int requestSeq, RoutePreviewData preview, List<RouteNode> locatedNodes) {
+    private void requestWalkingRouteSegments(int requestSeq, RoutePreviewData preview, List<RouteNode> locatedNodes, String routeId) {
         try {
             ServiceSettings.updatePrivacyShow(this, true, true);
             ServiceSettings.updatePrivacyAgree(this, true);
@@ -5421,11 +5474,20 @@ public class MainActivity extends Activity {
             final RouteNode toNode = locatedNodes.get(i + 1);
             final LatLng from = toLatLng(fromNode);
             final LatLng to = toLatLng(toNode);
+            Log.d(TAG, "[RouteMap] segment index=" + segmentIndex
+                    + ", from=" + getRouteNodeName(fromNode) + "(" + formatLngLatForAmap(from) + ")"
+                    + ", to=" + getRouteNodeName(toNode) + "(" + formatLngLatForAmap(to) + ")");
 
             if (from == null || to == null) {
+                Log.d(TAG, "[RouteMap] segment index=" + segmentIndex
+                        + " response status=missing_coords, info=invalid coordinate, paths=0, steps=0");
+                Log.d(TAG, "[RouteMap] segment index=" + segmentIndex + " polylinePoints=0");
                 finishRouteSegment(state, segmentIndex, buildFallbackSegment(from, to));
                 continue;
             }
+            Log.d(TAG, "[RouteMap] segment index=" + segmentIndex
+                    + " request origin=" + formatLngLatForAmap(from)
+                    + " destination=" + formatLngLatForAmap(to));
 
             final boolean[] completedByCallback = new boolean[]{false};
             if (mainHandler != null) {
@@ -5434,6 +5496,9 @@ public class MainActivity extends Activity {
                     public void run() {
                         if (!completedByCallback[0]) {
                             completedByCallback[0] = true;
+                            Log.d(TAG, "[RouteMap] segment index=" + segmentIndex
+                                    + " response status=timeout, info=amap walking route timeout, paths=0, steps=0");
+                            Log.d(TAG, "[RouteMap] segment index=" + segmentIndex + " polylinePoints=0");
                             finishRouteSegment(state, segmentIndex, buildFallbackSegment(from, to));
                         }
                     }
@@ -5460,9 +5525,13 @@ public class MainActivity extends Activity {
                         completedByCallback[0] = true;
                         RouteSegmentResult segmentResult;
                         if (errorCode == AMapException.CODE_AMAP_SUCCESS) {
-                            segmentResult = parseWalkRouteResult(result, from, to);
+                            segmentResult = parseWalkRouteResult(result, from, to, segmentIndex);
                         } else {
                             Log.e(TAG, "高德步行路线规划失败 segment=" + segmentIndex + ", errorCode=" + errorCode);
+                            Log.d(TAG, "[RouteMap] segment index=" + segmentIndex
+                                    + " response status=sdk_error, info=errorCode=" + errorCode
+                                    + ", paths=0, steps=0");
+                            Log.d(TAG, "[RouteMap] segment index=" + segmentIndex + " polylinePoints=0");
                             segmentResult = buildFallbackSegment(from, to);
                         }
                         finishRouteSegment(state, segmentIndex, segmentResult);
@@ -5482,21 +5551,37 @@ public class MainActivity extends Activity {
             } catch (Throwable e) {
                 Log.e(TAG, "发起高德步行路线规划异常 segment=" + segmentIndex, e);
                 completedByCallback[0] = true;
+                Log.d(TAG, "[RouteMap] segment index=" + segmentIndex
+                        + " response status=exception, info=" + safeLogText(e.getMessage())
+                        + ", paths=0, steps=0");
+                Log.d(TAG, "[RouteMap] segment index=" + segmentIndex + " polylinePoints=0");
                 finishRouteSegment(state, segmentIndex, buildFallbackSegment(from, to));
             }
         }
     }
 
-    private RouteSegmentResult parseWalkRouteResult(WalkRouteResultV2 result, LatLng from, LatLng to) {
+    private RouteSegmentResult parseWalkRouteResult(WalkRouteResultV2 result, LatLng from, LatLng to, int segmentIndex) {
+        int pathCount = result == null || result.getPaths() == null ? 0 : result.getPaths().size();
+        int stepCount = 0;
         if (result == null || result.getPaths() == null || result.getPaths().size() == 0) {
+            Log.d(TAG, "[RouteMap] segment index=" + segmentIndex
+                    + " response status=sdk_success, info=no paths, paths=0, steps=0");
+            Log.d(TAG, "[RouteMap] segment index=" + segmentIndex + " polylinePoints=0");
             return buildFallbackSegment(from, to);
         }
         Object pathObject = result.getPaths().get(0);
         if (!(pathObject instanceof WalkPath)) {
+            Log.d(TAG, "[RouteMap] segment index=" + segmentIndex
+                    + " response status=sdk_success, info=path type mismatch, paths=" + pathCount + ", steps=0");
+            Log.d(TAG, "[RouteMap] segment index=" + segmentIndex + " polylinePoints=0");
             return buildFallbackSegment(from, to);
         }
 
         WalkPath path = (WalkPath) pathObject;
+        stepCount = path.getSteps() == null ? 0 : path.getSteps().size();
+        Log.d(TAG, "[RouteMap] segment index=" + segmentIndex
+                + " response status=sdk_success, info=OK, paths=" + pathCount
+                + ", steps=" + stepCount);
         RouteSegmentResult segmentResult = new RouteSegmentResult();
         if (path.getSteps() != null) {
             for (Object stepObject : path.getSteps()) {
@@ -5520,6 +5605,7 @@ public class MainActivity extends Activity {
         }
 
         if (segmentResult.points.size() < 2) {
+            Log.d(TAG, "[RouteMap] segment index=" + segmentIndex + " polylinePoints=0");
             return buildFallbackSegment(from, to);
         }
         if (segmentResult.distanceMeter <= 0) {
@@ -5529,18 +5615,14 @@ public class MainActivity extends Activity {
             segmentResult.durationSecond = estimateWalkDurationSecond(segmentResult.distanceMeter);
         }
         segmentResult.fallbackLine = false;
+        Log.d(TAG, "[RouteMap] segment index=" + segmentIndex
+                + " polylinePoints=" + segmentResult.points.size());
         return segmentResult;
     }
 
     private RouteSegmentResult buildFallbackSegment(LatLng from, LatLng to) {
         RouteSegmentResult segmentResult = new RouteSegmentResult();
         segmentResult.fallbackLine = true;
-        if (from != null) {
-            appendLatLngDedup(segmentResult.points, from);
-        }
-        if (to != null) {
-            appendLatLngDedup(segmentResult.points, to);
-        }
         segmentResult.distanceMeter = calculateDistanceMeters(from, to);
         segmentResult.durationSecond = estimateWalkDurationSecond(segmentResult.distanceMeter);
         return segmentResult;
@@ -5625,6 +5707,8 @@ public class MainActivity extends Activity {
             Log.d(TAG, "[RouteMap] use existing polyline source=amap_segments points="
                     + preview.polylinePoints.size());
         }
+        Log.d(TAG, "[RouteMap] finalPolylinePoints="
+                + (preview.polylinePoints == null ? 0 : preview.polylinePoints.size()));
 
         updateRouteCard(preview);
         drawRouteOnMap(preview);
@@ -5884,17 +5968,28 @@ public class MainActivity extends Activity {
             return;
         }
         boolean fallback = currentRoutePreview != null && currentRoutePreview.partialFallback;
+        int polylineWidth = dp(8);
+        Log.d(TAG, "[RouteMap] finalPolylinePoints=" + points.size());
         Polyline polyline = routeAMap.addPolyline(new PolylineOptions()
                 .addAll(points)
-                .width(dp(6))
+                .width(polylineWidth)
                 .color(fallback ? Color.rgb(245, 158, 11) : Color.rgb(47, 128, 237)));
-        routePreviewPolylines.add(polyline);
+        if (polyline != null) {
+            routePreviewPolylines.add(polyline);
+            Log.d(TAG, "[RouteMap] addPolyline success points=" + points.size());
+        } else {
+            Log.w(TAG, "[RouteMap] addPolyline returned null points=" + points.size());
+        }
+        Log.d(TAG, "[RouteMap] polyline object created=" + (polyline != null)
+                + ", width=" + polylineWidth
+                + ", points=" + points.size());
     }
 
     private List<LatLng> getRoutePolylinePoints(RouteInfo route) {
         List<LatLng> result = new ArrayList<>();
-        if (shouldUseRawRoutePolyline(route, currentRoutePreview)) {
-            result.addAll(route.rawPolylinePoints);
+        List<LatLng> rawPoints = getEffectiveRawRoutePolylinePoints(route, currentRoutePreview);
+        if (rawPoints.size() >= 2) {
+            result.addAll(rawPoints);
             return result;
         }
         if (currentRoutePreview != null
@@ -5907,12 +6002,77 @@ public class MainActivity extends Activity {
     }
 
     private boolean shouldUseRawRoutePolyline(RouteInfo route, RoutePreviewData preview) {
+        return getEffectiveRawRoutePolylinePoints(route, preview).size() >= 2;
+    }
+
+    private List<LatLng> getEffectiveRawRoutePolylinePoints(RouteInfo route, RoutePreviewData preview) {
+        List<LatLng> result = new ArrayList<>();
         if (route == null || route.rawPolylinePoints == null || route.rawPolylinePoints.size() < 2) {
-            return false;
+            return result;
         }
+
         RouteNode startPoint = preview == null ? null : preview.routePreviewStartPoint;
+        LatLng startLatLng = toLatLng(startPoint);
         int startIndex = findRouteNodeIndex(route.nodes, startPoint);
-        return startIndex <= 0;
+        if (startLatLng == null || startIndex <= 0) {
+            result.addAll(route.rawPolylinePoints);
+            return result;
+        }
+
+        int nearestIndex = findNearestPolylinePointIndex(route.rawPolylinePoints, startLatLng);
+        float nearestDistance = nearestIndex < 0
+                ? Float.MAX_VALUE
+                : calculateDistanceMeters(startLatLng, route.rawPolylinePoints.get(nearestIndex));
+        if (nearestIndex >= 0
+                && nearestDistance <= 80f
+                && route.rawPolylinePoints.size() - nearestIndex >= 2) {
+            for (int i = nearestIndex; i < route.rawPolylinePoints.size(); i++) {
+                appendLatLngDedup(result, route.rawPolylinePoints.get(i));
+            }
+        }
+        return result;
+    }
+
+    private int findNearestPolylinePointIndex(List<LatLng> points, LatLng target) {
+        if (points == null || target == null) {
+            return -1;
+        }
+        int nearestIndex = -1;
+        float nearestDistance = Float.MAX_VALUE;
+        for (int i = 0; i < points.size(); i++) {
+            LatLng point = points.get(i);
+            if (point == null) {
+                continue;
+            }
+            float distance = calculateDistanceMeters(target, point);
+            if (distance < nearestDistance) {
+                nearestDistance = distance;
+                nearestIndex = i;
+            }
+        }
+        return nearestIndex;
+    }
+
+    private float getNearestPolylineDistanceMeters(List<LatLng> points, LatLng target) {
+        int index = findNearestPolylinePointIndex(points, target);
+        if (index < 0 || points == null || index >= points.size()) {
+            return Float.MAX_VALUE;
+        }
+        return calculateDistanceMeters(target, points.get(index));
+    }
+
+    private String formatDistanceMeterForLog(float distanceMeter) {
+        if (distanceMeter == Float.MAX_VALUE || Float.isNaN(distanceMeter) || Float.isInfinite(distanceMeter)) {
+            return "NA";
+        }
+        return String.format(Locale.US, "%.1f", distanceMeter);
+    }
+
+    private String formatLngLatForAmap(LatLng point) {
+        if (point == null) {
+            return "-";
+        }
+        return String.format(Locale.US, "%.6f,%.6f", point.longitude, point.latitude);
     }
 
     private List<LatLng> getRouteDrawablePoints(RouteInfo route) {

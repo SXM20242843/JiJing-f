@@ -621,47 +621,52 @@ onShow(() => {
 </script>
 
 <style>
+/* ============================================================
+   即境 · 个人中心 — 数据概览 + 服务入口 + 游玩闭环
+   设计方向：Clean APP Profile · 统一卡片 + 左蓝竖线标题
+   签名元素：弱化圆装饰 · 统一菜单项 · 轻量弹窗
+   本轮只改 CSS，不改 template / script / 任何业务入口
+   ============================================================ */
+
+/* ---------- Page ---------- */
 .page {
   min-height: 100vh;
-  background: linear-gradient(180deg, #f5f7fb 0%, #eef4ff 100%);
+  background: #f5f7fb;
   padding: 24rpx;
   box-sizing: border-box;
 }
 
-.profile-card,
-.menu-card,
-.about-card {
-  position: relative;
-  overflow: hidden;
-  border-radius: 28rpx;
-  box-shadow: 0 12rpx 28rpx rgba(15, 23, 42, 0.06);
-  margin-bottom: 24rpx;
-}
-
+/* ---------- Profile Card（蓝渐变 · 弱化装饰圆） ---------- */
 .profile-card {
-  background: linear-gradient(135deg, #2f80ed 0%, #56ccf2 100%);
+  background: linear-gradient(135deg, #2f80ed 0%, #409eef 100%);
+  border-radius: 28rpx;
   padding: 28rpx 24rpx;
   color: #ffffff;
+  position: relative;
+  overflow: hidden;
+  margin-bottom: 24rpx;
+  box-shadow: 0 8rpx 24rpx rgba(15, 23, 42, 0.08);
 }
 
+/* 弱化背景圆 */
 .profile-bg-circle {
   position: absolute;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.07);
 }
 
 .profile-bg-circle-1 {
-  width: 220rpx;
-  height: 220rpx;
-  right: -30rpx;
-  top: -30rpx;
+  width: 200rpx;
+  height: 200rpx;
+  right: -20rpx;
+  top: -20rpx;
 }
 
 .profile-bg-circle-2 {
-  width: 160rpx;
-  height: 160rpx;
-  right: 120rpx;
-  bottom: -50rpx;
+  width: 140rpx;
+  height: 140rpx;
+  right: 100rpx;
+  bottom: -40rpx;
 }
 
 .profile-top {
@@ -672,106 +677,134 @@ onShow(() => {
 }
 
 .avatar {
-  width: 100rpx;
-  height: 100rpx;
+  width: 96rpx;
+  height: 96rpx;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.18);
   color: #ffffff;
-  font-size: 36rpx;
+  font-size: 34rpx;
   font-weight: 700;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  border: 2rpx solid rgba(255, 255, 255, 0.35);
+  border: 2rpx solid rgba(255, 255, 255, 0.3);
 }
 
 .profile-info {
-  margin-left: 20rpx;
+  margin-left: 18rpx;
   flex: 1;
   min-width: 0;
 }
 
 .name {
-  font-size: 34rpx;
+  font-size: 32rpx;
   font-weight: 700;
-  line-height: 1.4;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .identity-line {
-  margin-top: 6rpx;
-  font-size: 23rpx;
+  margin-top: 4rpx;
+  font-size: 22rpx;
   line-height: 1.4;
-  opacity: 0.94;
+  opacity: 0.88;
 }
 
 .desc {
-  margin-top: 8rpx;
-  font-size: 24rpx;
-  line-height: 1.7;
-  opacity: 0.96;
+  margin-top: 6rpx;
+  font-size: 22rpx;
+  line-height: 1.5;
+  opacity: 0.85;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .login-chip {
   position: relative;
   z-index: 2;
-  padding: 12rpx 24rpx;
+  padding: 10rpx 22rpx;
   border-radius: 999rpx;
   background: #ffffff;
   color: #2f80ed;
   font-size: 24rpx;
   font-weight: 700;
-  margin-left: 16rpx;
-  box-shadow: 0 8rpx 18rpx rgba(15, 23, 42, 0.12);
+  margin-left: 14rpx;
+  flex-shrink: 0;
+  box-shadow: 0 4rpx 12rpx rgba(15, 23, 42, 0.1);
 }
 
+/* ---------- Profile Stats（三列数据 · 防溢出） ---------- */
 .profile-stats {
   position: relative;
   z-index: 1;
   display: flex;
-  gap: 18rpx;
-  margin-top: 24rpx;
+  gap: 14rpx;
+  margin-top: 22rpx;
 }
 
 .stat-item {
   flex: 1;
-  background: rgba(255, 255, 255, 0.14);
-  border-radius: 20rpx;
-  padding: 18rpx 12rpx;
+  background: rgba(255, 255, 255, 0.13);
+  border-radius: 18rpx;
+  padding: 16rpx 8rpx;
   text-align: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
 }
 
 .stat-value {
-  font-size: 34rpx;
+  font-size: 30rpx;
   font-weight: 700;
   color: #ffffff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .stat-label {
-  margin-top: 8rpx;
-  font-size: 22rpx;
-  color: rgba(255, 255, 255, 0.92);
+  margin-top: 6rpx;
+  font-size: 20rpx;
+  color: rgba(255, 255, 255, 0.82);
+  white-space: nowrap;
 }
 
+/* ---------- Menu / About Card ---------- */
 .menu-card,
 .about-card {
   background: #ffffff;
+  border-radius: 28rpx;
+  box-shadow: 0 8rpx 24rpx rgba(15, 23, 42, 0.05);
+  border: 1rpx solid #f3f4f6;
   padding: 24rpx;
+  margin-bottom: 24rpx;
+  overflow: hidden;
 }
 
+/* 左蓝竖线标题 — 与报告页、景点详情页统一 */
 .section-title {
   font-size: 30rpx;
   font-weight: 700;
   color: #1f2937;
   margin-bottom: 18rpx;
+  padding-left: 18rpx;
+  border-left: 6rpx solid #2f80ed;
+  line-height: 1.3;
 }
 
+/* ---------- Menu Items（正式 APP 列表项） ---------- */
 .menu-item {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 24rpx 0;
-  border-bottom: 1rpx solid #eef2f7;
+  padding: 22rpx 0;
+  border-bottom: 1rpx solid #f3f4f6;
 }
 
 .menu-item:last-child {
@@ -782,58 +815,71 @@ onShow(() => {
   display: flex;
   align-items: center;
   flex: 1;
+  min-width: 0;
 }
 
 .menu-icon {
-  width: 76rpx;
-  height: 76rpx;
-  border-radius: 20rpx;
+  width: 72rpx;
+  height: 72rpx;
+  border-radius: 18rpx;
   background: #eff6ff;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 32rpx;
+  font-size: 30rpx;
   flex-shrink: 0;
+  border: 1rpx solid rgba(47, 128, 237, 0.06);
 }
 
 .menu-avatar {
-  width: 76rpx;
-  height: 76rpx;
-  border-radius: 20rpx;
+  width: 72rpx;
+  height: 72rpx;
+  border-radius: 18rpx;
   background: #eff6ff;
   flex-shrink: 0;
 }
 
 .menu-text-wrap {
-  margin-left: 18rpx;
+  margin-left: 16rpx;
   flex: 1;
+  min-width: 0;
 }
 
 .menu-title {
   font-size: 28rpx;
   font-weight: 600;
   color: #1f2937;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .menu-desc {
-  margin-top: 8rpx;
+  margin-top: 4rpx;
   font-size: 22rpx;
-  color: #6b7280;
-  line-height: 1.6;
+  color: #9ca3af;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .menu-arrow {
-  color: #b0b7c3;
-  font-size: 34rpx;
-  margin-left: 12rpx;
+  color: #c0c8d4;
+  font-size: 32rpx;
+  margin-left: 10rpx;
+  flex-shrink: 0;
 }
 
+/* ---------- About ---------- */
 .about-text {
   font-size: 24rpx;
   color: #6b7280;
   line-height: 1.8;
 }
 
+/* ---------- Logout ---------- */
 .logout-card {
   height: 88rpx;
   line-height: 88rpx;
@@ -842,11 +888,13 @@ onShow(() => {
   background: #ffffff;
   color: #ef4444;
   font-size: 28rpx;
-  font-weight: 700;
-  box-shadow: 0 12rpx 28rpx rgba(15, 23, 42, 0.06);
+  font-weight: 600;
+  box-shadow: 0 8rpx 24rpx rgba(15, 23, 42, 0.05);
+  border: 1rpx solid #f3f4f6;
   margin-bottom: 24rpx;
 }
 
+/* ---------- Modal Mask ---------- */
 .modal-mask {
   position: fixed;
   left: 0;
@@ -854,108 +902,123 @@ onShow(() => {
   top: 0;
   bottom: 0;
   z-index: 99;
-  background: rgba(15, 23, 42, 0.45);
+  background: rgba(15, 23, 42, 0.5);
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 40rpx;
+  padding: 48rpx 32rpx;
   box-sizing: border-box;
 }
 
+/* ---------- Account Dialog ---------- */
 .account-dialog {
   width: 100%;
-  max-height: 86vh;
+  max-height: 80vh;
   overflow: auto;
   border-radius: 28rpx;
   background: #ffffff;
-  padding: 30rpx 28rpx 28rpx;
+  padding: 28rpx;
   box-sizing: border-box;
+  box-shadow: 0 16rpx 40rpx rgba(15, 23, 42, 0.12);
 }
 
 .dialog-title {
-  font-size: 34rpx;
-  font-weight: 800;
+  font-size: 32rpx;
+  font-weight: 700;
   color: #1f2937;
-  margin-bottom: 22rpx;
+  margin-bottom: 20rpx;
 }
 
 .dialog-section {
-  padding: 20rpx 0;
-  border-top: 1rpx solid #eef2f7;
+  padding: 18rpx 0;
+  border-top: 1rpx solid #f3f4f6;
 }
 
 .dialog-section-title {
-  font-size: 26rpx;
+  font-size: 24rpx;
   font-weight: 700;
   color: #374151;
-  margin-bottom: 14rpx;
+  margin-bottom: 12rpx;
+  padding-left: 14rpx;
+  border-left: 4rpx solid #2f80ed;
 }
 
 .account-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 20rpx;
-  min-height: 54rpx;
+  gap: 16rpx;
+  min-height: 50rpx;
   font-size: 24rpx;
 }
 
 .account-label {
   color: #6b7280;
   flex-shrink: 0;
+  font-size: 24rpx;
 }
 
 .account-value {
   color: #1f2937;
   font-weight: 600;
   text-align: right;
+  font-size: 24rpx;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 60%;
 }
 
 .account-id-wrap {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 14rpx;
+  gap: 12rpx;
   min-width: 0;
   flex: 1;
 }
 
 .account-id {
   color: #1f2937;
-  font-size: 24rpx;
+  font-size: 22rpx;
   font-family: monospace;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .copy-btn {
   flex-shrink: 0;
-  padding: 8rpx 16rpx;
+  padding: 6rpx 14rpx;
   border-radius: 999rpx;
   background: #eff6ff;
   color: #2f80ed;
-  font-size: 22rpx;
-  font-weight: 700;
+  font-size: 20rpx;
+  font-weight: 600;
+  border: 1rpx solid rgba(47, 128, 237, 0.08);
 }
 
 .dialog-tip {
-  margin-top: 6rpx;
-  padding: 18rpx 20rpx;
-  border-radius: 18rpx;
+  margin-top: 16rpx;
+  padding: 16rpx 18rpx;
+  border-radius: 14rpx;
   background: #f8fafc;
   color: #64748b;
-  font-size: 23rpx;
-  line-height: 1.7;
+  font-size: 22rpx;
+  line-height: 1.6;
+  border-left: 4rpx solid #93c5fd;
 }
 
 .dialog-confirm {
-  height: 78rpx;
-  line-height: 78rpx;
+  height: 80rpx;
+  line-height: 80rpx;
   margin-top: 24rpx;
   border-radius: 999rpx;
   background: #2f80ed;
   color: #ffffff;
-  font-size: 26rpx;
-  font-weight: 700;
+  font-size: 28rpx;
+  font-weight: 600;
   text-align: center;
 }
 </style>

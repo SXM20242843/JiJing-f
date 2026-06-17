@@ -205,36 +205,51 @@ onShow(() => {
 </script>
 
 <style>
+/* ============================================================
+   即境 · 系统设置 — 功能开关 + 数据管理 + 系统信息
+   设计方向：Clean APP Settings · 统一分组卡片 + 分割线列表
+   签名元素：左蓝竖线标题 · 稳定开关行 · 轻量操作项
+   本轮只改 CSS，不改 template / script / 任何业务入口
+   ============================================================ */
+
+/* ---------- Page ---------- */
 .page {
   min-height: 100vh;
-  background: linear-gradient(180deg, #f5f7fb 0%, #eef4ff 100%);
+  background: #f5f7fb;
   padding: 24rpx;
   box-sizing: border-box;
 }
 
+/* ---------- Section Card ---------- */
 .section-card {
   background: #ffffff;
   border-radius: 28rpx;
-  box-shadow: 0 12rpx 28rpx rgba(15, 23, 42, 0.06);
+  box-shadow: 0 8rpx 24rpx rgba(15, 23, 42, 0.05);
+  border: 1rpx solid #f3f4f6;
   padding: 24rpx;
   margin-bottom: 24rpx;
 }
 
+/* 左蓝竖线标题 — 与其他页面统一 */
 .section-title {
   font-size: 30rpx;
   font-weight: 700;
   color: #1f2937;
   margin-bottom: 18rpx;
+  padding-left: 18rpx;
+  border-left: 6rpx solid #2f80ed;
+  line-height: 1.3;
 }
 
+/* ---------- List Items（开关 / 操作 / 信息） ---------- */
 .setting-item,
 .action-item,
 .info-item {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 24rpx 0;
-  border-bottom: 1rpx solid #eef2f7;
+  padding: 22rpx 0;
+  border-bottom: 1rpx solid #f3f4f6;
 }
 
 .setting-item:last-child,
@@ -247,6 +262,7 @@ onShow(() => {
 .action-left {
   flex: 1;
   padding-right: 20rpx;
+  min-width: 0;
 }
 
 .setting-name,
@@ -254,25 +270,34 @@ onShow(() => {
   font-size: 28rpx;
   font-weight: 600;
   color: #1f2937;
+  line-height: 1.35;
 }
 
 .setting-desc,
 .action-desc {
-  margin-top: 8rpx;
+  margin-top: 4rpx;
   font-size: 22rpx;
-  color: #6b7280;
-  line-height: 1.6;
+  color: #9ca3af;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
+/* 操作项右侧箭头 — 轻量 */
 .action-arrow {
-  color: #b0b7c3;
-  font-size: 34rpx;
-  margin-left: 12rpx;
+  color: #c0c8d4;
+  font-size: 30rpx;
+  margin-left: 10rpx;
+  flex-shrink: 0;
 }
 
+/* ---------- System Info ---------- */
 .info-label {
   font-size: 26rpx;
   color: #6b7280;
+  flex-shrink: 0;
 }
 
 .info-value {
@@ -281,5 +306,8 @@ onShow(() => {
   font-weight: 600;
   text-align: right;
   margin-left: 20rpx;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

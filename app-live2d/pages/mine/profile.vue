@@ -574,47 +574,59 @@ onShow(() => {
 </script>
 
 <style>
+/* ============================================================
+   即境 · 我的偏好 — 用户画像 + 个性化推荐
+   设计方向：Clean APP Settings · 统一卡片 + chip 选择器
+   签名元素：左蓝竖线标题 · 统一 chip 高度 · 选中态绿色
+   本轮只改 CSS，不改 template / script / 任何业务入口
+   ============================================================ */
+
+/* ---------- Page ---------- */
 .page {
   min-height: 100vh;
-  background: linear-gradient(180deg, #f5f7fb 0%, #eef4ff 100%);
+  background: #f5f7fb;
   padding: 24rpx;
   box-sizing: border-box;
 }
 
+/* ---------- Card Base ---------- */
 .card {
   background: #ffffff;
   border-radius: 28rpx;
-  box-shadow: 0 12rpx 28rpx rgba(15, 23, 42, 0.06);
+  box-shadow: 0 8rpx 24rpx rgba(15, 23, 42, 0.05);
+  border: 1rpx solid #f3f4f6;
 }
 
+/* ---------- Hero Card（蓝渐变 · 弱化装饰） ---------- */
 .hero-card {
   position: relative;
   overflow: hidden;
   border-radius: 28rpx;
-  padding: 32rpx 28rpx;
+  padding: 28rpx;
   margin-bottom: 24rpx;
-  background: linear-gradient(135deg, #2f80ed 0%, #56ccf2 100%);
+  background: linear-gradient(135deg, #2f80ed 0%, #409eef 100%);
   color: #ffffff;
+  box-shadow: 0 8rpx 24rpx rgba(15, 23, 42, 0.08);
 }
 
 .hero-bg-circle {
   position: absolute;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.07);
 }
 
 .hero-bg-circle-1 {
-  width: 220rpx;
-  height: 220rpx;
-  right: -30rpx;
-  top: -30rpx;
+  width: 180rpx;
+  height: 180rpx;
+  right: -20rpx;
+  top: -20rpx;
 }
 
 .hero-bg-circle-2 {
-  width: 160rpx;
-  height: 160rpx;
-  right: 120rpx;
-  bottom: -50rpx;
+  width: 130rpx;
+  height: 130rpx;
+  right: 100rpx;
+  bottom: -40rpx;
 }
 
 .hero-title,
@@ -624,47 +636,48 @@ onShow(() => {
 }
 
 .hero-title {
-  font-size: 38rpx;
+  font-size: 34rpx;
   font-weight: 700;
-  line-height: 1.4;
+  line-height: 1.35;
 }
 
 .hero-desc {
-  margin-top: 12rpx;
+  margin-top: 10rpx;
   font-size: 24rpx;
-  line-height: 1.7;
-  opacity: 0.95;
+  line-height: 1.6;
+  opacity: 0.88;
 }
 
+/* ---------- Status Card（空态 / 加载） ---------- */
 .status-card {
-  padding: 40rpx 28rpx;
+  padding: 60rpx 28rpx 52rpx;
   text-align: center;
+  margin-bottom: 24rpx;
 }
 
 .status-title {
   display: block;
-  font-size: 30rpx;
+  font-size: 28rpx;
   font-weight: 700;
   color: #1f2937;
 }
 
 .status-desc {
   display: block;
-  margin-top: 14rpx;
+  margin-top: 12rpx;
   font-size: 24rpx;
   color: #6b7280;
-  line-height: 1.7;
+  line-height: 1.65;
 }
 
+/* ---------- Buttons（主按钮 · 绿色统一） ---------- */
 .primary-btn,
 .save-btn {
-  height: 76rpx;
-  line-height: 76rpx;
+  height: 80rpx;
+  line-height: 80rpx;
   border-radius: 999rpx;
-  background: #2f80ed;
-  color: #ffffff;
-  font-size: 26rpx;
-  font-weight: 700;
+  font-size: 28rpx;
+  font-weight: 600;
   text-align: center;
 }
 
@@ -673,24 +686,44 @@ onShow(() => {
   align-items: center;
   justify-content: center;
   min-width: 180rpx;
-  padding: 0 32rpx;
-  margin-top: 28rpx;
+  padding: 0 36rpx;
+  margin-top: 24rpx;
+  background: linear-gradient(135deg, #18b368 0%, #16a34a 100%);
+  color: #ffffff;
+  box-shadow: 0 4rpx 12rpx rgba(24, 179, 104, 0.18);
 }
 
-.form-card {
-  padding: 26rpx 24rpx;
+.save-btn {
+  background: linear-gradient(135deg, #18b368 0%, #16a34a 100%);
+  color: #ffffff;
+  box-shadow: 0 4rpx 12rpx rgba(24, 179, 104, 0.18);
   margin-bottom: 24rpx;
 }
 
+.save-btn.disabled {
+  opacity: 0.5;
+}
+
+/* ---------- Form Card ---------- */
+.form-card {
+  padding: 24rpx;
+  margin-bottom: 20rpx;
+}
+
+/* 左蓝竖线标题 — 与报告页、景点详情页统一 */
 .section-title {
   font-size: 30rpx;
   font-weight: 700;
   color: #1f2937;
   margin-bottom: 20rpx;
+  padding-left: 18rpx;
+  border-left: 6rpx solid #2f80ed;
+  line-height: 1.3;
 }
 
+/* ---------- Field Block ---------- */
 .field-block {
-  margin-top: 26rpx;
+  margin-top: 28rpx;
 }
 
 .field-block:first-of-type {
@@ -698,37 +731,38 @@ onShow(() => {
 }
 
 .field-label {
-  margin-bottom: 16rpx;
+  margin-bottom: 14rpx;
   font-size: 24rpx;
   font-weight: 600;
   color: #374151;
 }
 
+/* ---------- Option Row & Chip ---------- */
 .option-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 14rpx;
+  gap: 12rpx;
 }
 
 .option-chip {
-  padding: 14rpx 22rpx;
+  min-height: 58rpx;
+  line-height: 58rpx;
+  padding: 0 22rpx;
   border-radius: 999rpx;
   background: #f3f4f6;
   color: #4b5563;
   font-size: 24rpx;
+  font-weight: 500;
+  text-align: center;
+  box-sizing: border-box;
+  border: 1rpx solid transparent;
 }
 
+/* 选中态 — 绿色 */
 .option-chip.active {
-  background: #eff6ff;
-  color: #2f80ed;
-  font-weight: 700;
-}
-
-.save-btn {
-  margin-bottom: 24rpx;
-}
-
-.save-btn.disabled {
-  opacity: 0.6;
+  background: #ecfdf5;
+  color: #16a34a;
+  font-weight: 600;
+  border-color: rgba(22, 163, 74, 0.2);
 }
 </style>

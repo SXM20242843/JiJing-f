@@ -1539,22 +1539,29 @@ public class RouteRecommendService {
                                                   RouteStartLocation routeStartLocation) {
         List<RouteRoadPoint> points = buildRoadPlanningPoints(resolvedNodes, routeStartLocation);
         if (points.size() < 2) {
+            log.info("[AmapWalk] route finalPolylinePoints=0, reason=coords_lt_2, planningPoints={}", points.size());
             return RouteRoadResult.fallback(points, "当前路线缺少可用坐标，暂按推荐节点顺序展示");
         }
 
         if (!isAmapWebRouteEnabled()) {
+            log.info("[AmapWalk] route finalPolylinePoints=0, reason=amap_webservice_disabled");
             return RouteRoadResult.fallback(points, "高德 WebService 未启用，暂按推荐节点顺序展示");
         }
 
         String amapKey = firstNotBlank(aiProperties.getAmapWebKey());
         if (amapKey.isEmpty()) {
             log.warn("未配置 ai.amap-web-key，无法调用高德 WebService 步行规划，已保留节点顺序。");
+            log.warn("[AmapWalk] route finalPolylinePoints=0, reason=amap_web_key_empty");
             return RouteRoadResult.fallback(points, "未配置高德 WebService Key，暂按推荐节点顺序展示");
         }
 
         String cacheKey = buildRoadCacheKey(points);
         RouteRoadResult cached = amapWalkingRouteCache.get(cacheKey);
         if (cached != null) {
+            log.info("[AmapWalk] cache hit finalPolylinePoints={}, allFallback={}, partialFallback={}",
+                    cached.allFallback ? 0 : cached.points.size(),
+                    cached.allFallback,
+                    cached.partialFallback);
             return cached.copy();
         }
 
@@ -1572,6 +1579,10 @@ public class RouteRecommendService {
             if (segment == null) {
                 segment = buildFallbackRoadSegment(from, to);
             }
+            segment.index = i;
+            segment.fromName = firstNotBlank(from == null ? "" : from.name);
+            segment.toName = firstNotBlank(to == null ? "" : to.name);
+            result.segments.add(segment.copy());
 
             hasFallback = hasFallback || segment.fallback;
             allFallback = allFallback && segment.fallback;
@@ -1601,7 +1612,10 @@ public class RouteRecommendService {
         }
 
         if (result.points.size() < 2) {
-            return RouteRoadResult.fallback(points, "高德路线暂不可用，已按推荐节点顺序展示");
+            log.info("[AmapWalk] route finalPolylinePoints=0, allFallback={}, partialFallback={}",
+                    allFallback,
+                    hasFallback);
+            return result;
         }
 
         if (amapWalkingRouteCache.size() > 300) {
@@ -1614,6 +1628,10 @@ public class RouteRecommendService {
                 result.points.size(),
                 result.totalDistanceM,
                 result.durationSecond,
+                result.allFallback,
+                result.partialFallback);
+        log.info("[AmapWalk] route finalPolylinePoints={}, allFallback={}, partialFallback={}",
+                result.points.size(),
                 result.allFallback,
                 result.partialFallback);
         return result;
@@ -1651,11 +1669,19 @@ public class RouteRecommendService {
                                                     RouteRoadPoint to,
                                                     int segmentIndex) {
         if (from == null || to == null || !from.isValid() || !to.isValid()) {
+            log.warn("[AmapWalk] segment index={}, origin={}, destination={}",
+                    segmentIndex,
+                    formatAmapLocation(from),
+                    formatAmapLocation(to));
+            log.warn("[AmapWalk] response status=invalid_coords, info=invalid coordinate, infocode=, paths=0, steps=0");
+            log.warn("[AmapWalk] polylinePoints=0");
             return buildFallbackRoadSegment(from, to);
         }
 
         try {
             String url = buildAmapWalkingUrl(from, to);
+            log.info("[AmapWalk] segment index={}, origin={}, destination={}",
+                    segmentIndex, formatAmapLocation(from), formatAmapLocation(to));
             log.info("调用高德WebService步行规划: segment={}, from={}({}), to={}({})",
                     segmentIndex, from.name, formatAmapLocation(from), to.name, formatAmapLocation(to));
 
@@ -1663,6 +1689,9 @@ public class RouteRecommendService {
             if (!response.getStatusCode().is2xxSuccessful() || response.getBody() == null) {
                 log.warn("高德WebService步行规划HTTP异常: segment={}, status={}",
                         segmentIndex, response.getStatusCode());
+                log.warn("[AmapWalk] response status=http_{}, info=http_error, infocode=, paths=0, steps=0",
+                        response.getStatusCode().value());
+                log.warn("[AmapWalk] polylinePoints=0");
                 return buildFallbackRoadSegment(from, to);
             }
 
@@ -1673,24 +1702,39 @@ public class RouteRecommendService {
             String status = firstNotBlank(readString(body, "status"));
             String info = firstNotBlank(readString(body, "info"));
             String infocode = firstNotBlank(readString(body, "infocode"));
+            int pathCount = countAmapPaths(body);
+            int stepCount = countAmapSteps(body);
+            log.info("[AmapWalk] response status={}, info={}, infocode={}, paths={}, steps={}",
+                    status,
+                    info,
+                    infocode,
+                    pathCount,
+                    stepCount);
             if (!"1".equals(status)) {
                 log.warn("高德WebService步行规划失败: segment={}, status={}, infocode={}, info={}",
                         segmentIndex, status, infocode, info);
+                log.warn("[AmapWalk] polylinePoints=0");
                 return buildFallbackRoadSegment(from, to);
             }
 
             RouteRoadSegment segment = parseAmapWalkingSegment(body, from, to);
             if (segment == null || segment.points.size() < 2) {
                 log.warn("高德WebService步行规划未返回有效polyline: segment={}, info={}", segmentIndex, info);
+                log.warn("[AmapWalk] polylinePoints={}",
+                        segment == null || segment.points == null ? 0 : segment.points.size());
                 return buildFallbackRoadSegment(from, to);
             }
             segment.fallback = false;
             log.info("高德WebService步行规划成功: segment={}, points={}, distanceM={}, durationSecond={}",
                     segmentIndex, segment.points.size(), segment.distanceM, segment.durationSecond);
+            log.info("[AmapWalk] polylinePoints={}", segment.points.size());
             return segment;
         } catch (Exception e) {
             log.warn("调用高德WebService步行规划异常: segment={}, error={}",
                     segmentIndex, e.getMessage(), e);
+            log.warn("[AmapWalk] response status=exception, info={}, infocode=, paths=0, steps=0",
+                    e.getMessage());
+            log.warn("[AmapWalk] polylinePoints=0");
             return buildFallbackRoadSegment(from, to);
         }
     }
@@ -1755,8 +1799,6 @@ public class RouteRecommendService {
             appendAmapPolylineText(segment.points, readString(pathMap, "polyline"));
         }
         if (segment.points.size() < 2) {
-            appendRoadPointDedup(segment.points, from);
-            appendRoadPointDedup(segment.points, to);
             segment.fallback = true;
         }
         if (segment.distanceM.compareTo(BigDecimal.ZERO) <= 0) {
@@ -1767,6 +1809,43 @@ public class RouteRecommendService {
             segment.durationSecond = estimateWalkDurationSecond(segment.distanceM);
         }
         return segment;
+    }
+
+    @SuppressWarnings("unchecked")
+    private int countAmapPaths(Map<String, Object> body) {
+        Object routeObject = readObject(body, "route");
+        if (!(routeObject instanceof Map<?, ?> rawRouteMap)) {
+            return 0;
+        }
+        Map<String, Object> routeMap = (Map<String, Object>) rawRouteMap;
+        Object pathsObject = readObject(routeMap, "paths");
+        if (pathsObject instanceof List<?> paths) {
+            return paths.size();
+        }
+        return 0;
+    }
+
+    @SuppressWarnings("unchecked")
+    private int countAmapSteps(Map<String, Object> body) {
+        Object routeObject = readObject(body, "route");
+        if (!(routeObject instanceof Map<?, ?> rawRouteMap)) {
+            return 0;
+        }
+        Map<String, Object> routeMap = (Map<String, Object>) rawRouteMap;
+        Object pathsObject = readObject(routeMap, "paths");
+        if (!(pathsObject instanceof List<?> paths) || paths.isEmpty()) {
+            return 0;
+        }
+        Object firstPath = paths.get(0);
+        if (!(firstPath instanceof Map<?, ?> rawPathMap)) {
+            return 0;
+        }
+        Map<String, Object> pathMap = (Map<String, Object>) rawPathMap;
+        Object stepsObject = readObject(pathMap, "steps");
+        if (stepsObject instanceof List<?> steps) {
+            return steps.size();
+        }
+        return 0;
     }
 
     private void appendAmapPolylineText(List<RouteRoadPoint> points, String polyline) {
@@ -1795,12 +1874,6 @@ public class RouteRecommendService {
     private RouteRoadSegment buildFallbackRoadSegment(RouteRoadPoint from, RouteRoadPoint to) {
         RouteRoadSegment segment = new RouteRoadSegment();
         segment.fallback = true;
-        if (from != null && from.isValid()) {
-            appendRoadPointDedup(segment.points, from);
-        }
-        if (to != null && to.isValid()) {
-            appendRoadPointDedup(segment.points, to);
-        }
         if (from != null && to != null && from.isValid() && to.isValid()) {
             segment.distanceM = BigDecimal.valueOf(haversineMeters(from.latitude, from.longitude, to.latitude, to.longitude))
                     .setScale(2, RoundingMode.HALF_UP);
@@ -1971,6 +2044,9 @@ public class RouteRecommendService {
             route.routePolyline.addAll(roadPolyline);
             route.mapPolyline.addAll(roadPolyline);
             route.roadPolyline.addAll(roadPolyline);
+            route.walkingPolyline.addAll(roadPolyline);
+            route.amapPolyline.addAll(roadPolyline);
+            route.segments.addAll(toRouteSegmentMaps(roadResult.segments));
             route.routeMapReady = !roadResult.allFallback;
             route.mapReady = !roadResult.allFallback;
             route.partialFallback = roadResult.partialFallback;
@@ -1978,6 +2054,9 @@ public class RouteRecommendService {
                     roadResult.allFallback ? "高德路线暂不可用，已按推荐节点顺序展示" : "已生成高德步行路线");
             route.routeMapSource = roadResult.source;
         } else {
+            if (roadResult != null && roadResult.segments != null) {
+                route.segments.addAll(toRouteSegmentMaps(roadResult.segments));
+            }
             route.routeMapReady = false;
             route.mapReady = false;
             route.partialFallback = true;
@@ -2093,6 +2172,50 @@ public class RouteRecommendService {
             result.add(item);
         }
         return result;
+    }
+
+    private List<Map<String, Object>> toRouteSegmentMaps(List<RouteRoadSegment> segments) {
+        List<Map<String, Object>> result = new ArrayList<>();
+        if (segments == null) {
+            return result;
+        }
+        for (RouteRoadSegment segment : segments) {
+            if (segment == null) {
+                continue;
+            }
+            boolean success = !segment.fallback && segment.points != null && segment.points.size() >= 2;
+            List<Map<String, BigDecimal>> points = success
+                    ? toPolylinePointMaps(segment.points)
+                    : new ArrayList<Map<String, BigDecimal>>();
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("index", segment.index);
+            item.put("success", success);
+            item.put("fromName", firstNotBlank(segment.fromName));
+            item.put("toName", firstNotBlank(segment.toName));
+            item.put("distanceMeters", segment.distanceM);
+            item.put("durationSeconds", segment.durationSecond);
+            item.put("points", points);
+            item.put("polyline", success ? toAmapPolylineText(segment.points) : "");
+            result.add(item);
+        }
+        return result;
+    }
+
+    private String toAmapPolylineText(List<RouteRoadPoint> points) {
+        if (points == null || points.isEmpty()) {
+            return "";
+        }
+        StringBuilder builder = new StringBuilder();
+        for (RouteRoadPoint point : points) {
+            if (point == null || !point.isValid()) {
+                continue;
+            }
+            if (builder.length() > 0) {
+                builder.append(";");
+            }
+            builder.append(formatAmapLocation(point));
+        }
+        return builder.toString();
     }
 
     private List<ResolvedRouteNode> sortedResolvedNodes(List<ResolvedRouteNode> resolvedNodes) {
@@ -2677,14 +2800,34 @@ public class RouteRecommendService {
     }
 
     private static class RouteRoadSegment {
+        private int index = 0;
+        private String fromName = "";
+        private String toName = "";
         private List<RouteRoadPoint> points = new ArrayList<>();
         private BigDecimal distanceM = BigDecimal.ZERO;
         private long durationSecond = 0L;
         private boolean fallback = false;
+
+        private RouteRoadSegment copy() {
+            RouteRoadSegment result = new RouteRoadSegment();
+            result.index = index;
+            result.fromName = fromName;
+            result.toName = toName;
+            result.distanceM = distanceM;
+            result.durationSecond = durationSecond;
+            result.fallback = fallback;
+            for (RouteRoadPoint point : points) {
+                if (point != null) {
+                    result.points.add(point.copy());
+                }
+            }
+            return result;
+        }
     }
 
     private static class RouteRoadResult {
         private List<RouteRoadPoint> points = new ArrayList<>();
+        private List<RouteRoadSegment> segments = new ArrayList<>();
         private BigDecimal totalDistanceM = BigDecimal.ZERO;
         private long durationSecond = 0L;
         private boolean partialFallback = false;
@@ -2719,6 +2862,11 @@ public class RouteRecommendService {
             for (RouteRoadPoint point : points) {
                 if (point != null) {
                     result.points.add(point.copy());
+                }
+            }
+            for (RouteRoadSegment segment : segments) {
+                if (segment != null) {
+                    result.segments.add(segment.copy());
                 }
             }
             return result;

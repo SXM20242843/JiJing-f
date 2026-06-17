@@ -2048,17 +2048,27 @@ onShow(() => {
 </script>
 
 <style>
+/* ============================================================
+   即境 · 首页 — 入口枢纽 + 导览状态 + 热门推荐
+   设计方向：Clean APP Home · 统一卡片 + 状态感知
+   签名元素：弱化装饰圆 · 状态色导览卡 · flex 快捷服务
+   本轮只改 CSS，不改 template / script / 任何业务入口
+   ============================================================ */
+
+/* ---------- Page ---------- */
 .page {
   min-height: 100vh;
-  background: linear-gradient(180deg, #f5f7fb 0%, #eef4ff 100%);
+  background: #f5f7fb;
   padding: 24rpx;
   box-sizing: border-box;
 }
 
+/* ---------- Card Base ---------- */
 .card {
   background: #ffffff;
   border-radius: 28rpx;
-  box-shadow: 0 12rpx 28rpx rgba(15, 23, 42, 0.06);
+  box-shadow: 0 8rpx 24rpx rgba(15, 23, 42, 0.05);
+  border: 1rpx solid #f3f4f6;
 }
 
 .status-card {
@@ -2072,34 +2082,36 @@ onShow(() => {
   color: #6b7280;
 }
 
+/* ---------- Hero（蓝渐变 · 弱化装饰圆） ---------- */
 .hero {
   position: relative;
   overflow: hidden;
-  background: linear-gradient(135deg, #2f80ed 0%, #56ccf2 100%);
-  border-radius: 32rpx;
-  padding: 30rpx;
+  background: linear-gradient(135deg, #2f80ed 0%, #409eef 100%);
+  border-radius: 28rpx;
+  padding: 28rpx;
   margin-bottom: 24rpx;
   color: #ffffff;
+  box-shadow: 0 8rpx 24rpx rgba(15, 23, 42, 0.08);
 }
 
 .hero-bg-circle {
   position: absolute;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.07);
 }
 
 .hero-bg-circle-1 {
-  width: 240rpx;
-  height: 240rpx;
-  right: -40rpx;
-  top: -30rpx;
+  width: 200rpx;
+  height: 200rpx;
+  right: -30rpx;
+  top: -20rpx;
 }
 
 .hero-bg-circle-2 {
-  width: 180rpx;
-  height: 180rpx;
-  right: 120rpx;
-  bottom: -60rpx;
+  width: 150rpx;
+  height: 150rpx;
+  right: 100rpx;
+  bottom: -50rpx;
 }
 
 .hero-top {
@@ -2116,67 +2128,76 @@ onShow(() => {
 }
 
 .hero-title {
-  font-size: 46rpx;
-  font-weight: 800;
-  line-height: 1.35;
-  letter-spacing: 4rpx;
+  font-size: 42rpx;
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: 3rpx;
 }
 
 .hero-subtitle {
-  margin-top: 14rpx;
-  font-size: 25rpx;
-  line-height: 1.7;
-  opacity: 0.96;
+  margin-top: 10rpx;
+  font-size: 24rpx;
+  line-height: 1.6;
+  opacity: 0.88;
 }
 
+/* 搜索入口 — 白色半透明，点击区域清晰 */
 .hero-search {
   position: relative;
   z-index: 1;
-  margin-top: 28rpx;
-  background: rgba(255, 255, 255, 0.18);
-  border-radius: 22rpx;
-  padding: 22rpx 24rpx;
+  margin-top: 24rpx;
+  background: rgba(255, 255, 255, 0.15);
+  border: 1rpx solid rgba(255, 255, 255, 0.18);
+  border-radius: 20rpx;
+  padding: 20rpx 22rpx;
   display: flex;
   align-items: center;
 }
 
 .hero-search-icon {
-  font-size: 28rpx;
-  margin-right: 12rpx;
+  font-size: 26rpx;
+  margin-right: 10rpx;
 }
 
 .hero-search-text {
   font-size: 26rpx;
-  color: rgba(255, 255, 255, 0.96);
+  color: rgba(255, 255, 255, 0.9);
 }
 
+/* Hero Stats — 三列防溢出 */
 .hero-stats {
   position: relative;
   z-index: 1;
   display: flex;
-  margin-top: 26rpx;
-  gap: 18rpx;
+  margin-top: 22rpx;
+  gap: 14rpx;
 }
 
 .stat-item {
   flex: 1;
   background: rgba(255, 255, 255, 0.12);
-  border-radius: 20rpx;
-  padding: 18rpx 12rpx;
+  border-radius: 18rpx;
+  padding: 16rpx 8rpx;
   text-align: center;
+  min-width: 0;
 }
 
 .stat-value {
-  font-size: 34rpx;
+  font-size: 30rpx;
   font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .stat-label {
-  margin-top: 8rpx;
-  font-size: 22rpx;
-  opacity: 0.95;
+  margin-top: 6rpx;
+  font-size: 20rpx;
+  opacity: 0.82;
+  white-space: nowrap;
 }
 
+/* ---------- Location Status Card ---------- */
 .location-status-card {
   padding: 24rpx;
   margin-bottom: 24rpx;
@@ -2197,9 +2218,10 @@ onShow(() => {
 }
 
 .location-status-meta {
-  margin-top: 6rpx;
+  margin-top: 4rpx;
   font-size: 22rpx;
-  color: #18b368;
+  color: #16a34a;
+  font-weight: 500;
 }
 
 .location-actions {
@@ -2209,25 +2231,26 @@ onShow(() => {
 }
 
 .location-demo-btn {
-  height: 56rpx;
-  line-height: 56rpx;
-  padding: 0 22rpx;
+  height: 60rpx;
+  line-height: 60rpx;
+  padding: 0 24rpx;
   border-radius: 999rpx;
   background: #eff6ff;
   color: #2f80ed;
-  font-size: 23rpx;
+  font-size: 24rpx;
   font-weight: 600;
+  border: 1rpx solid rgba(47, 128, 237, 0.1);
 }
 
+/* ---------- Guide Entry Card（主流程 · 四状态） ---------- */
 .guide-entry-card {
   margin-bottom: 26rpx;
   padding: 26rpx 24rpx;
-  border: 2rpx solid rgba(47, 128, 237, 0.08);
 }
 
 .guide-entry-card.onsite {
-  background: linear-gradient(135deg, #ecfdf5 0%, #ffffff 58%, #eff6ff 100%);
-  border-color: rgba(24, 179, 104, 0.22);
+  background: linear-gradient(135deg, #ecfdf5 0%, #ffffff 50%, #eff6ff 100%);
+  border-color: rgba(24, 179, 104, 0.18);
 }
 
 .guide-entry-main {
@@ -2236,26 +2259,27 @@ onShow(() => {
 }
 
 .guide-entry-avatar {
-  width: 88rpx;
-  height: 88rpx;
+  width: 84rpx;
+  height: 84rpx;
   border-radius: 50%;
-  background: linear-gradient(135deg, #2f80ed 0%, #56ccf2 100%);
+  background: linear-gradient(135deg, #2f80ed 0%, #409eef 100%);
   color: #ffffff;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 30rpx;
+  font-size: 28rpx;
   font-weight: 700;
   flex-shrink: 0;
 }
 
 .guide-entry-card.onsite .guide-entry-avatar {
-  background: linear-gradient(135deg, #18b368 0%, #4cd7a3 100%);
+  background: linear-gradient(135deg, #18b368 0%, #16a34a 100%);
 }
 
 .guide-entry-info {
   flex: 1;
-  margin-left: 20rpx;
+  margin-left: 18rpx;
+  min-width: 0;
 }
 
 .guide-entry-top {
@@ -2266,84 +2290,89 @@ onShow(() => {
 .guide-entry-tag {
   display: inline-flex;
   align-items: center;
-  padding: 7rpx 16rpx;
+  padding: 6rpx 14rpx;
   border-radius: 999rpx;
   background: #eff6ff;
   color: #2f80ed;
-  font-size: 22rpx;
+  font-size: 20rpx;
   font-weight: 600;
+  border: 1rpx solid rgba(47, 128, 237, 0.08);
 }
 
 .guide-entry-card.onsite .guide-entry-tag {
   background: #dcfce7;
-  color: #18b368;
+  color: #16a34a;
+  border-color: rgba(22, 163, 74, 0.12);
 }
 
 .guide-entry-title {
-  margin-top: 12rpx;
-  font-size: 32rpx;
+  margin-top: 10rpx;
+  font-size: 30rpx;
   font-weight: 700;
   color: #1f2937;
-  line-height: 1.45;
+  line-height: 1.4;
 }
 
 .guide-entry-subtitle {
-  margin-top: 6rpx;
+  margin-top: 4rpx;
   font-size: 24rpx;
   color: #374151;
-  line-height: 1.6;
+  line-height: 1.55;
 }
 
 .guide-entry-desc {
-  margin-top: 6rpx;
-  font-size: 23rpx;
+  margin-top: 4rpx;
+  font-size: 22rpx;
   color: #6b7280;
-  line-height: 1.6;
+  line-height: 1.55;
 }
 
 .guide-entry-distance {
-  margin-top: 8rpx;
+  margin-top: 6rpx;
   font-size: 22rpx;
-  color: #18b368;
+  color: #16a34a;
+  font-weight: 500;
 }
 
 .guide-entry-actions {
-  margin-top: 22rpx;
+  margin-top: 20rpx;
   display: flex;
-  gap: 16rpx;
-}
-
-.guide-primary-btn {
-  height: 64rpx;
-  line-height: 64rpx;
-  border-radius: 999rpx;
-  font-size: 24rpx;
-  text-align: center;
+  gap: 14rpx;
 }
 
 .guide-primary-btn {
   flex: 1;
+  height: 72rpx;
+  line-height: 72rpx;
+  border-radius: 999rpx;
+  font-size: 26rpx;
+  font-weight: 600;
+  text-align: center;
   background: #2f80ed;
   color: #ffffff;
 }
 
 .guide-entry-card.onsite .guide-primary-btn {
-  background: #18b368;
+  background: linear-gradient(135deg, #18b368 0%, #16a34a 100%);
+  box-shadow: 0 4rpx 12rpx rgba(24, 179, 104, 0.18);
 }
 
 .guide-secondary-btn {
   min-width: 160rpx;
-  height: 64rpx;
-  line-height: 64rpx;
-  padding: 0 22rpx;
+  height: 72rpx;
+  line-height: 72rpx;
+  padding: 0 24rpx;
   border-radius: 999rpx;
   background: #f3f4f6;
   color: #374151;
-  font-size: 24rpx;
+  font-size: 26rpx;
+  font-weight: 500;
   text-align: center;
   box-sizing: border-box;
+  border: 1rpx solid #f3f4f6;
 }
 
+/* ---------- Trip Info Dialog（底部弹窗） ---------- */
 .trip-info-mask {
   position: fixed;
   left: 0;
@@ -2351,7 +2380,7 @@ onShow(() => {
   top: 0;
   bottom: 0;
   z-index: 99;
-  background: rgba(15, 23, 42, 0.45);
+  background: rgba(15, 23, 42, 0.5);
   display: flex;
   align-items: flex-end;
   padding: 28rpx;
@@ -2363,37 +2392,38 @@ onShow(() => {
   max-height: 86vh;
   overflow-y: auto;
   background: #ffffff;
-  border-radius: 28rpx 28rpx 18rpx 18rpx;
-  padding: 30rpx 26rpx 26rpx;
+  border-radius: 28rpx 28rpx 24rpx 24rpx;
+  padding: 28rpx 26rpx 26rpx;
   box-sizing: border-box;
+  box-shadow: 0 -8rpx 32rpx rgba(15, 23, 42, 0.08);
 }
 
 .trip-info-title {
-  font-size: 32rpx;
+  font-size: 30rpx;
   font-weight: 700;
   color: #1f2937;
-  line-height: 1.45;
+  line-height: 1.4;
 }
 
 .trip-info-subtitle {
-  margin-top: 8rpx;
+  margin-top: 6rpx;
   font-size: 23rpx;
   color: #6b7280;
-  line-height: 1.6;
+  line-height: 1.55;
 }
 
 .trip-info-field {
-  margin-top: 24rpx;
+  margin-top: 22rpx;
 }
 
 .trip-info-label {
-  font-size: 25rpx;
+  font-size: 24rpx;
   font-weight: 600;
   color: #374151;
 }
 
 .trip-info-options {
-  margin-top: 14rpx;
+  margin-top: 12rpx;
   display: flex;
   flex-wrap: wrap;
   gap: 12rpx;
@@ -2401,36 +2431,39 @@ onShow(() => {
 
 .trip-info-chip {
   min-width: 132rpx;
-  height: 56rpx;
-  line-height: 56rpx;
+  height: 58rpx;
+  line-height: 58rpx;
   padding: 0 18rpx;
   border-radius: 999rpx;
   background: #f3f4f6;
   color: #4b5563;
   font-size: 23rpx;
+  font-weight: 500;
   text-align: center;
   box-sizing: border-box;
+  border: 1rpx solid transparent;
 }
 
 .trip-info-chip.active {
   background: #18b368;
   color: #ffffff;
   font-weight: 600;
+  border-color: #18b368;
 }
 
 .trip-info-actions {
-  margin-top: 30rpx;
+  margin-top: 28rpx;
   display: flex;
-  gap: 16rpx;
+  gap: 14rpx;
 }
 
 .trip-info-cancel,
 .trip-info-submit {
   flex: 1;
-  height: 66rpx;
-  line-height: 66rpx;
+  height: 76rpx;
+  line-height: 76rpx;
   border-radius: 999rpx;
-  font-size: 24rpx;
+  font-size: 26rpx;
   text-align: center;
   font-weight: 600;
 }
@@ -2441,99 +2474,110 @@ onShow(() => {
 }
 
 .trip-info-submit {
-  background: #18b368;
+  background: linear-gradient(135deg, #18b368 0%, #16a34a 100%);
   color: #ffffff;
+  box-shadow: 0 4rpx 12rpx rgba(24, 179, 104, 0.18);
 }
 
 .trip-info-submit.disabled {
-  opacity: 0.62;
+  opacity: 0.55;
 }
 
+/* ---------- Section Header（左蓝竖线） ---------- */
 .section-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin: 6rpx 0 16rpx;
+  margin: 6rpx 0 18rpx;
+  padding-left: 4rpx;
 }
 
 .section-title {
-  font-size: 31rpx;
+  font-size: 30rpx;
   font-weight: 700;
   color: #1f2937;
+  padding-left: 18rpx;
+  border-left: 6rpx solid #2f80ed;
+  line-height: 1.3;
 }
 
 .section-more {
-  font-size: 23rpx;
+  font-size: 22rpx;
   color: #9ca3af;
+  flex-shrink: 0;
 }
 
+/* ---------- Service Grid（flex 四列） ---------- */
 .service-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  display: flex;
   gap: 14rpx;
-  margin: 18rpx 0 26rpx;
+  margin: 16rpx 0 28rpx;
 }
 
 .service-item {
-  background: #fff;
+  flex: 1;
+  background: #ffffff;
   border-radius: 22rpx;
-  padding: 22rpx 0;
+  padding: 22rpx 4rpx;
   text-align: center;
-  box-shadow: 0 8rpx 20rpx rgba(15, 23, 42, 0.04);
+  box-shadow: 0 8rpx 24rpx rgba(15, 23, 42, 0.05);
+  border: 1rpx solid #f3f4f6;
 }
 
 .service-icon {
-  font-size: 34rpx;
+  font-size: 32rpx;
 }
 
 .service-name {
-  margin-top: 10rpx;
+  margin-top: 8rpx;
   font-size: 22rpx;
   color: #374151;
+  white-space: nowrap;
 }
 
+/* ---------- Scenic List（热门推荐 · 固定高度卡片） ---------- */
 .scenic-list {
   display: flex;
   flex-direction: column;
   gap: 16rpx;
-  margin-bottom: 24rpx;
+  margin-bottom: 28rpx;
 }
 
 .scenic-card {
+  height: 210rpx;
   display: flex;
   overflow: hidden;
+  align-items: stretch;
 }
 
 .scenic-cover {
-  width: 160rpx;
-  min-height: 160rpx;
-  background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
-  position: relative;
+  width: 176rpx;
   flex-shrink: 0;
+  background: linear-gradient(160deg, #dbeafe 0%, #bfdbfe 60%, #e0e7ff 100%);
+  position: relative;
   overflow: hidden;
 }
 
 .scenic-cover-image {
-  width: 160rpx;
+  width: 100%;
   height: 100%;
-  min-height: 160rpx;
   display: block;
 }
 
 .scenic-cover-placeholder {
-  width: 160rpx;
+  width: 100%;
   height: 100%;
-  min-height: 160rpx;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
+  background: linear-gradient(160deg, #dbeafe 0%, #e0e7ff 50%, #c7d2fe 100%);
 }
 
 .scenic-cover-placeholder-text {
-  font-size: 34rpx;
-  font-weight: 700;
+  font-size: 40rpx;
+  font-weight: 800;
   color: #2f80ed;
+  opacity: 0.5;
 }
 
 .scenic-cover-mask {
@@ -2545,40 +2589,48 @@ onShow(() => {
   background: linear-gradient(
     180deg,
     rgba(15, 23, 42, 0) 0%,
-    rgba(15, 23, 42, 0.25) 100%
+    rgba(15, 23, 42, 0.2) 100%
   );
   pointer-events: none;
 }
 
 .scenic-tag {
   position: absolute;
-  left: 14rpx;
-  top: 14rpx;
-  background: rgba(255, 255, 255, 0.92);
+  left: 12rpx;
+  top: 12rpx;
+  background: rgba(255, 255, 255, 0.88);
   color: #2f80ed;
-  font-size: 21rpx;
-  padding: 7rpx 13rpx;
+  font-size: 20rpx;
+  font-weight: 600;
+  padding: 5rpx 12rpx;
   border-radius: 999rpx;
   z-index: 2;
+  box-shadow: 0 2rpx 6rpx rgba(15, 23, 42, 0.06);
 }
 
 .scenic-content {
   flex: 1;
-  padding: 18rpx 20rpx;
+  padding: 16rpx 20rpx;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .scenic-name {
   font-size: 28rpx;
   font-weight: 700;
   color: #1f2937;
-  line-height: 1.35;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .scenic-desc {
-  margin-top: 8rpx;
-  font-size: 23rpx;
+  margin-top: 6rpx;
+  font-size: 22rpx;
   color: #6b7280;
-  line-height: 1.48;
+  line-height: 1.5;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -2586,54 +2638,67 @@ onShow(() => {
 }
 
 .scenic-meta {
-  margin-top: 9rpx;
+  margin-top: 6rpx;
   display: flex;
-  flex-wrap: wrap;
-  gap: 10rpx;
+  flex-wrap: nowrap;
+  gap: 14rpx;
+  overflow: hidden;
 }
 
 .scenic-meta-item {
-  font-size: 21rpx;
+  font-size: 20rpx;
   color: #9ca3af;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .scenic-tags {
-  margin-top: 10rpx;
+  margin-top: 4rpx;
   display: flex;
-  flex-wrap: wrap;
-  gap: 10rpx;
+  flex-wrap: nowrap;
+  gap: 8rpx;
+  overflow: hidden;
 }
 
 .chip {
-  font-size: 21rpx;
+  font-size: 18rpx;
+  font-weight: 500;
   color: #2f80ed;
   background: #eff6ff;
-  padding: 7rpx 13rpx;
+  padding: 4rpx 12rpx;
   border-radius: 999rpx;
+  border: 1rpx solid rgba(47, 128, 237, 0.08);
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .scenic-actions {
-  margin-top: 12rpx;
+  margin-top: auto;
   display: flex;
-  flex-wrap: wrap;
   gap: 10rpx;
+  flex-wrap: nowrap;
 }
 
 .small-btn {
-  padding: 8rpx 16rpx;
+  padding: 8rpx 18rpx;
   border-radius: 999rpx;
   background: #f3f4f6;
   color: #374151;
-  font-size: 21rpx;
+  font-size: 20rpx;
+  font-weight: 500;
+  flex-shrink: 0;
 }
 
 .small-btn.primary {
-  background: #18b368;
+  background: linear-gradient(135deg, #18b368 0%, #16a34a 100%);
   color: #ffffff;
+  font-weight: 600;
+  box-shadow: 0 2rpx 8rpx rgba(24, 179, 104, 0.15);
 }
 
+/* ---------- Notice Card（公告与活动） ---------- */
 .notice-card {
-  padding: 22rpx 24rpx;
+  padding: 20rpx 24rpx;
   margin-bottom: 30rpx;
 }
 
@@ -2644,30 +2709,38 @@ onShow(() => {
 }
 
 .notice-dot {
-  width: 14rpx;
-  height: 14rpx;
+  width: 12rpx;
+  height: 12rpx;
   border-radius: 50%;
   background: #2f80ed;
-  margin-top: 12rpx;
+  margin-top: 10rpx;
   margin-right: 14rpx;
   flex-shrink: 0;
 }
 
 .notice-main {
   flex: 1;
+  min-width: 0;
 }
 
 .notice-title {
   font-size: 26rpx;
   color: #1f2937;
   font-weight: 600;
-  line-height: 1.6;
+  line-height: 1.55;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .notice-desc {
-  margin-top: 6rpx;
-  font-size: 23rpx;
+  margin-top: 4rpx;
+  font-size: 22rpx;
   color: #6b7280;
-  line-height: 1.6;
+  line-height: 1.55;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 </style>

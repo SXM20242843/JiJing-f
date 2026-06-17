@@ -22,8 +22,10 @@ import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
+import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
@@ -321,10 +323,11 @@ public class GuideChatService {
         boolean aiResponseStarted = false;
         try {
             Map<String, Object> requestBody = buildAiRequestBody(request);
+            RouteRecommendService.ChatRouteContext routeContext = null;
             boolean allowRoute = isExplicitRouteRequest(request);
             if (allowRoute) {
                 try {
-                    routeRecommendService.enrichChatRouteRequest(
+                    routeContext = routeRecommendService.enrichChatRouteRequest(
                             request,
                             request.getEffectiveUserId(),
                             requestBody
@@ -381,13 +384,14 @@ public class GuideChatService {
             }
 
             try (InputStream input = aiInput) {
-                byte[] buffer = new byte[4096];
-                int read;
-                while ((read = input.read(buffer)) != -1) {
-                    aiResponseStarted = true;
-                    outputStream.write(buffer, 0, read);
-                    outputStream.flush();
-                }
+                aiResponseStarted = true;
+                forwardAiSseWithRoutePolyline(
+                        input,
+                        outputStream,
+                        request,
+                        allowRoute,
+                        routeContext
+                );
             }
         } catch (IOException e) {
             if (aiResponseStarted) {
@@ -406,6 +410,145 @@ public class GuideChatService {
                 connection.disconnect();
             }
         }
+    }
+
+    private void forwardAiSseWithRoutePolyline(InputStream input,
+                                               OutputStream outputStream,
+                                               GuideChatRequest request,
+                                               boolean allowRoute,
+                                               RouteRecommendService.ChatRouteContext routeContext) throws IOException {
+        BufferedReader reader = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8));
+        List<String> eventLines = new ArrayList<>();
+        StringBuilder dataBuilder = new StringBuilder();
+        boolean[] routeEnriched = new boolean[]{false};
+        String eventName = "";
+        String line;
+        while ((line = reader.readLine()) != null) {
+            if (line.isEmpty()) {
+                writePossiblyEnrichedSseEvent(outputStream, request, allowRoute, routeContext, routeEnriched, eventName, dataBuilder, eventLines);
+                eventLines.clear();
+                dataBuilder.setLength(0);
+                eventName = "";
+                continue;
+            }
+            eventLines.add(line);
+            if (line.startsWith("event:")) {
+                eventName = stripSseValue(line.substring("event:".length()));
+            } else if (line.startsWith("data:")) {
+                if (dataBuilder.length() > 0) {
+                    dataBuilder.append('\n');
+                }
+                dataBuilder.append(stripSseValue(line.substring("data:".length())));
+            }
+        }
+        if (!eventLines.isEmpty()) {
+            writePossiblyEnrichedSseEvent(outputStream, request, allowRoute, routeContext, routeEnriched, eventName, dataBuilder, eventLines);
+        }
+    }
+
+    private void writePossiblyEnrichedSseEvent(OutputStream outputStream,
+                                               GuideChatRequest request,
+                                               boolean allowRoute,
+                                               RouteRecommendService.ChatRouteContext routeContext,
+                                               boolean[] routeEnriched,
+                                               String eventName,
+                                               StringBuilder dataBuilder,
+                                               List<String> eventLines) throws IOException {
+        if (eventLines == null || eventLines.isEmpty()) {
+            outputStream.write('\n');
+            outputStream.flush();
+            return;
+        }
+
+        String event = firstNotBlank(eventName);
+        String data = dataBuilder == null ? "" : dataBuilder.toString();
+        String enrichedData = tryEnrichSseRouteData(request, allowRoute, routeContext, routeEnriched, event, data);
+        if (enrichedData != null) {
+            writeSseEvent(outputStream, event, enrichedData);
+            return;
+        }
+
+        for (String line : eventLines) {
+            outputStream.write(line.getBytes(StandardCharsets.UTF_8));
+            outputStream.write('\n');
+        }
+        outputStream.write('\n');
+        outputStream.flush();
+    }
+
+    @SuppressWarnings("unchecked")
+    private String tryEnrichSseRouteData(GuideChatRequest request,
+                                         boolean allowRoute,
+                                         RouteRecommendService.ChatRouteContext routeContext,
+                                         boolean[] routeEnriched,
+                                         String eventName,
+                                         String data) {
+        String normalizedEvent = firstNotBlank(eventName).trim();
+        if (!allowRoute
+                || (!"route_ready".equals(normalizedEvent) && !"answer_done".equals(normalizedEvent))
+                || !hasText(data)) {
+            return null;
+        }
+        if (routeEnriched != null && routeEnriched.length > 0 && routeEnriched[0]) {
+            return null;
+        }
+
+        try {
+            Map<String, Object> eventPayload = objectMapper.readValue(data, new TypeReference<Map<String, Object>>() {});
+            if (!containsRoutePayload(eventPayload)) {
+                return null;
+            }
+            if (routeContext == null) {
+                log.info("[GuideChatSse] route payload found but routeContext unavailable, forward original event={}", normalizedEvent);
+                return null;
+            }
+
+            RouteCardDto route = routeRecommendService.standardizeAndSaveChatRoute(
+                    request,
+                    request.getEffectiveUserId(),
+                    request.getEffectiveSessionId(),
+                    eventPayload,
+                    readString(eventPayload, "answer", "content", "text"),
+                    routeContext
+            );
+            if (route == null) {
+                log.info("[GuideChatSse] route enrich skipped route=null event={}", normalizedEvent);
+                return null;
+            }
+
+            Object dataObj = eventPayload.get("data");
+            if (dataObj instanceof Map<?, ?> rawDataMap) {
+                Map<String, Object> dataMap = (Map<String, Object>) rawDataMap;
+                dataMap.put("route", route);
+            } else {
+                eventPayload.put("route", route);
+            }
+            log.info("[GuideChatSse] route_ready enriched before forward routeId={}, routePolyline={}, walkingPolyline={}, amapPolyline={}, segments={}",
+                    firstNotBlank(route.routeId, route.planId),
+                    route.routePolyline == null ? 0 : route.routePolyline.size(),
+                    route.walkingPolyline == null ? 0 : route.walkingPolyline.size(),
+                    route.amapPolyline == null ? 0 : route.amapPolyline.size(),
+                    route.segments == null ? 0 : route.segments.size());
+            if (routeEnriched != null && routeEnriched.length > 0) {
+                routeEnriched[0] = true;
+            }
+            return objectMapper.writeValueAsString(eventPayload);
+        } catch (Exception e) {
+            log.warn("[GuideChatSse] route_ready enrich failed, forward original event={}, error={}",
+                    eventName, e.getMessage(), e);
+            return null;
+        }
+    }
+
+    private void writeSseEvent(OutputStream outputStream, String eventName, String data) throws IOException {
+        String event = hasText(eventName) ? eventName.trim() : "message";
+        outputStream.write(("event: " + event + "\n").getBytes(StandardCharsets.UTF_8));
+        outputStream.write(("data: " + firstNotBlank(data, "{}") + "\n\n").getBytes(StandardCharsets.UTF_8));
+        outputStream.flush();
+    }
+
+    private String stripSseValue(String value) {
+        return value == null ? "" : value.trim();
     }
 
     public GuideChatResponse queryTtsStatus(String taskId) {
@@ -1624,6 +1767,10 @@ public class GuideChatService {
                         || map.containsKey("routeRecommendation")
                         || map.containsKey("recommended_spots")
                         || map.containsKey("recommendedSpots")
+                        || map.containsKey("spots")
+                        || map.containsKey("nodes")
+                        || map.containsKey("routeNodes")
+                        || map.containsKey("route_nodes")
         );
     }
 

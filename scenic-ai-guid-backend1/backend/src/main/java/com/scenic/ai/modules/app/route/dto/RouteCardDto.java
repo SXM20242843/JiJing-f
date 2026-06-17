@@ -76,6 +76,9 @@ public class RouteCardDto {
     public List<Map<String, BigDecimal>> routePolyline = new ArrayList<>();
     public List<Map<String, BigDecimal>> mapPolyline = new ArrayList<>();
     public List<Map<String, BigDecimal>> roadPolyline = new ArrayList<>();
+    public List<Map<String, BigDecimal>> walkingPolyline = new ArrayList<>();
+    public List<Map<String, BigDecimal>> amapPolyline = new ArrayList<>();
+    public List<Map<String, Object>> segments = new ArrayList<>();
 
     /**
      * 景点节点直线，仅用于兜底或调试，避免和真实道路 polyline 混淆。

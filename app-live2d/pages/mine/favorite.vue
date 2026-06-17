@@ -390,171 +390,236 @@ onShow(() => {
 </script>
 
 <style>
+/* ============================================================
+   即境 · 收藏景点 — 收藏夹 + 兴趣中心
+   设计方向：Clean APP Favorites · 统一列表卡片
+   签名元素：固定高度卡片 · 轻量标签角标 · 统一按钮行
+   本轮只改 CSS，不改 template / script / 任何业务入口
+   ============================================================ */
+
+/* ---------- Page ---------- */
 .page {
   min-height: 100vh;
-  background: linear-gradient(180deg, #f5f7fb 0%, #eef4ff 100%);
+  background: #f5f7fb;
   padding: 24rpx;
   box-sizing: border-box;
 }
 
+/* ---------- Card Base ---------- */
 .card,
 .top-card,
 .empty-card {
   background: #ffffff;
   border-radius: 28rpx;
-  box-shadow: 0 12rpx 28rpx rgba(15, 23, 42, 0.06);
+  box-shadow: 0 8rpx 24rpx rgba(15, 23, 42, 0.05);
+  border: 1rpx solid #f3f4f6;
 }
 
+/* ---------- Top Card（收藏汇总） ---------- */
 .top-card {
   padding: 28rpx 24rpx;
   margin-bottom: 24rpx;
 }
 
 .top-title {
-  font-size: 38rpx;
+  font-size: 30rpx;
   font-weight: 700;
   color: #1f2937;
+  padding-left: 18rpx;
+  border-left: 6rpx solid #2f80ed;
+  line-height: 1.3;
 }
 
 .top-desc {
   margin-top: 10rpx;
   font-size: 24rpx;
   color: #6b7280;
-  line-height: 1.7;
+  line-height: 1.6;
 }
 
 .top-actions {
   display: flex;
-  gap: 16rpx;
-  margin-top: 20rpx;
+  gap: 14rpx;
+  margin-top: 18rpx;
 }
 
 .top-btn {
-  padding: 14rpx 24rpx;
+  height: 64rpx;
+  line-height: 64rpx;
+  padding: 0 28rpx;
   border-radius: 999rpx;
-  background: #2f80ed;
+  background: #ef4444;
   color: #ffffff;
   font-size: 24rpx;
+  font-weight: 500;
+  text-align: center;
 }
 
 .top-btn.ghost {
   background: #eff6ff;
   color: #2f80ed;
+  font-weight: 600;
+  border: 1rpx solid rgba(47, 128, 237, 0.1);
 }
 
+/* ---------- Empty Card ---------- */
 .empty-card {
-  padding: 50rpx 28rpx;
+  padding: 72rpx 36rpx 64rpx;
   text-align: center;
 }
 
 .empty-title {
-  font-size: 30rpx;
+  font-size: 28rpx;
   font-weight: 700;
   color: #1f2937;
 }
 
 .empty-desc {
-  margin-top: 12rpx;
-  font-size: 24rpx;
-  color: #6b7280;
-  line-height: 1.8;
-}
-
-.empty-btn {
-  display: inline-block;
-  margin-top: 24rpx;
-  padding: 16rpx 28rpx;
-  border-radius: 999rpx;
-  background: #2f80ed;
-  color: #ffffff;
-  font-size: 24rpx;
-}
-
-.list {
-  display: flex;
-  flex-direction: column;
-  gap: 20rpx;
-}
-
-.scenic-card {
-  display: flex;
-  overflow: hidden;
-}
-
-.cover {
-  width: 190rpx;
-  min-height: 220rpx;
-  background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
-  position: relative;
-  flex-shrink: 0;
-}
-
-.cover-tag {
-  position: absolute;
-  left: 16rpx;
-  top: 16rpx;
-  background: rgba(255, 255, 255, 0.9);
-  color: #2f80ed;
-  font-size: 22rpx;
-  padding: 8rpx 14rpx;
-  border-radius: 999rpx;
-}
-
-.info {
-  flex: 1;
-  padding: 22rpx;
-}
-
-.name {
-  font-size: 30rpx;
-  font-weight: 700;
-  color: #1f2937;
-}
-
-.desc {
   margin-top: 10rpx;
   font-size: 24rpx;
   color: #6b7280;
-  line-height: 1.7;
+  line-height: 1.65;
 }
 
-.tag-row {
-  margin-top: 14rpx;
+.empty-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 72rpx;
+  line-height: 72rpx;
+  margin-top: 22rpx;
+  padding: 0 32rpx;
+  border-radius: 999rpx;
+  background: linear-gradient(135deg, #18b368 0%, #16a34a 100%);
+  color: #ffffff;
+  font-size: 26rpx;
+  font-weight: 600;
+  box-shadow: 0 4rpx 12rpx rgba(24, 179, 104, 0.18);
+}
+
+/* ---------- List ---------- */
+.list {
   display: flex;
-  flex-wrap: wrap;
-  gap: 12rpx;
+  flex-direction: column;
+  gap: 16rpx;
+}
+
+/* ---------- Scenic Card（固定高度 210rpx） ---------- */
+.scenic-card {
+  height: 210rpx;
+  display: flex;
+  overflow: hidden;
+  align-items: stretch;
+}
+
+/* ---------- Cover（固定宽 · 纯占位不突兀） ---------- */
+.cover {
+  width: 176rpx;
+  flex-shrink: 0;
+  background: linear-gradient(160deg, #dbeafe 0%, #bfdbfe 60%, #e0e7ff 100%);
+  position: relative;
+  overflow: hidden;
+}
+
+/* 轻量角标 — 已收藏 / 本地收藏 */
+.cover-tag {
+  position: absolute;
+  left: 12rpx;
+  top: 12rpx;
+  background: rgba(255, 255, 255, 0.88);
+  color: #2f80ed;
+  font-size: 20rpx;
+  font-weight: 600;
+  padding: 5rpx 12rpx;
+  border-radius: 999rpx;
+  z-index: 2;
+  box-shadow: 0 2rpx 6rpx rgba(15, 23, 42, 0.06);
+}
+
+/* ---------- Info（flex 列，按钮沉底） ---------- */
+.info {
+  flex: 1;
+  padding: 16rpx 20rpx;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 名称 — 单行省略 */
+.name {
+  font-size: 28rpx;
+  font-weight: 700;
+  color: #1f2937;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 简介 — 最多 2 行省略 */
+.desc {
+  margin-top: 6rpx;
+  font-size: 22rpx;
+  color: #6b7280;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* 标签行 — nowrap + overflow hidden */
+.tag-row {
+  margin-top: 4rpx;
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 8rpx;
+  overflow: hidden;
 }
 
 .tag-chip {
-  font-size: 22rpx;
+  font-size: 18rpx;
+  font-weight: 500;
   color: #2f80ed;
   background: #eff6ff;
-  padding: 8rpx 14rpx;
+  padding: 4rpx 12rpx;
   border-radius: 999rpx;
+  border: 1rpx solid rgba(47, 128, 237, 0.08);
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
+/* 按钮行 — 沉底 · nowrap */
 .action-row {
-  margin-top: 18rpx;
+  margin-top: auto;
   display: flex;
-  gap: 12rpx;
-  flex-wrap: wrap;
+  gap: 10rpx;
+  flex-wrap: nowrap;
 }
 
 .pill {
-  padding: 10rpx 18rpx;
+  padding: 8rpx 18rpx;
   border-radius: 999rpx;
   background: #f3f4f6;
   color: #374151;
-  font-size: 22rpx;
+  font-size: 20rpx;
+  font-weight: 500;
+  flex-shrink: 0;
+  line-height: 1;
 }
 
+/* AI讲解 — 绿色渐变主按钮 */
 .pill.primary {
-  background: #18b368;
+  background: linear-gradient(135deg, #18b368 0%, #16a34a 100%);
   color: #ffffff;
+  font-weight: 600;
+  box-shadow: 0 2rpx 8rpx rgba(24, 179, 104, 0.15);
 }
 
+/* 取消收藏 — 红色语义弱化 */
 .pill.danger {
-  background: #fff1f2;
-  color: #e11d48;
+  background: #fef2f2;
+  color: #ef4444;
+  border: 1rpx solid rgba(239, 68, 68, 0.1);
 }
 </style>

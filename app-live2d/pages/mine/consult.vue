@@ -337,142 +337,187 @@ onShow(() => {
 </script>
 
 <style>
+/* ============================================================
+   即境 · 咨询记录 — AI 问答历史 + 继续追问
+   设计方向：Clean APP History · 统一卡片 + Q&A 层级
+   签名元素：左蓝竖线标题 · Q/A 区分 · 统一 pill 行
+   本轮只改 CSS，不改 template / script / 任何业务入口
+   ============================================================ */
+
+/* ---------- Page ---------- */
 .page {
   min-height: 100vh;
-  background: linear-gradient(180deg, #f5f7fb 0%, #eef4ff 100%);
+  background: #f5f7fb;
   padding: 24rpx;
   box-sizing: border-box;
 }
 
+/* ---------- Card Base ---------- */
 .card,
 .top-card,
 .empty-card {
   background: #ffffff;
   border-radius: 28rpx;
-  box-shadow: 0 12rpx 28rpx rgba(15, 23, 42, 0.06);
+  box-shadow: 0 8rpx 24rpx rgba(15, 23, 42, 0.05);
+  border: 1rpx solid #f3f4f6;
 }
 
+/* ---------- Top Card ---------- */
 .top-card {
   padding: 28rpx 24rpx;
   margin-bottom: 24rpx;
 }
 
 .top-title {
-  font-size: 38rpx;
+  font-size: 30rpx;
   font-weight: 700;
   color: #1f2937;
+  padding-left: 18rpx;
+  border-left: 6rpx solid #2f80ed;
+  line-height: 1.3;
 }
 
 .top-desc {
   margin-top: 10rpx;
   font-size: 24rpx;
   color: #6b7280;
-  line-height: 1.7;
+  line-height: 1.6;
 }
 
 .top-actions {
   display: flex;
-  gap: 16rpx;
-  margin-top: 20rpx;
+  gap: 14rpx;
+  margin-top: 18rpx;
 }
 
 .top-btn {
-  padding: 14rpx 24rpx;
+  height: 64rpx;
+  line-height: 64rpx;
+  padding: 0 28rpx;
   border-radius: 999rpx;
-  background: #2f80ed;
-  color: #ffffff;
+  background: #fef2f2;
+  color: #ef4444;
   font-size: 24rpx;
+  font-weight: 500;
+  text-align: center;
+  border: 1rpx solid rgba(239, 68, 68, 0.1);
 }
 
 .top-btn.ghost {
   background: #eff6ff;
   color: #2f80ed;
+  font-weight: 600;
+  border: 1rpx solid rgba(47, 128, 237, 0.1);
 }
 
+/* ---------- Empty Card ---------- */
 .empty-card {
-  padding: 50rpx 28rpx;
+  padding: 72rpx 36rpx 64rpx;
   text-align: center;
 }
 
 .empty-title {
-  font-size: 30rpx;
+  font-size: 28rpx;
   font-weight: 700;
   color: #1f2937;
 }
 
 .empty-desc {
-  margin-top: 12rpx;
+  margin-top: 10rpx;
   font-size: 24rpx;
   color: #6b7280;
-  line-height: 1.8;
+  line-height: 1.65;
 }
 
 .empty-btn {
-  display: inline-block;
-  margin-top: 24rpx;
-  padding: 16rpx 28rpx;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 72rpx;
+  line-height: 72rpx;
+  margin-top: 22rpx;
+  padding: 0 32rpx;
   border-radius: 999rpx;
-  background: #2f80ed;
+  background: linear-gradient(135deg, #18b368 0%, #16a34a 100%);
   color: #ffffff;
-  font-size: 24rpx;
+  font-size: 26rpx;
+  font-weight: 600;
+  box-shadow: 0 4rpx 12rpx rgba(24, 179, 104, 0.18);
 }
 
+/* ---------- List ---------- */
 .list {
   display: flex;
   flex-direction: column;
-  gap: 20rpx;
+  gap: 16rpx;
 }
 
+/* ---------- Consult Card ---------- */
 .consult-card {
   padding: 24rpx;
 }
 
+/* 问 — 深色突出 */
 .consult-question {
   font-size: 26rpx;
   color: #1f2937;
-  font-weight: 700;
-  line-height: 1.7;
+  font-weight: 600;
+  line-height: 1.6;
 }
 
+/* 答 — 浅灰区分 · 最多 3 行省略 */
 .consult-answer {
-  margin-top: 12rpx;
+  margin-top: 10rpx;
   font-size: 24rpx;
   color: #6b7280;
-  line-height: 1.8;
+  line-height: 1.65;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
+/* Meta — 弱化 · 允许换行但不凌乱 */
 .consult-meta {
-  margin-top: 14rpx;
+  margin-top: 12rpx;
   display: flex;
-  justify-content: space-between;
-  gap: 16rpx;
   flex-wrap: wrap;
-  font-size: 22rpx;
+  gap: 14rpx;
+  font-size: 20rpx;
   color: #9ca3af;
 }
 
+/* 按钮行 — nowrap 防跳 */
 .action-row {
-  margin-top: 18rpx;
+  margin-top: 16rpx;
   display: flex;
-  gap: 12rpx;
-  flex-wrap: wrap;
+  gap: 10rpx;
+  flex-wrap: nowrap;
 }
 
 .pill {
-  padding: 10rpx 18rpx;
+  padding: 8rpx 18rpx;
   border-radius: 999rpx;
   background: #f3f4f6;
   color: #374151;
-  font-size: 22rpx;
+  font-size: 20rpx;
+  font-weight: 500;
+  flex-shrink: 0;
+  line-height: 1;
 }
 
+/* 继续咨询 — 绿色渐变主按钮 */
 .pill.primary {
-  background: #18b368;
+  background: linear-gradient(135deg, #18b368 0%, #16a34a 100%);
   color: #ffffff;
+  font-weight: 600;
+  box-shadow: 0 2rpx 8rpx rgba(24, 179, 104, 0.15);
 }
 
+/* 删除 — 红色语义弱化 */
 .pill.danger {
-  background: #fff1f2;
-  color: #e11d48;
+  background: #fef2f2;
+  color: #ef4444;
+  border: 1rpx solid rgba(239, 68, 68, 0.1);
 }
 </style>

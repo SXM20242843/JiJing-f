@@ -266,47 +266,59 @@ function goHome() {
 </script>
 
 <style>
+/* ============================================================
+   即境 · 使用帮助 — 三阶段闭环说明 + FAQ + 快速入口
+   设计方向：Clean APP Help · 统一卡片 + 左蓝竖线标题
+   签名元素：阶段色卡片 · flex 能力网格 · 轻量流程编号
+   本轮只改 CSS，不改 template / script / 任何业务入口
+   ============================================================ */
+
+/* ---------- Page ---------- */
 .page {
   min-height: 100vh;
-  background: linear-gradient(180deg, #f5f7fb 0%, #eef4ff 100%);
+  background: #f5f7fb;
   padding: 24rpx;
   box-sizing: border-box;
 }
 
+/* ---------- Card Base ---------- */
 .card {
   background: #ffffff;
   border-radius: 28rpx;
-  box-shadow: 0 12rpx 28rpx rgba(15, 23, 42, 0.06);
+  box-shadow: 0 8rpx 24rpx rgba(15, 23, 42, 0.05);
+  border: 1rpx solid #f3f4f6;
 }
 
+/* ---------- Hero（蓝渐变 · 弱化装饰圆） ---------- */
 .hero {
   position: relative;
   overflow: hidden;
-  background: linear-gradient(135deg, #2f80ed 0%, #56ccf2 100%);
-  border-radius: 32rpx;
-  padding: 34rpx 30rpx;
+  background: linear-gradient(135deg, #2f80ed 0%, #409eef 100%);
+  border-radius: 28rpx;
+  padding: 30rpx 28rpx;
   margin-bottom: 28rpx;
   color: #ffffff;
+  box-shadow: 0 8rpx 24rpx rgba(15, 23, 42, 0.08);
 }
 
 .hero-bg-circle {
   position: absolute;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.07);
 }
 
 .hero-bg-circle-1 {
-  width: 240rpx;
-  height: 240rpx;
-  right: -50rpx;
-  top: -40rpx;
+  width: 200rpx;
+  height: 200rpx;
+  right: -30rpx;
+  top: -30rpx;
 }
 
 .hero-bg-circle-2 {
-  width: 170rpx;
-  height: 170rpx;
-  right: 120rpx;
-  bottom: -70rpx;
+  width: 140rpx;
+  height: 140rpx;
+  right: 100rpx;
+  bottom: -50rpx;
 }
 
 .hero-content {
@@ -316,54 +328,60 @@ function goHome() {
 
 .hero-badge {
   display: inline-flex;
-  padding: 8rpx 18rpx;
+  padding: 6rpx 16rpx;
   border-radius: 999rpx;
-  background: rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.15);
   font-size: 20rpx;
-  letter-spacing: 1rpx;
-  margin-bottom: 18rpx;
+  font-weight: 500;
+  margin-bottom: 16rpx;
 }
 
 .hero-title {
-  font-size: 40rpx;
+  font-size: 38rpx;
   font-weight: 700;
-  line-height: 1.45;
+  line-height: 1.4;
 }
 
 .hero-subtitle {
-  margin-top: 14rpx;
-  font-size: 25rpx;
-  line-height: 1.7;
-  opacity: 0.96;
+  margin-top: 12rpx;
+  font-size: 24rpx;
+  line-height: 1.6;
+  opacity: 0.88;
 }
 
+/* ---------- Section Header（左蓝竖线） ---------- */
 .section-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin: 10rpx 0 18rpx;
+  margin: 8rpx 0 20rpx;
+  padding-left: 4rpx;
 }
 
 .section-title {
-  font-size: 31rpx;
+  font-size: 30rpx;
   font-weight: 700;
   color: #1f2937;
+  padding-left: 18rpx;
+  border-left: 6rpx solid #2f80ed;
+  line-height: 1.3;
 }
 
 .section-more {
-  font-size: 23rpx;
+  font-size: 22rpx;
   color: #9ca3af;
+  flex-shrink: 0;
 }
 
+/* ---------- Stage Cards（三阶段 · 独立色系） ---------- */
 .stage-list {
-  margin-bottom: 28rpx;
+  margin-bottom: 32rpx;
 }
 
 .stage-card {
   display: flex;
-  padding: 26rpx 24rpx;
-  margin-bottom: 18rpx;
-  border: 1rpx solid rgba(47, 128, 237, 0.08);
+  padding: 24rpx;
+  margin-bottom: 16rpx;
 }
 
 .stage-card:last-child {
@@ -371,98 +389,113 @@ function goHome() {
 }
 
 .stage-index {
-  width: 72rpx;
-  height: 72rpx;
-  border-radius: 24rpx;
+  width: 68rpx;
+  height: 68rpx;
+  border-radius: 20rpx;
   background: #eff6ff;
   color: #2f80ed;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 26rpx;
-  font-weight: 800;
-  margin-right: 22rpx;
+  font-size: 28rpx;
+  font-weight: 700;
+  margin-right: 20rpx;
   flex-shrink: 0;
 }
 
 .stage-main {
   flex: 1;
+  min-width: 0;
 }
 
 .stage-tag {
   display: inline-flex;
-  padding: 5rpx 14rpx;
+  padding: 4rpx 12rpx;
   border-radius: 999rpx;
   background: #eff6ff;
   color: #2f80ed;
-  font-size: 21rpx;
-  margin-bottom: 8rpx;
+  font-size: 20rpx;
+  font-weight: 500;
+  margin-bottom: 6rpx;
 }
 
 .stage-title {
-  font-size: 30rpx;
-  font-weight: 800;
+  font-size: 28rpx;
+  font-weight: 700;
   color: #1f2937;
-  line-height: 1.45;
+  line-height: 1.4;
 }
 
 .stage-desc {
-  margin-top: 8rpx;
+  margin-top: 6rpx;
   font-size: 24rpx;
   color: #6b7280;
-  line-height: 1.7;
+  line-height: 1.65;
 }
 
+/* 现场中 — 绿色系 */
 .stage-onsite .stage-index,
 .stage-onsite .stage-tag {
   background: #ecfdf5;
   color: #16a34a;
 }
 
+/* 游览后 — 暖橙色系 */
 .stage-report .stage-index,
 .stage-report .stage-tag {
   background: #fff7ed;
   color: #ea580c;
 }
 
+/* ---------- Ability Grid（flex 双列，避免 grid 兼容问题） ---------- */
 .ability-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 18rpx;
-  margin-bottom: 28rpx;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16rpx;
+  margin-bottom: 32rpx;
 }
 
 .ability-card {
+  width: calc(50% - 8rpx);
   padding: 24rpx 20rpx;
+  box-sizing: border-box;
 }
 
 .ability-icon {
-  font-size: 40rpx;
-  margin-bottom: 14rpx;
+  font-size: 36rpx;
+  margin-bottom: 12rpx;
 }
 
 .ability-title {
-  font-size: 28rpx;
+  font-size: 26rpx;
   font-weight: 700;
   color: #1f2937;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ability-desc {
-  margin-top: 8rpx;
-  font-size: 23rpx;
+  margin-top: 6rpx;
+  font-size: 22rpx;
   color: #6b7280;
-  line-height: 1.6;
+  line-height: 1.55;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
+/* ---------- Process（推荐使用流程 · 6 步） ---------- */
 .process-card {
-  padding: 8rpx 26rpx;
-  margin-bottom: 28rpx;
+  padding: 4rpx 24rpx;
+  margin-bottom: 32rpx;
 }
 
 .process-item {
   display: flex;
-  padding: 28rpx 0;
-  border-bottom: 1rpx solid #eef0f4;
+  padding: 24rpx 0;
+  border-bottom: 1rpx solid #f3f4f6;
 }
 
 .process-item:last-child {
@@ -470,8 +503,8 @@ function goHome() {
 }
 
 .process-index {
-  width: 64rpx;
-  font-size: 28rpx;
+  width: 56rpx;
+  font-size: 26rpx;
   font-weight: 700;
   color: #2f80ed;
   flex-shrink: 0;
@@ -479,30 +512,33 @@ function goHome() {
 
 .process-main {
   flex: 1;
+  min-width: 0;
 }
 
 .process-title {
-  font-size: 29rpx;
-  font-weight: 700;
+  font-size: 28rpx;
+  font-weight: 600;
   color: #1f2937;
+  line-height: 1.4;
 }
 
 .process-desc {
-  margin-top: 8rpx;
+  margin-top: 6rpx;
   font-size: 24rpx;
   color: #6b7280;
-  line-height: 1.7;
+  line-height: 1.65;
 }
 
+/* ---------- Help / FAQ ---------- */
 .help-card {
-  padding: 8rpx 26rpx;
+  padding: 4rpx 24rpx;
   margin-bottom: 24rpx;
 }
 
 .help-item {
   display: flex;
-  padding: 28rpx 0;
-  border-bottom: 1rpx solid #eef0f4;
+  padding: 24rpx 0;
+  border-bottom: 1rpx solid #f3f4f6;
 }
 
 .help-item:last-child {
@@ -510,55 +546,60 @@ function goHome() {
 }
 
 .help-icon {
-  width: 58rpx;
-  height: 58rpx;
-  border-radius: 18rpx;
+  width: 56rpx;
+  height: 56rpx;
+  border-radius: 16rpx;
   background: #eff6ff;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 28rpx;
-  margin-right: 20rpx;
+  font-size: 26rpx;
+  margin-right: 18rpx;
   flex-shrink: 0;
+  border: 1rpx solid rgba(47, 128, 237, 0.06);
 }
 
 .help-main {
   flex: 1;
+  min-width: 0;
 }
 
 .help-title {
-  font-size: 29rpx;
-  font-weight: 700;
+  font-size: 28rpx;
+  font-weight: 600;
   color: #1f2937;
-  line-height: 1.5;
+  line-height: 1.4;
 }
 
 .help-desc {
-  margin-top: 8rpx;
+  margin-top: 6rpx;
   font-size: 24rpx;
   color: #6b7280;
-  line-height: 1.7;
+  line-height: 1.65;
 }
 
+/* ---------- Tips（演示建议 · 淡蓝提示条） ---------- */
 .tips-card {
-  padding: 26rpx 24rpx;
+  padding: 24rpx;
   margin-bottom: 24rpx;
-  background: #fffaf0;
+  background: #f8fafc;
+  border-left: 6rpx solid #93c5fd;
 }
 
 .tips-title {
-  font-size: 30rpx;
+  font-size: 28rpx;
   font-weight: 700;
-  color: #92400e;
+  color: #1f2937;
 }
 
 .tips-desc {
-  margin-top: 10rpx;
+  margin-top: 8rpx;
   font-size: 24rpx;
-  color: #b45309;
-  line-height: 1.7;
+  color: #6b7280;
+  line-height: 1.65;
 }
 
+/* ---------- Action（底部 CTA） ---------- */
 .action-card {
   padding: 26rpx 24rpx;
   margin-bottom: 30rpx;
@@ -570,63 +611,72 @@ function goHome() {
 }
 
 .action-icon {
-  width: 82rpx;
-  height: 82rpx;
+  width: 76rpx;
+  height: 76rpx;
   border-radius: 50%;
-  background: linear-gradient(135deg, #18b368 0%, #4cd7a3 100%);
+  background: linear-gradient(135deg, #18b368 0%, #16a34a 100%);
   color: #ffffff;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 28rpx;
+  font-size: 26rpx;
   font-weight: 700;
-  margin-right: 20rpx;
+  margin-right: 18rpx;
   flex-shrink: 0;
 }
 
 .action-info {
   flex: 1;
+  min-width: 0;
 }
 
 .action-title {
-  font-size: 29rpx;
+  font-size: 28rpx;
   font-weight: 700;
   color: #1f2937;
-  line-height: 1.5;
+  line-height: 1.4;
 }
 
 .action-desc {
-  margin-top: 6rpx;
-  font-size: 23rpx;
+  margin-top: 4rpx;
+  font-size: 22rpx;
   color: #6b7280;
   line-height: 1.5;
 }
 
 .action-buttons {
   display: flex;
-  gap: 14rpx;
-  margin-top: 24rpx;
+  gap: 12rpx;
+  margin-top: 22rpx;
 }
 
 .action-btn {
   flex: 1;
-  height: 72rpx;
+  height: 76rpx;
+  line-height: 76rpx;
   border-radius: 999rpx;
   background: #f3f4f6;
-  color: #4b5563;
-  font-size: 24rpx;
+  color: #374151;
+  font-size: 26rpx;
+  font-weight: 500;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
+/* AI 助手 — 绿色主按钮 */
 .action-btn.primary {
-  background: #2f80ed;
+  background: linear-gradient(135deg, #18b368 0%, #16a34a 100%);
   color: #ffffff;
+  font-weight: 600;
+  box-shadow: 0 4rpx 12rpx rgba(24, 179, 104, 0.18);
 }
 
+/* 回到首页 — 蓝色次按钮 */
 .action-btn.ghost {
-  background: #ecfdf5;
-  color: #16a34a;
+  background: #eff6ff;
+  color: #2f80ed;
+  font-weight: 500;
+  border: 1rpx solid rgba(47, 128, 237, 0.12);
 }
 </style>

@@ -769,143 +769,200 @@ onLoad((options) => {
 </script>
 
 <style>
+/* ============================================================
+   即境 · 景点详情 — 景点介绍 + AI讲解 + 推荐路线
+   设计方向：Clean APP Detail · 统一卡片 + 左蓝竖线标题
+   签名元素：border-left 标题 · 3 行省略简介 · 轻量提示条
+   本轮只改 CSS，不改 template / script / 任何业务入口
+   ============================================================ */
+
+/* ---------- Page ---------- */
 .page {
   min-height: 100vh;
-  background: linear-gradient(180deg, #f5f7fb 0%, #eef4ff 100%);
-  padding: 24rpx 24rpx 140rpx;
+  background: #f5f7fb;
+  padding: 24rpx 24rpx 160rpx;
   box-sizing: border-box;
 }
 
+/* ---------- Status (loading / empty) ---------- */
 .status-box {
   background: #ffffff;
-  border-radius: 28rpx;
-  box-shadow: 0 12rpx 28rpx rgba(15, 23, 42, 0.06);
-  padding: 40rpx 24rpx;
+  border-radius: 24rpx;
+  padding: 80rpx 24rpx 64rpx;
   text-align: center;
+  box-shadow: 0 8rpx 24rpx rgba(15, 23, 42, 0.05);
+  border: 1rpx solid #f3f4f6;
+}
+
+/* 空态视觉锚点 — 装饰圆 */
+.status-box::before {
+  content: '';
+  display: block;
+  width: 72rpx;
+  height: 72rpx;
+  margin: 0 auto 28rpx;
+  background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
+  border-radius: 50%;
 }
 
 .status-text {
   font-size: 26rpx;
   color: #6b7280;
+  line-height: 1.7;
 }
 
-.hero-card,
-.section-card {
+/* ---------- Hero Card ---------- */
+.hero-card {
   background: #ffffff;
   border-radius: 28rpx;
-  box-shadow: 0 12rpx 28rpx rgba(15, 23, 42, 0.06);
+  box-shadow: 0 8rpx 24rpx rgba(15, 23, 42, 0.05);
+  border: 1rpx solid #f3f4f6;
   margin-bottom: 24rpx;
   overflow: hidden;
 }
 
+/* ---------- Hero Cover (260rpx，不偏高) ---------- */
 .hero-cover {
-  height: 320rpx;
-  background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
+  height: 260rpx;
+  background: linear-gradient(160deg, #dbeafe 0%, #bfdbfe 60%, #e0e7ff 100%);
   position: relative;
   overflow: hidden;
 }
 
 .hero-cover-image {
   width: 100%;
-  height: 320rpx;
+  height: 260rpx;
   display: block;
 }
 
 .hero-cover-placeholder {
   width: 100%;
-  height: 320rpx;
+  height: 260rpx;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
+  background: linear-gradient(160deg, #dbeafe 0%, #e0e7ff 50%, #c7d2fe 100%);
 }
 
 .hero-cover-placeholder-text {
-  font-size: 46rpx;
-  font-weight: 700;
+  font-size: 48rpx;
+  font-weight: 800;
   color: #2f80ed;
+  opacity: 0.5;
 }
 
+/* 底部渐变遮罩 — 高度跟随 cover */
 .hero-cover-mask {
   position: absolute;
   left: 0;
   right: 0;
   bottom: 0;
-  height: 120rpx;
+  height: 90rpx;
   background: linear-gradient(
     180deg,
     rgba(15, 23, 42, 0) 0%,
-    rgba(15, 23, 42, 0.28) 100%
+    rgba(15, 23, 42, 0.2) 100%
   );
   pointer-events: none;
 }
 
+/* 轻量角标 */
 .hero-badge {
   position: absolute;
-  left: 20rpx;
-  top: 20rpx;
-  background: rgba(255, 255, 255, 0.9);
+  left: 16rpx;
+  top: 16rpx;
+  background: rgba(255, 255, 255, 0.88);
   color: #2f80ed;
-  font-size: 22rpx;
-  padding: 8rpx 16rpx;
+  font-size: 20rpx;
+  font-weight: 600;
+  padding: 6rpx 14rpx;
   border-radius: 999rpx;
   z-index: 2;
+  box-shadow: 0 2rpx 6rpx rgba(15, 23, 42, 0.06);
 }
 
+/* ---------- Hero Content ---------- */
 .hero-content {
   padding: 24rpx;
 }
 
 .hero-title {
-  font-size: 38rpx;
+  font-size: 36rpx;
   font-weight: 700;
   color: #1f2937;
+  line-height: 1.3;
 }
 
+/* 简介 — 最多 3 行，超出省略 */
 .hero-desc {
-  margin-top: 12rpx;
+  margin-top: 10rpx;
   font-size: 26rpx;
   color: #6b7280;
-  line-height: 1.7;
+  line-height: 1.6;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
+/* Meta 行 — 开放时间 / 推荐时长 pill（真机防溢出） */
 .hero-meta {
-  margin-top: 18rpx;
+  margin-top: 16rpx;
   display: flex;
   flex-wrap: wrap;
-  gap: 14rpx;
+  gap: 12rpx;
+  overflow: visible;
 }
 
 .meta-pill {
-  padding: 10rpx 18rpx;
+  padding: 8rpx 16rpx;
   border-radius: 999rpx;
   background: #eff6ff;
   color: #2f80ed;
-  font-size: 22rpx;
+  font-size: 20rpx;
+  font-weight: 500;
+  border: 1rpx solid rgba(47, 128, 237, 0.08);
+  white-space: nowrap;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
+/* ---------- Section Card ---------- */
 .section-card {
+  background: #ffffff;
+  border-radius: 28rpx;
+  box-shadow: 0 8rpx 24rpx rgba(15, 23, 42, 0.05);
+  border: 1rpx solid #f3f4f6;
+  margin-bottom: 20rpx;
   padding: 24rpx;
+  overflow: hidden;
 }
 
+/* 标题 — 左侧蓝色短竖线（参考报告页，用 border-left 不用伪元素） */
 .section-title {
   font-size: 30rpx;
   font-weight: 700;
   color: #1f2937;
   margin-bottom: 18rpx;
+  padding-left: 18rpx;
+  border-left: 6rpx solid #2f80ed;
+  line-height: 1.3;
 }
 
+/* 正文 */
 .section-text {
   font-size: 26rpx;
   color: #4b5563;
-  line-height: 1.9;
+  line-height: 1.8;
 }
 
-.highlight-list,
-.tips-list {
+/* ---------- 游玩亮点 ---------- */
+.highlight-list {
   display: flex;
   flex-direction: column;
-  gap: 16rpx;
+  gap: 14rpx;
 }
 
 .highlight-item {
@@ -913,9 +970,10 @@ onLoad((options) => {
   align-items: flex-start;
 }
 
+/* 小绿圆点 */
 .highlight-dot {
-  width: 14rpx;
-  height: 14rpx;
+  width: 12rpx;
+  height: 12rpx;
   border-radius: 50%;
   background: #18b368;
   margin-top: 12rpx;
@@ -923,59 +981,99 @@ onLoad((options) => {
   flex-shrink: 0;
 }
 
-.highlight-text,
+.highlight-text {
+  font-size: 26rpx;
+  color: #4b5563;
+  line-height: 1.7;
+  flex: 1;
+}
+
+/* ---------- 温馨提示（轻量提示条） ---------- */
+.tips-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12rpx;
+}
+
 .tips-item {
   font-size: 25rpx;
   color: #4b5563;
-  line-height: 1.8;
+  line-height: 1.6;
+  padding: 12rpx 16rpx;
+  background: #f8fafc;
+  border-radius: 14rpx;
+  border-left: 4rpx solid #93c5fd;
 }
 
+/* ---------- 标签信息 ---------- */
 .tag-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 14rpx;
+  gap: 10rpx;
 }
 
 .tag-chip {
-  font-size: 22rpx;
+  font-size: 18rpx;
+  font-weight: 500;
   color: #2f80ed;
   background: #eff6ff;
-  padding: 10rpx 16rpx;
+  padding: 6rpx 14rpx;
   border-radius: 999rpx;
+  border: 1rpx solid rgba(47, 128, 237, 0.08);
 }
 
+/* ---------- Action Bar（固定底部 · 三按钮） ---------- */
 .action-bar {
   position: fixed;
   left: 0;
   right: 0;
   bottom: 0;
   display: flex;
-  gap: 16rpx;
-  padding: 20rpx 24rpx calc(20rpx + env(safe-area-inset-bottom));
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 -8rpx 20rpx rgba(15, 23, 42, 0.05);
+  gap: 14rpx;
+  padding: 18rpx 24rpx calc(18rpx + env(safe-area-inset-bottom));
+  background: #ffffff;
+  box-shadow: 0 -4rpx 20rpx rgba(15, 23, 42, 0.06);
+  z-index: 10;
 }
 
 .action-btn {
   flex: 1;
+  height: 76rpx;
+  line-height: 76rpx;
+  padding: 0;
   border-radius: 999rpx;
-  font-size: 24rpx;
+  font-size: 26rpx;
+  font-weight: 500;
   background: #f3f4f6;
   color: #374151;
+  border: none;
+  text-align: center;
 }
 
+.action-btn::after {
+  border: none;
+}
+
+/* 已收藏 */
 .action-btn.collected {
   background: #eff6ff;
   color: #2f80ed;
+  border: 1rpx solid rgba(47, 128, 237, 0.12);
 }
 
+/* 推荐路线 — 蓝色次主按钮 */
 .action-btn.secondary {
-  background: #ffb648;
-  color: #ffffff;
+  background: #eff6ff;
+  color: #2f80ed;
+  font-weight: 600;
+  border: 1rpx solid rgba(47, 128, 237, 0.15);
 }
 
+/* AI讲解 — 绿色主按钮 */
 .action-btn.primary {
-  background: #18b368;
+  background: linear-gradient(135deg, #18b368 0%, #16a34a 100%);
   color: #ffffff;
+  font-weight: 600;
+  box-shadow: 0 4rpx 12rpx rgba(24, 179, 104, 0.2);
 }
 </style>

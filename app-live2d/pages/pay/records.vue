@@ -236,103 +236,130 @@ onPullDownRefresh(() => {
 </script>
 
 <style>
+/* ============================================================
+   即境 · 消费记录 — 账单流水 + 消费统计
+   设计方向：Clean APP Billing · 统一卡片 + 金额突出
+   签名元素：汇总统计卡 · 流水卡片 · 轻量标签
+   本轮只改 CSS，不改 template / script / 任何业务入口
+   ============================================================ */
+
+/* ---------- Page ---------- */
 .page {
   min-height: 100vh;
-  background: linear-gradient(180deg, #f5f7fb 0%, #eef4ff 100%);
+  background: #f5f7fb;
   padding: 24rpx;
   box-sizing: border-box;
 }
 
-.summary-card,
-.status-card,
-.empty-card,
-.record-card {
+/* ---------- Summary Card ---------- */
+.summary-card {
   background: #ffffff;
   border-radius: 28rpx;
-  box-shadow: 0 12rpx 28rpx rgba(15, 23, 42, 0.06);
-}
-
-.summary-card {
+  box-shadow: 0 8rpx 24rpx rgba(15, 23, 42, 0.05);
+  border: 1rpx solid #f3f4f6;
   padding: 28rpx 24rpx;
   margin-bottom: 24rpx;
 }
 
 .summary-title {
-  font-size: 34rpx;
+  font-size: 30rpx;
   font-weight: 700;
   color: #1f2937;
+  padding-left: 18rpx;
+  border-left: 6rpx solid #2f80ed;
+  line-height: 1.3;
 }
 
 .summary-desc {
   margin-top: 10rpx;
   color: #6b7280;
   font-size: 24rpx;
-  line-height: 1.7;
+  line-height: 1.6;
 }
 
 .summary-stats {
   display: flex;
-  gap: 18rpx;
-  margin-top: 24rpx;
+  gap: 14rpx;
+  margin-top: 22rpx;
 }
 
 .summary-stat {
   flex: 1;
-  background: #f5f8ff;
-  border-radius: 22rpx;
-  padding: 22rpx 12rpx;
+  background: #f8fafc;
+  border-radius: 20rpx;
+  border: 1rpx solid #f3f4f6;
+  padding: 20rpx 12rpx;
   text-align: center;
 }
 
 .summary-value {
-  font-size: 34rpx;
+  font-size: 32rpx;
   font-weight: 700;
-  color: #2f80ed;
+  color: #1f2937;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .summary-label {
-  margin-top: 8rpx;
-  color: #64748b;
+  margin-top: 6rpx;
+  color: #6b7280;
   font-size: 22rpx;
 }
 
+/* ---------- Status / Loading ---------- */
 .status-card {
-  padding: 30rpx 24rpx;
+  background: #ffffff;
+  border-radius: 24rpx;
+  box-shadow: 0 8rpx 24rpx rgba(15, 23, 42, 0.05);
+  border: 1rpx solid #f3f4f6;
+  padding: 80rpx 24rpx 64rpx;
   color: #6b7280;
-  font-size: 25rpx;
+  font-size: 26rpx;
   text-align: center;
 }
 
+/* ---------- Empty State ---------- */
 .empty-card {
-  padding: 60rpx 36rpx;
+  background: #ffffff;
+  border-radius: 24rpx;
+  box-shadow: 0 8rpx 24rpx rgba(15, 23, 42, 0.05);
+  border: 1rpx solid #f3f4f6;
+  padding: 72rpx 36rpx 64rpx;
   text-align: center;
 }
 
 .empty-icon {
-  font-size: 60rpx;
+  font-size: 56rpx;
 }
 
 .empty-title {
   margin-top: 20rpx;
-  font-size: 30rpx;
+  font-size: 28rpx;
   font-weight: 700;
   color: #1f2937;
 }
 
 .empty-desc {
-  margin-top: 12rpx;
+  margin-top: 10rpx;
   font-size: 24rpx;
   color: #6b7280;
-  line-height: 1.7;
+  line-height: 1.65;
 }
 
+/* ---------- Record List ---------- */
 .record-list {
   display: flex;
   flex-direction: column;
-  gap: 20rpx;
+  gap: 16rpx;
 }
 
+/* ---------- Record Card（账单流水卡） ---------- */
 .record-card {
+  background: #ffffff;
+  border-radius: 24rpx;
+  box-shadow: 0 8rpx 24rpx rgba(15, 23, 42, 0.05);
+  border: 1rpx solid #f3f4f6;
   padding: 24rpx;
 }
 
@@ -340,7 +367,7 @@ onPullDownRefresh(() => {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  gap: 20rpx;
+  gap: 16rpx;
 }
 
 .merchant-info {
@@ -349,47 +376,58 @@ onPullDownRefresh(() => {
 }
 
 .merchant-name {
-  font-size: 30rpx;
+  font-size: 28rpx;
   font-weight: 700;
   color: #1f2937;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .record-time {
-  margin-top: 8rpx;
+  margin-top: 6rpx;
   color: #9ca3af;
   font-size: 22rpx;
 }
 
+/* 金额 — 深色突出，非红色 */
 .amount {
-  color: #ef4444;
-  font-size: 34rpx;
+  color: #1f2937;
+  font-size: 32rpx;
   font-weight: 700;
   flex-shrink: 0;
+  white-space: nowrap;
 }
 
+/* ---------- Tags（消费类型 + 支付状态） ---------- */
 .record-tags {
   display: flex;
-  gap: 12rpx;
-  margin-top: 16rpx;
+  gap: 10rpx;
+  margin-top: 14rpx;
 }
 
 .tag {
-  padding: 8rpx 16rpx;
+  padding: 5rpx 14rpx;
   border-radius: 999rpx;
   background: #eff6ff;
   color: #2f80ed;
-  font-size: 22rpx;
+  font-size: 20rpx;
+  font-weight: 500;
+  border: 1rpx solid rgba(47, 128, 237, 0.08);
 }
 
 .tag.status {
   background: #ecfdf5;
-  color: #18b368;
+  color: #16a34a;
+  border-color: rgba(22, 163, 74, 0.12);
 }
 
+/* ---------- Record Info（详情字段） ---------- */
 .record-info {
-  margin-top: 18rpx;
-  padding-top: 16rpx;
-  border-top: 1rpx solid #eef2f7;
+  margin-top: 16rpx;
+  padding-top: 14rpx;
+  border-top: 1rpx solid #f3f4f6;
 }
 
 .info-row {
@@ -409,6 +447,8 @@ onPullDownRefresh(() => {
   flex: 1;
   color: #6b7280;
   font-size: 22rpx;
+  line-height: 1.5;
   word-break: break-all;
+  min-width: 0;
 }
 </style>
