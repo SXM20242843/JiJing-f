@@ -292,6 +292,87 @@ box-shadow: 0 12rpx 28rpx rgba(15, 23, 42, 0.06);
 
 ---
 
+## uni-app APP 真机适配规则
+
+本项目是 uni-app 打包的移动端 APP，最终以 Android 真机 / App 端效果为准，不以浏览器 H5 页面效果为准。
+
+后续所有 UI 美化必须遵守：
+
+### 1. 优先使用 uni-app App 端稳定 CSS
+
+以下 CSS 在 uni-app App 端表现稳定，优先使用：
+
+- `flex` 布局
+- `rpx` 单位
+- `border-radius`
+- `background`（纯色或简单渐变）
+- `border`
+- `box-shadow`（轻阴影）
+- `color` / `font-size` / `font-weight`
+- `margin` / `padding`
+- `overflow: hidden`
+- `text-overflow: ellipsis`
+- `-webkit-line-clamp`
+
+### 2. 避免使用偏网页化、真机表现不稳定的 CSS
+
+以下 CSS 在 uni-app App 端容易表现不一致、出现渲染异常、或显得"网页感太强"，应尽量避免：
+
+- 大量 `::before` / `::after` 装饰元素
+- `:hover`（移动端无 hover 概念）
+- 复杂 `:focus-within` 效果（真机键盘弹起时表现不稳定）
+- `backdrop-filter` / 毛玻璃效果（uni-app App 端不支持或性能差）
+- 过度复杂的 CSS `grid`（真机 webview 对 grid 兼容性不一致）
+- 复杂 `transform` 动效
+- 大面积强渐变边框
+- 顶部彩色装饰线（容易在真机上像异常边框或渲染瑕疵）
+- 看起来像网页 Banner / Hero 的视觉设计
+
+### 3. 以"真机 APP 列表页 / 卡片页 / 表单页"质感为准
+
+所有页面美化应追求以下质感：
+
+- **简洁**：不堆叠装饰元素
+- **稳定**：布局不因内容差异而跳动
+- **信息密度适中**：不稀疏像网页，不拥挤像表格
+- **卡片高度尽量统一**：同一列表中的卡片高度应一致
+- **内容超出用省略号**：标题 1 行、简介 2 行、标签不撑开卡片
+- **按钮点击区域足够大**：至少 44rpx × 44rpx 触控热区
+- **不要为了设计感牺牲可读性和触控体验**
+
+### 4. 列表类卡片强制规则
+
+页面列表类卡片（`scenic-card` 等）必须保证：
+
+- 高度统一（使用固定 `height` 而非 `min-height` / `max-height`）
+- 图片尺寸统一（固定宽高，由 flex `align-items: stretch` 撑满）
+- 标题最多 1 行（`white-space: nowrap; overflow: hidden; text-overflow: ellipsis`）
+- 简介最多 2 行（`-webkit-line-clamp: 2`）
+- 标签 `flex-wrap: nowrap; overflow: hidden`，不撑开卡片
+- 操作按钮位置稳定（`margin-top: auto` 沉底 + `flex-shrink: 0`）
+
+### 5. 以真机效果为最终验收标准
+
+每次修改后必须以 **HBuilderX APP 真机或模拟器效果** 为准。
+
+如果某个样式只在浏览器预览好看，但真机上出现以下问题，必须回退或改成更朴素的写法：
+
+- 遮挡
+- 错位
+- 异常边框
+- 渲染闪烁
+- 网页感太强（大面积渐变背景、复杂装饰线、hero banner 式布局）
+
+### 6. 装饰元素约束
+
+只做 UI 美化时，默认**不通过修改 template 添加装饰 `<view>`**。
+
+- 优先只改 `<style>`
+- 如果确实需要改 `<template>`，必须先单独说明原因并等待确认
+- 必要装饰优先使用 CSS `background` / `border` / `box-shadow` 实现，而非伪元素
+
+---
+
 ## 关键业务规则
 
 这些规则决定了 UI 的展示逻辑，进行 UI 优化时 **必须保持这些展示条件不变**：

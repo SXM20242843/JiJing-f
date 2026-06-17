@@ -47,6 +47,9 @@ public class VisitReportDetailResponse {
     public BigDecimal totalCost;
     public List<ConsumeItem> consumeList = new ArrayList<>();
     public List<RecommendParkDto> recommendationSimilarScenic = new ArrayList<>();
+    public BigDecimal satisfaction;
+    public String comment;
+    public Integer recommend;
     public Boolean profileUpdated = false;
     public String summary;
 

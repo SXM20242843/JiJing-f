@@ -89,21 +89,12 @@ public class LAppLive2DManager {
                 CLOTHES_DRESS
         );
 
-        // haru：制服版，同一个 haru.model3.json，只切换部件透明度
-        addModelIfExists(
-                "guide_haru_uniform",
-                "Haru 制服版",
-                "haru",
-                "haru.model3.json",
-                CLOTHES_UNIFORM
-        );
-
         // greeter：完整模型切换
         addModelIfExists(
                 "guide_female_01",
-                "文旅女导游",
-                "haru_greeter",
-                "haru_greeter_t05.model3.json",
+                "灵灵",
+                "haru",
+                "haru.model3.json",
                 CLOTHES_NONE
         );
 
@@ -119,9 +110,9 @@ public class LAppLive2DManager {
         // haru：第三个女性数字人 ID，复用制服版资源作为兜底
         addModelIfExists(
                 "guide_female_03",
-                "文旅女导游制服版",
-                "haru",
-                "haru.model3.json",
+                "小悠",
+                "haru_greeter",
+                "haru_greeter_t05.model3.json",
                 CLOTHES_UNIFORM
         );
 

@@ -645,58 +645,73 @@ onLoad((options) => {
 </script>
 
 <style scoped>
+/* ============================================================
+   即境 · 景区详情 — 游览前规划入口
+   设计方向：Clean Detail · 统一列表卡片
+   签名元素：轻量 hero + 固定高度景点卡片 + 统一 pill/chip
+   本轮只改 CSS，不改 template / script / 任何业务入口
+   ============================================================ */
+
+/* ---------- Page ---------- */
 .page {
   padding: 24rpx;
   background: #f5f7fb;
   min-height: 100vh;
 }
 
+/* ---------- Status (loading / empty) ---------- */
 .status-box {
-  background: #fff;
+  background: #ffffff;
   border-radius: 24rpx;
-  padding: 40rpx 24rpx;
+  border: 1rpx solid #eef2f7;
+  padding: 80rpx 24rpx 64rpx;
   text-align: center;
-  box-shadow: 0 12rpx 28rpx rgba(15, 23, 42, 0.06);
+  box-shadow: 0 8rpx 24rpx rgba(15, 23, 42, 0.05);
 }
 
 .status-text {
   font-size: 26rpx;
   color: #6b7280;
+  line-height: 1.7;
 }
 
+/* ---------- Hero Card ---------- */
 .hero-card {
-  background: #fff;
+  background: #ffffff;
   border-radius: 28rpx;
+  border: 1rpx solid #eef2f7;
   overflow: hidden;
   margin-bottom: 24rpx;
+  box-shadow: 0 8rpx 24rpx rgba(15, 23, 42, 0.05);
 }
 
 .hero-cover {
-  height: 200rpx;
-  background: linear-gradient(135deg, #dbeafe, #bfdbfe);
+  height: 230rpx;
+  background: linear-gradient(160deg, #dbeafe 0%, #bfdbfe 60%, #e0e7ff 100%);
   position: relative;
   overflow: hidden;
 }
 
 .hero-cover-image {
   width: 100%;
-  height: 200rpx;
+  height: 230rpx;
   display: block;
 }
 
 .hero-cover-placeholder {
   width: 100%;
-  height: 200rpx;
+  height: 230rpx;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #dbeafe, #bfdbfe);
+  background: linear-gradient(160deg, #dbeafe 0%, #e0e7ff 50%, #c7d2fe 100%);
 }
 
 .hero-cover-placeholder-text {
   font-size: 42rpx;
-  font-weight: 700;
+  font-weight: 800;
   color: #2f80ed;
+  opacity: 0.5;
 }
 
 .hero-cover-mask {
@@ -704,30 +719,203 @@ onLoad((options) => {
   left: 0;
   right: 0;
   bottom: 0;
-  height: 100rpx;
+  height: 80rpx;
   background: linear-gradient(
     180deg,
     rgba(15, 23, 42, 0) 0%,
-    rgba(15, 23, 42, 0.28) 100%
+    rgba(15, 23, 42, 0.18) 100%
   );
   pointer-events: none;
 }
 
 .hero-badge {
   position: absolute;
-  left: 20rpx;
-  top: 20rpx;
-  background: rgba(255,255,255,0.9);
-  padding: 8rpx 16rpx;
-  border-radius: 999rpx;
+  left: 16rpx;
+  top: 16rpx;
+  background: rgba(255, 255, 255, 0.88);
   color: #2f80ed;
+  font-size: 20rpx;
+  font-weight: 600;
+  padding: 6rpx 14rpx;
+  border-radius: 999rpx;
   z-index: 2;
+  box-shadow: 0 2rpx 6rpx rgba(15, 23, 42, 0.06);
 }
 
+/* ---------- Hero Content ---------- */
+.hero-content {
+  padding: 22rpx 24rpx 20rpx;
+}
+
+.hero-title {
+  font-size: 36rpx;
+  font-weight: 700;
+  color: #1f2937;
+}
+
+.hero-desc {
+  font-size: 24rpx;
+  color: #6b7280;
+  margin-top: 8rpx;
+  line-height: 1.6;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.hero-meta {
+  display: flex;
+  gap: 12rpx;
+  margin-top: 14rpx;
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+.meta-pill {
+  background: #eff6ff;
+  padding: 6rpx 16rpx;
+  border-radius: 999rpx;
+  font-size: 22rpx;
+  color: #2f80ed;
+  border: 1rpx solid rgba(47, 128, 237, 0.08);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* ---------- Hero Actions ---------- */
+.hero-actions {
+  margin-top: 20rpx;
+  display: flex;
+  gap: 12rpx;
+}
+
+.hero-action-btn {
+  flex: 1;
+  height: 68rpx;
+  border-radius: 999rpx;
+  background: #eff6ff;
+  color: #2f80ed;
+  font-size: 26rpx;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1rpx solid rgba(47, 128, 237, 0.06);
+}
+
+.hero-action-btn:active {
+  opacity: 0.7;
+}
+
+.hero-action-btn.primary {
+  background: linear-gradient(135deg, #18b368 0%, #16a34a 100%);
+  color: #ffffff;
+  border: none;
+  box-shadow: 0 2rpx 8rpx rgba(24, 179, 104, 0.18);
+}
+
+.hero-action-btn.primary:active {
+  opacity: 0.85;
+}
+
+/* ---------- Section Header ---------- */
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 24rpx 0 16rpx 0;
+}
+
+.section-title {
+  font-size: 30rpx;
+  font-weight: 700;
+  color: #1f2937;
+}
+
+.section-more {
+  color: #2f80ed;
+  font-size: 24rpx;
+  font-weight: 500;
+}
+
+/* ---------- Single Scenic Card (单体景区) ---------- */
+.single-scenic-card {
+  background: #ffffff;
+  border-radius: 24rpx;
+  border: 1rpx solid #eef2f7;
+  padding: 24rpx;
+  box-shadow: 0 8rpx 24rpx rgba(15, 23, 42, 0.05);
+}
+
+.single-title {
+  font-size: 28rpx;
+  font-weight: 700;
+  color: #1f2937;
+}
+
+.single-desc {
+  margin-top: 10rpx;
+  font-size: 24rpx;
+  color: #6b7280;
+  line-height: 1.6;
+}
+
+.single-actions {
+  margin-top: 16rpx;
+  display: flex;
+  gap: 10rpx;
+}
+
+.single-btn {
+  padding: 14rpx 24rpx;
+  border-radius: 999rpx;
+  background: linear-gradient(135deg, #18b368 0%, #16a34a 100%);
+  color: #ffffff;
+  font-size: 24rpx;
+  font-weight: 600;
+  box-shadow: 0 2rpx 8rpx rgba(24, 179, 104, 0.18);
+}
+
+.single-btn:active {
+  opacity: 0.85;
+}
+
+.single-btn.ghost {
+  background: #eff6ff;
+  color: #2f80ed;
+  border: 1rpx solid rgba(47, 128, 237, 0.08);
+  box-shadow: none;
+}
+
+.single-btn.ghost:active {
+  opacity: 0.7;
+}
+
+/* ---------- Scenic List ---------- */
+.scenic-list {
+  display: flex;
+  flex-direction: column;
+  gap: 20rpx;
+}
+
+/* ---------- Scenic Card (统一高度 210rpx) ---------- */
+.scenic-card {
+  height: 210rpx;
+  background: #ffffff;
+  border-radius: 24rpx;
+  display: flex;
+  align-items: stretch;
+  padding: 20rpx;
+  box-shadow: 0 8rpx 24rpx rgba(15, 23, 42, 0.05);
+  border: 1rpx solid #f3f4f6;
+}
+
+/* ---------- Scenic Cover (随卡片高度拉伸) ---------- */
 .scenic-cover {
   width: 160rpx;
-  height: 160rpx;
-  background: linear-gradient(135deg, #e0e7ff, #c7d2fe);
+  height: 100%;
+  background: linear-gradient(160deg, #dbeafe 0%, #bfdbfe 60%, #e0e7ff 100%);
   border-radius: 20rpx;
   position: relative;
   margin-right: 20rpx;
@@ -736,203 +924,104 @@ onLoad((options) => {
 }
 
 .scenic-cover-image {
-  width: 160rpx;
-  height: 160rpx;
+  width: 100%;
+  height: 100%;
   display: block;
 }
 
 .scenic-cover-placeholder {
-  width: 160rpx;
-  height: 160rpx;
+  width: 100%;
+  height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #e0e7ff, #c7d2fe);
+  background: linear-gradient(160deg, #dbeafe 0%, #e0e7ff 50%, #c7d2fe 100%);
 }
 
 .scenic-cover-placeholder-text {
   font-size: 30rpx;
-  font-weight: 700;
+  font-weight: 800;
   color: #2f80ed;
+  opacity: 0.5;
 }
 
 .scenic-tag {
   position: absolute;
-  left: 12rpx;
-  top: 12rpx;
-  background: rgba(255,255,255,0.85);
-  padding: 4rpx 12rpx;
-  border-radius: 20rpx;
+  left: 10rpx;
+  top: 10rpx;
+  background: rgba(255, 255, 255, 0.88);
+  color: #2f80ed;
   font-size: 20rpx;
-  z-index: 2;
-}
-
-.hero-content {
-  padding: 24rpx;
-}
-
-.hero-title {
-  font-size: 40rpx;
-  font-weight: bold;
-}
-
-.hero-desc {
-  font-size: 26rpx;
-  color: #6b7280;
-  margin-top: 8rpx;
-  line-height: 1.7;
-}
-
-.hero-meta {
-  display: flex;
-  gap: 16rpx;
-  margin-top: 16rpx;
-  flex-wrap: wrap;
-}
-
-.meta-pill {
-  background: #eff6ff;
-  padding: 8rpx 20rpx;
-  border-radius: 999rpx;
-  font-size: 22rpx;
-  color: #2f80ed;
-}
-
-.hero-actions {
-  margin-top: 22rpx;
-  display: flex;
-  gap: 16rpx;
-}
-
-.hero-action-btn {
-  flex: 1;
-  height: 72rpx;
-  border-radius: 999rpx;
-  background: #eff6ff;
-  color: #2f80ed;
-  font-size: 25rpx;
   font-weight: 600;
-  text-align: center;
-  line-height: 72rpx;
-}
-
-.hero-action-btn.primary {
-  background: #18b368;
-  color: #ffffff;
-}
-
-.section-header {
-  display: flex;
-  justify-content: space-between;
-  margin: 16rpx 0;
-  align-items: center;
-}
-
-.section-title {
-  font-size: 32rpx;
-  font-weight: bold;
-}
-
-.section-more {
-  color: #2f80ed;
-  font-size: 24rpx;
-}
-
-.single-scenic-card {
-  background: #fff;
-  border-radius: 24rpx;
-  padding: 24rpx;
-  box-shadow: 0 12rpx 28rpx rgba(15, 23, 42, 0.06);
-}
-
-.single-title {
-  font-size: 30rpx;
-  font-weight: 700;
-  color: #1f2937;
-}
-
-.single-desc {
-  margin-top: 12rpx;
-  font-size: 24rpx;
-  color: #6b7280;
-  line-height: 1.7;
-}
-
-.single-actions {
-  margin-top: 18rpx;
-  display: flex;
-  gap: 12rpx;
-}
-
-.single-btn {
-  padding: 12rpx 22rpx;
+  padding: 4rpx 12rpx;
   border-radius: 999rpx;
-  background: #18b368;
-  color: #fff;
-  font-size: 22rpx;
+  z-index: 2;
+  box-shadow: 0 2rpx 6rpx rgba(15, 23, 42, 0.06);
 }
 
-.single-btn.ghost {
-  background: #eff6ff;
-  color: #2f80ed;
-}
-
-.scenic-list {
-  display: flex;
-  flex-direction: column;
-  gap: 20rpx;
-}
-
-.scenic-card {
-  background: #fff;
-  border-radius: 24rpx;
-  display: flex;
-  padding: 20rpx;
-  box-shadow: 0 12rpx 28rpx rgba(15, 23, 42, 0.06);
-}
-
+/* ---------- Scenic Info (flex 列) ---------- */
 .scenic-info {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .scenic-name {
-  font-size: 30rpx;
-  font-weight: bold;
+  font-size: 28rpx;
+  font-weight: 700;
+  color: #1f2937;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .scenic-desc {
-  font-size: 24rpx;
+  margin-top: 6rpx;
+  font-size: 22rpx;
   color: #6b7280;
-  margin-top: 8rpx;
-  line-height: 1.6;
+  line-height: 1.5;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
 
+/* ---------- Scenic Meta (单行 · 不换行) ---------- */
 .scenic-meta {
+  margin-top: 6rpx;
   display: flex;
-  gap: 16rpx;
-  margin-top: 12rpx;
-  font-size: 22rpx;
+  gap: 14rpx;
+  font-size: 20rpx;
   color: #9ca3af;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  overflow: hidden;
 }
 
+.scenic-meta text {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* ---------- Scenic Tags (单行 · 不撑开卡片) ---------- */
 .scenic-tags {
-  margin-top: 12rpx;
+  margin-top: 4rpx;
   display: flex;
-  gap: 12rpx;
-  flex-wrap: wrap;
+  gap: 8rpx;
+  flex-wrap: nowrap;
+  overflow: hidden;
 }
 
 .chip {
   background: #eff6ff;
-  padding: 6rpx 16rpx;
-  border-radius: 20rpx;
+  padding: 4rpx 12rpx;
+  border-radius: 999rpx;
   color: #2f80ed;
-  font-size: 20rpx;
+  font-size: 18rpx;
+  font-weight: 500;
+  border: 1rpx solid rgba(47, 128, 237, 0.08);
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 </style>

@@ -404,6 +404,14 @@ onShow(() => {
 </script>
 
 <style>
+/* ============================================================
+   即境 · 景区列表 — 游览前规划入口
+   设计方向：Clean Scenic Directory · 统一列表卡片
+   签名元素：弱化 accent bar + 固定高度卡片 + 紧凑信息层次
+   本轮只改 CSS，不改 template / script / 任何业务入口
+   ============================================================ */
+
+/* ---------- Page ---------- */
 .page {
   min-height: 100vh;
   background: #f5f7fb;
@@ -411,32 +419,37 @@ onShow(() => {
   box-sizing: border-box;
 }
 
+/* ---------- 顶部头部（无卡片感 · 标题直贴页面背景） ---------- */
 .top-card {
-  background: #ffffff;
-  border-radius: 28rpx;
-  padding: 24rpx;
-  box-shadow: 0 12rpx 28rpx rgba(15, 23, 42, 0.06);
-  margin-bottom: 24rpx;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0 0 22rpx 0;
+  margin-bottom: 16rpx;
 }
 
 .page-title {
-  font-size: 38rpx;
+  font-size: 36rpx;
   font-weight: 700;
   color: #1f2937;
 }
 
 .page-subtitle {
-  margin-top: 10rpx;
+  margin-top: 4rpx;
   font-size: 24rpx;
   color: #6b7280;
-  line-height: 1.7;
+  line-height: 1.5;
 }
 
+/* ---------- 搜索框（独立白色卡片） ---------- */
 .search-box {
-  margin-top: 20rpx;
-  background: #f3f4f6;
-  border-radius: 20rpx;
-  padding: 22rpx;
+  margin-top: 16rpx;
+  background: #ffffff;
+  border: 1rpx solid #e5eaf3;
+  border-radius: 24rpx;
+  padding: 18rpx 22rpx;
+  box-shadow: 0 8rpx 18rpx rgba(15, 23, 42, 0.04);
 }
 
 .search-input {
@@ -445,161 +458,218 @@ onShow(() => {
   color: #1f2937;
 }
 
+.search-input::placeholder {
+  color: #9ca3af;
+}
+
+/* ---------- Status States (loading / empty) ---------- */
 .status-box {
   background: #ffffff;
   border-radius: 24rpx;
-  padding: 40rpx 24rpx;
+  padding: 80rpx 24rpx 64rpx;
   text-align: center;
-  box-shadow: 0 12rpx 28rpx rgba(15, 23, 42, 0.06);
+  box-shadow: 0 8rpx 24rpx rgba(15, 23, 42, 0.05);
+}
+
+/* 装饰圆 — 空态视觉锚点 */
+.status-box::before {
+  content: '';
+  display: block;
+  width: 72rpx;
+  height: 72rpx;
+  margin: 0 auto 28rpx;
+  background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
+  border-radius: 50%;
 }
 
 .status-text {
   font-size: 26rpx;
   color: #6b7280;
+  line-height: 1.7;
 }
 
+/* ---------- List ---------- */
 .list {
   display: flex;
   flex-direction: column;
   gap: 20rpx;
 }
 
+/* ---------- Scenic Card (统一高度 244rpx) ---------- */
 .scenic-card {
+  height: 244rpx;
   background: #ffffff;
   border-radius: 28rpx;
   overflow: hidden;
   display: flex;
-  box-shadow: 0 12rpx 28rpx rgba(15, 23, 42, 0.06);
+  align-items: stretch;
+  box-shadow: 0 8rpx 24rpx rgba(15, 23, 42, 0.05);
+  border: 1rpx solid #f3f4f6;
 }
 
+/* ---------- Cover (固定 184×244) ---------- */
 .cover {
-  width: 190rpx;
-  min-height: 230rpx;
-  max-height: 260rpx;
-  background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
-  position: relative;
+  width: 184rpx;
   flex-shrink: 0;
+  background: linear-gradient(160deg, #dbeafe 0%, #bfdbfe 60%, #e0e7ff 100%);
+  position: relative;
   overflow: hidden;
 }
 
 .cover-image {
-  width: 190rpx;
+  width: 100%;
   height: 100%;
-  min-height: 230rpx;
-  max-height: 260rpx;
   display: block;
 }
 
 .cover-placeholder {
-  width: 190rpx;
+  width: 100%;
   height: 100%;
-  min-height: 230rpx;
-  max-height: 260rpx;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
+  background: linear-gradient(160deg, #dbeafe 0%, #e0e7ff 50%, #c7d2fe 100%);
 }
 
 .cover-placeholder-text {
-  font-size: 36rpx;
-  font-weight: 700;
+  font-size: 44rpx;
+  font-weight: 800;
   color: #2f80ed;
+  opacity: 0.5;
 }
 
+/* 底部渐变遮罩 */
 .cover-mask {
   position: absolute;
   left: 0;
   right: 0;
   bottom: 0;
-  height: 90rpx;
+  height: 80rpx;
   background: linear-gradient(
     180deg,
     rgba(15, 23, 42, 0) 0%,
-    rgba(15, 23, 42, 0.28) 100%
+    rgba(15, 23, 42, 0.22) 100%
   );
   pointer-events: none;
 }
 
+/* 毛玻璃角标 */
 .cover-tag {
   position: absolute;
-  left: 16rpx;
-  top: 16rpx;
-  background: rgba(255, 255, 255, 0.92);
+  left: 10rpx;
+  top: 10rpx;
+  background: rgba(255, 255, 255, 0.88);
   color: #2f80ed;
-  font-size: 22rpx;
-  padding: 8rpx 14rpx;
+  font-size: 20rpx;
+  font-weight: 600;
+  padding: 4rpx 12rpx;
   border-radius: 999rpx;
   z-index: 2;
+  box-shadow: 0 2rpx 6rpx rgba(15, 23, 42, 0.06);
 }
 
+/* ---------- Info (flex 列，按钮沉底) ---------- */
 .info {
   flex: 1;
-  padding: 22rpx;
+  padding: 16rpx 20rpx;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 
+/* ---------- Name (单行 · 省略号) ---------- */
 .name {
-  font-size: 30rpx;
+  font-size: 28rpx;
   font-weight: 700;
   color: #1f2937;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
+/* ---------- Desc (固定 2 行 · 省略号) ---------- */
 .desc {
-  margin-top: 10rpx;
-  font-size: 24rpx;
+  margin-top: 6rpx;
+  font-size: 22rpx;
   color: #6b7280;
-  line-height: 1.6;
+  line-height: 1.5;
   display: -webkit-box;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
 
+/* ---------- Meta Row (单行 · 不换行 · 溢隐藏) ---------- */
 .meta-row {
-  margin-top: 12rpx;
+  margin-top: 6rpx;
   display: flex;
-  flex-wrap: wrap;
-  gap: 12rpx;
+  flex-wrap: nowrap;
+  gap: 14rpx;
+  overflow: hidden;
 }
 
 .meta-item {
-  font-size: 22rpx;
+  font-size: 20rpx;
   color: #9ca3af;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
+/* ---------- Tag Row (单行 · 不换行 · 溢隐藏) ---------- */
 .tag-row {
-  margin-top: 14rpx;
+  margin-top: 4rpx;
   display: flex;
-  flex-wrap: wrap;
-  gap: 12rpx;
+  flex-wrap: nowrap;
+  gap: 8rpx;
+  overflow: hidden;
 }
 
 .tag-chip {
-  font-size: 22rpx;
+  font-size: 18rpx;
+  font-weight: 500;
   color: #2f80ed;
   background: #eff6ff;
-  padding: 8rpx 14rpx;
+  padding: 4rpx 12rpx;
   border-radius: 999rpx;
+  border: 1rpx solid rgba(47, 128, 237, 0.08);
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
+/* ---------- Action Row (沉底 · 按钮高度统一) ---------- */
 .action-row {
-  margin-top: 18rpx;
+  margin-top: auto;
   display: flex;
-  gap: 12rpx;
-  flex-wrap: wrap;
+  gap: 10rpx;
+  flex-wrap: nowrap;
 }
 
 .pill {
-  padding: 10rpx 18rpx;
+  padding: 10rpx 20rpx;
   border-radius: 999rpx;
   background: #f3f4f6;
   color: #374151;
   font-size: 22rpx;
+  font-weight: 500;
+  line-height: 1;
+  flex-shrink: 0;
+  transition: opacity 0.15s ease;
 }
 
+.pill:active {
+  opacity: 0.7;
+}
+
+/* AI讲解 — 绿色渐变主操作 · 阴影减轻 */
 .pill.primary {
-  background: #18b368;
+  background: linear-gradient(135deg, #18b368 0%, #16a34a 100%);
   color: #ffffff;
+  font-weight: 600;
+  box-shadow: 0 2rpx 8rpx rgba(24, 179, 104, 0.18);
+}
+
+.pill.primary:active {
+  opacity: 0.85;
 }
 </style>

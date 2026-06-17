@@ -280,7 +280,8 @@ const costItems = computed(() => [
 ])
 
 function pickFirst(...values) {
-  return values.find(value => value !== undefined && value !== null && value !== '') || ''
+  const found = values.find(value => value !== undefined && value !== null && value !== '')
+  return found === undefined ? '' : found
 }
 
 function pickFirstList(...values) {
@@ -830,52 +831,74 @@ function goHome() {
 </script>
 
 <style>
+/* ============================================================
+   即境 · 游玩报告 — 闭环亮点页
+   设计方向：Premium Travel Report
+   签名元素：深蓝渐变 Hero + 毛玻璃摘要网格 + 时间线景点
+   本轮只改 CSS，不改 template / script / 任何业务入口
+   ============================================================ */
+
+/* ---------- Page ---------- */
 .page {
   min-height: 100vh;
-  background: linear-gradient(180deg, #f5f7fb 0%, #eef4ff 100%);
-  padding: 24rpx;
+  background: #f0f4f8;
+  padding: 20rpx 24rpx 60rpx;
   box-sizing: border-box;
 }
 
+/* ---------- Base Card ---------- */
 .card {
   background: #ffffff;
-  border-radius: 28rpx;
-  box-shadow: 0 12rpx 28rpx rgba(15, 23, 42, 0.06);
+  border-radius: 24rpx;
+  box-shadow: 0 2rpx 8rpx rgba(0, 0, 0, 0.04), 0 8rpx 24rpx rgba(0, 0, 0, 0.05);
 }
 
+/* ---------- Status States (loading / error / empty / unfinished) ---------- */
 .status-card {
-  padding: 40rpx 28rpx;
+  padding: 80rpx 40rpx 64rpx;
   text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
 }
 
 .status-title {
   display: block;
-  font-size: 30rpx;
+  font-size: 32rpx;
   font-weight: 700;
   color: #1f2937;
+  line-height: 1.4;
 }
 
 .status-text,
 .status-desc {
   display: block;
-  margin-top: 14rpx;
-  font-size: 24rpx;
+  margin-top: 16rpx;
+  font-size: 26rpx;
   color: #6b7280;
   line-height: 1.7;
+  max-width: 480rpx;
 }
 
 .retry-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  margin-top: 28rpx;
-  min-width: 180rpx;
-  height: 64rpx;
-  padding: 0 28rpx;
+  margin-top: 36rpx;
+  min-width: 200rpx;
+  height: 72rpx;
+  padding: 0 36rpx;
   border-radius: 999rpx;
   background: #2f80ed;
   color: #ffffff;
-  font-size: 24rpx;
+  font-size: 26rpx;
+  font-weight: 600;
+  box-shadow: 0 6rpx 18rpx rgba(47, 128, 237, 0.25);
+  transition: opacity 0.15s ease;
+}
+
+.retry-btn:active {
+  opacity: 0.85;
 }
 
 .home-btn {
@@ -883,91 +906,148 @@ function goHome() {
   align-items: center;
   justify-content: center;
   margin-top: 20rpx;
-  min-width: 180rpx;
-  height: 64rpx;
-  padding: 0 28rpx;
+  min-width: 200rpx;
+  height: 72rpx;
+  padding: 0 36rpx;
   border-radius: 999rpx;
   background: #eef2ff;
   color: #2f80ed;
-  font-size: 24rpx;
+  font-size: 26rpx;
+  font-weight: 600;
+  transition: opacity 0.15s ease;
 }
 
+.home-btn:active {
+  opacity: 0.75;
+}
+
+/* ---------- Report Hero (签名元素 · 报告封面) ---------- */
 .report-hero {
-  padding: 30rpx 26rpx;
+  position: relative;
+  padding: 36rpx 30rpx 32rpx;
   margin-bottom: 24rpx;
-  background: linear-gradient(135deg, #2f80ed 0%, #56ccf2 100%);
+  background: linear-gradient(160deg, #1d4ed8 0%, #2f80ed 45%, #56ccf2 100%);
   color: #ffffff;
+  border-radius: 28rpx;
+  overflow: hidden;
+}
+
+/* 装饰圆 — 右上 */
+.report-hero::before {
+  content: '';
+  position: absolute;
+  top: -48rpx;
+  right: -32rpx;
+  width: 180rpx;
+  height: 180rpx;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.06);
+  pointer-events: none;
+}
+
+/* 装饰圆 — 左下 */
+.report-hero::after {
+  content: '';
+  position: absolute;
+  bottom: -56rpx;
+  left: -48rpx;
+  width: 220rpx;
+  height: 220rpx;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.04);
+  pointer-events: none;
 }
 
 .hero-tag {
+  position: relative;
+  z-index: 1;
   display: inline-flex;
-  padding: 7rpx 16rpx;
+  align-items: center;
+  padding: 8rpx 20rpx;
   border-radius: 999rpx;
-  background: rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.2);
   font-size: 22rpx;
   font-weight: 600;
+  letter-spacing: 2rpx;
 }
 
 .hero-title {
-  margin-top: 18rpx;
-  font-size: 40rpx;
-  font-weight: 700;
-  line-height: 1.35;
+  position: relative;
+  z-index: 1;
+  margin-top: 20rpx;
+  font-size: 44rpx;
+  font-weight: 800;
+  line-height: 1.25;
+  letter-spacing: 2rpx;
 }
 
 .hero-subtitle {
-  margin-top: 10rpx;
+  position: relative;
+  z-index: 1;
+  margin-top: 12rpx;
   font-size: 24rpx;
   line-height: 1.6;
-  opacity: 0.92;
+  opacity: 0.88;
 }
 
+/* ---------- Summary Grid (毛玻璃统计卡片) ---------- */
 .summary-grid {
+  position: relative;
+  z-index: 1;
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 14rpx;
-  margin-top: 28rpx;
+  gap: 12rpx;
+  margin-top: 32rpx;
 }
 
 .summary-item {
-  padding: 18rpx 10rpx;
-  border-radius: 20rpx;
-  background: rgba(255, 255, 255, 0.14);
+  padding: 20rpx 8rpx 16rpx;
+  border-radius: 18rpx;
+  background: rgba(255, 255, 255, 0.13);
+  border: 1rpx solid rgba(255, 255, 255, 0.1);
   text-align: center;
 }
 
 .summary-value {
-  font-size: 28rpx;
-  font-weight: 700;
-  line-height: 1.4;
+  font-size: 32rpx;
+  font-weight: 800;
+  line-height: 1.2;
+  letter-spacing: 1rpx;
 }
 
 .summary-label {
   margin-top: 8rpx;
-  font-size: 21rpx;
-  opacity: 0.9;
+  font-size: 20rpx;
+  opacity: 0.82;
+  font-weight: 500;
 }
 
+/* ---------- Section Card ---------- */
 .section-card {
-  padding: 26rpx 24rpx;
+  padding: 28rpx 26rpx;
   margin-bottom: 24rpx;
 }
 
 .section-title {
+  position: relative;
   font-size: 30rpx;
   font-weight: 700;
   color: #1f2937;
-  margin-bottom: 20rpx;
+  margin-bottom: 22rpx;
+  padding-left: 18rpx;
+  border-left: 6rpx solid #2f80ed;
+  line-height: 1.3;
 }
 
 .section-desc {
-  margin-top: -8rpx;
-  margin-bottom: 22rpx;
-  font-size: 23rpx;
+  margin-top: -10rpx;
+  margin-bottom: 24rpx;
+  font-size: 24rpx;
   color: #6b7280;
-  line-height: 1.6;
+  line-height: 1.65;
 }
 
+/* ---------- Info List (出行信息) ---------- */
 .info-list {
   display: flex;
   flex-direction: column;
@@ -976,62 +1056,101 @@ function goHome() {
 .info-row {
   display: flex;
   justify-content: space-between;
+  align-items: center;
   gap: 24rpx;
-  padding: 16rpx 0;
+  padding: 18rpx 0;
   border-bottom: 1rpx solid #f3f4f6;
 }
 
 .info-row:last-child {
   border-bottom: 0;
+  padding-bottom: 4rpx;
 }
 
 .info-label {
-  font-size: 24rpx;
+  font-size: 25rpx;
   color: #6b7280;
+  flex-shrink: 0;
 }
 
 .info-value {
   flex: 1;
   text-align: right;
-  font-size: 24rpx;
+  font-size: 25rpx;
+  font-weight: 500;
   color: #1f2937;
 }
 
 .empty-line {
-  padding: 24rpx 0;
-  font-size: 24rpx;
+  padding: 28rpx 0;
+  font-size: 25rpx;
   color: #9ca3af;
   line-height: 1.7;
+  text-align: center;
 }
 
+/* ---------- Spot Timeline (景点停留明细 · 时间线) ---------- */
 .spot-list {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 16rpx;
+  gap: 0;
+  padding-left: 28rpx;
+  border-left: 2rpx solid #e5e7eb;
 }
 
 .spot-item {
-  padding: 20rpx;
-  border-radius: 20rpx;
-  background: #f9fafb;
+  position: relative;
+  padding: 12rpx 0 20rpx 20rpx;
+  border-radius: 0;
+  background: transparent;
+}
+
+/* 时间线圆点 */
+.spot-item::before {
+  content: '';
+  position: absolute;
+  left: -35rpx;
+  top: 20rpx;
+  width: 14rpx;
+  height: 14rpx;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 3rpx solid #2f80ed;
+  box-shadow: 0 0 0 4rpx rgba(47, 128, 237, 0.1);
+  z-index: 1;
+  pointer-events: none;
+}
+
+/* 第一个点实心强调起点 */
+.spot-item:first-child::before {
+  background: #2f80ed;
+  border-color: #2f80ed;
 }
 
 .spot-main {
   display: flex;
   justify-content: space-between;
+  align-items: center;
   gap: 20rpx;
 }
 
 .spot-name {
   flex: 1;
-  font-size: 26rpx;
+  font-size: 27rpx;
   font-weight: 600;
   color: #1f2937;
+  line-height: 1.4;
 }
 
 .spot-duration {
-  font-size: 23rpx;
+  font-size: 22rpx;
+  font-weight: 600;
   color: #18b368;
+  background: #ecfdf5;
+  padding: 6rpx 14rpx;
+  border-radius: 999rpx;
+  flex-shrink: 0;
 }
 
 .spot-time {
@@ -1041,13 +1160,27 @@ function goHome() {
   line-height: 1.6;
 }
 
+/* ---------- Consume Status Banner ---------- */
 .consume-status {
-  padding: 18rpx 20rpx;
-  border-radius: 18rpx;
+  display: flex;
+  align-items: center;
+  padding: 16rpx 20rpx;
+  border-radius: 16rpx;
   background: #fff7ed;
   color: #ea580c;
   font-size: 24rpx;
-  line-height: 1.6;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.consume-status::before {
+  content: '';
+  width: 8rpx;
+  height: 8rpx;
+  border-radius: 50%;
+  margin-right: 12rpx;
+  flex-shrink: 0;
+  background: currentColor;
 }
 
 .consume-status.confirmed {
@@ -1055,29 +1188,33 @@ function goHome() {
   color: #18b368;
 }
 
+/* ---------- Cost Grid (消费分类) ---------- */
 .cost-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: 14rpx;
-  margin-top: 18rpx;
+  gap: 12rpx;
+  margin-top: 20rpx;
 }
 
 .cost-item {
   display: flex;
   justify-content: space-between;
-  gap: 12rpx;
-  padding: 18rpx;
-  border-radius: 18rpx;
-  background: #f9fafb;
+  align-items: center;
+  gap: 8rpx;
+  padding: 20rpx 18rpx;
+  border-radius: 16rpx;
+  background: #f8fafb;
+  border: 1rpx solid #f1f5f9;
 }
 
 .cost-label,
 .cost-value {
-  font-size: 23rpx;
+  font-size: 24rpx;
 }
 
 .cost-label {
   color: #6b7280;
+  flex-shrink: 0;
 }
 
 .cost-value {
@@ -1085,58 +1222,70 @@ function goHome() {
   font-weight: 600;
 }
 
+/* 合计行 — 跨两列高亮 */
+.cost-item:last-child {
+  grid-column: 1 / -1;
+  background: #eff6ff;
+  border-color: #dbeafe;
+  padding: 22rpx 20rpx;
+  margin-top: 4rpx;
+}
+
+.cost-item:last-child .cost-label,
+.cost-item:last-child .cost-value {
+  font-weight: 700;
+  color: #2f80ed;
+  font-size: 26rpx;
+}
+
+/* ---------- Consume Detail (消费明细 · 账单条目) ---------- */
 .consume-detail {
-  margin-top: 18rpx;
+  margin-top: 20rpx;
 }
 
 .consume-list {
   display: flex;
   flex-direction: column;
-  gap: 14rpx;
+  gap: 12rpx;
 }
 
 .consume-item {
-  padding: 18rpx;
-  border-radius: 18rpx;
-  background: #f9fafb;
+  padding: 20rpx 18rpx;
+  border-radius: 16rpx;
+  background: #f8fafb;
+  border: 1rpx solid #f1f5f9;
 }
 
 .consume-main {
   display: flex;
   justify-content: space-between;
+  align-items: center;
   gap: 18rpx;
 }
 
 .consume-merchant {
   flex: 1;
-  font-size: 24rpx;
+  font-size: 25rpx;
   font-weight: 600;
   color: #1f2937;
+  line-height: 1.4;
 }
 
 .consume-amount {
-  font-size: 24rpx;
-  font-weight: 600;
+  font-size: 26rpx;
+  font-weight: 700;
   color: #18b368;
+  flex-shrink: 0;
 }
 
 .consume-meta {
-  margin-top: 8rpx;
+  margin-top: 10rpx;
   font-size: 22rpx;
   color: #6b7280;
   line-height: 1.5;
 }
 
-.comment-box {
-  margin-top: 18rpx;
-  padding: 20rpx;
-  border-radius: 18rpx;
-  background: #f9fafb;
-  color: #4b5563;
-  font-size: 24rpx;
-  line-height: 1.7;
-}
-
+/* ---------- Feedback Result (已反馈展示) ---------- */
 .feedback-result {
   display: flex;
   flex-direction: column;
@@ -1147,42 +1296,64 @@ function goHome() {
   justify-content: space-between;
   align-items: center;
   gap: 24rpx;
-  padding: 16rpx 0;
+  padding: 18rpx 0;
   border-bottom: 1rpx solid #f3f4f6;
+}
+
+.feedback-result-row:last-of-type {
+  border-bottom: 0;
 }
 
 .readonly-stars,
 .star-select {
   display: flex;
   align-items: center;
-  gap: 10rpx;
+  gap: 8rpx;
 }
 
 .star {
-  font-size: 42rpx;
+  font-size: 44rpx;
   color: #d1d5db;
   line-height: 1;
+  transition: transform 0.15s ease, color 0.15s ease;
 }
 
 .star.active {
   color: #f59e0b;
 }
 
+.star:active {
+  transform: scale(1.15);
+}
+
 .readonly-score {
-  margin-left: 8rpx;
-  font-size: 24rpx;
+  margin-left: 10rpx;
+  font-size: 25rpx;
+  font-weight: 600;
   color: #1f2937;
 }
 
+.comment-box {
+  margin-top: 20rpx;
+  padding: 22rpx 20rpx;
+  border-radius: 16rpx;
+  background: #f8fafb;
+  border: 1rpx solid #f1f5f9;
+  color: #4b5563;
+  font-size: 25rpx;
+  line-height: 1.7;
+}
+
+/* ---------- Feedback Form (未反馈表单) ---------- */
 .feedback-form {
   display: flex;
   flex-direction: column;
 }
 
 .form-label {
-  margin-top: 18rpx;
+  margin-top: 22rpx;
   margin-bottom: 14rpx;
-  font-size: 24rpx;
+  font-size: 25rpx;
   font-weight: 600;
   color: #374151;
 }
@@ -1193,14 +1364,15 @@ function goHome() {
 
 .feedback-textarea {
   width: 100%;
-  min-height: 132rpx;
+  min-height: 140rpx;
   padding: 20rpx;
   box-sizing: border-box;
-  border-radius: 18rpx;
-  background: #f9fafb;
+  border-radius: 16rpx;
+  background: #f8fafb;
+  border: 1rpx solid #eef0f4;
   color: #1f2937;
-  font-size: 24rpx;
-  line-height: 1.6;
+  font-size: 25rpx;
+  line-height: 1.65;
 }
 
 .textarea-placeholder {
@@ -1214,53 +1386,94 @@ function goHome() {
 
 .recommend-option {
   flex: 1;
-  height: 64rpx;
-  line-height: 64rpx;
+  height: 72rpx;
+  line-height: 72rpx;
   border-radius: 999rpx;
   background: #f3f4f6;
   color: #4b5563;
-  font-size: 24rpx;
+  font-size: 26rpx;
+  font-weight: 500;
   text-align: center;
+  border: 2rpx solid transparent;
+  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+.recommend-option:active {
+  transform: scale(0.97);
 }
 
 .recommend-option.active {
   background: #eff6ff;
   color: #2f80ed;
   font-weight: 600;
+  border-color: #2f80ed;
 }
 
 .feedback-submit {
-  margin-top: 28rpx;
-  height: 72rpx;
-  line-height: 72rpx;
+  margin-top: 32rpx;
+  height: 80rpx;
+  line-height: 80rpx;
   border-radius: 999rpx;
-  background: #2f80ed;
+  background: linear-gradient(135deg, #2f80ed 0%, #3b82f6 100%);
   color: #ffffff;
-  font-size: 26rpx;
-  font-weight: 600;
+  font-size: 28rpx;
+  font-weight: 700;
   text-align: center;
+  letter-spacing: 2rpx;
+  box-shadow: 0 8rpx 22rpx rgba(47, 128, 237, 0.3);
+  transition: opacity 0.2s ease, transform 0.1s ease;
+}
+
+.feedback-submit:active {
+  transform: scale(0.98);
+  opacity: 0.9;
 }
 
 .feedback-submit.disabled {
-  opacity: 0.6;
+  opacity: 0.5;
+  box-shadow: none;
 }
 
+/* ---------- Recommend List (相似景区推荐 · 可点击卡片) ---------- */
 .recommend-list {
   display: flex;
   flex-direction: column;
-  gap: 16rpx;
+  gap: 14rpx;
 }
 
 .recommend-item {
-  padding: 20rpx;
-  border-radius: 20rpx;
-  background: #f9fafb;
+  position: relative;
+  padding: 22rpx 52rpx 22rpx 20rpx;
+  border-radius: 18rpx;
+  background: #f8fafb;
+  border: 1rpx solid #f1f5f9;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+/* 右侧箭头 — 点击 affordance */
+.recommend-item::after {
+  content: '›';
+  position: absolute;
+  right: 22rpx;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 36rpx;
+  color: #9ca3af;
+  font-weight: 300;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.recommend-item:active {
+  background: #eff6ff;
+  border-color: #dbeafe;
 }
 
 .recommend-name {
-  font-size: 26rpx;
+  font-size: 27rpx;
   font-weight: 600;
   color: #1f2937;
+  line-height: 1.4;
 }
 
 .recommend-desc {

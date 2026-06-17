@@ -204,6 +204,9 @@ public class VisitReportService {
         detail.entertainmentCost = defaultMoney(report.entertainmentCost);
         detail.totalCost = defaultMoney(report.totalCost);
         detail.consumeList = buildConsumeList(loadPaymentRecordsForReport(report, visitId));
+        detail.satisfaction = report.satisfaction;
+        detail.comment = report.comment;
+        detail.recommend = report.recommend;
         detail.recommendationSimilarScenic = report.recommendParks;
         detail.summary = buildSummary(detail);
         return detail;
