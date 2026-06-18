@@ -123,7 +123,9 @@
             p.introduction,
             p.openInfo,
             p.location,
-            p.imageUrl
+            p.imageUrl,
+            p.latitude,
+            p.longitude
         FROM (
                  SELECT
                      a.area_code AS id,
@@ -140,7 +142,9 @@
                      a.history_intro AS introduction,
                      a.open_info AS openInfo,
                      a.location AS location,
-                     a.image_url AS imageUrl
+                     a.image_url AS imageUrl,
+                     a.latitude AS latitude,
+                     a.longitude AS longitude
                  FROM scenic_area a
                  WHERE a.area_code = #{id}
                    AND a.deleted = 0
@@ -160,6 +164,8 @@
             '景点' AS badge,
             s.tags AS tagsRaw,
             s.image_url AS imageUrl,
+            s.latitude,
+            s.longitude,
             '' AS heat
         FROM scenic_spot s
             INNER JOIN scenic_area a ON s.area_id = a.id

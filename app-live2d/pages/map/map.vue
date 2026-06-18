@@ -2,6 +2,7 @@
   <view class="page">
     <view class="map-wrap">
       <map
+        v-if="hasAnyMapPoint"
         id="scenicMap"
         class="map"
         :latitude="mapCenter.latitude"
@@ -18,6 +19,9 @@
         @markertap="onMarkerTap"
         @callouttap="onMarkerTap"
       ></map>
+      <view v-else class="map-empty">
+        {{ loading ? '正在加载地图坐标...' : '当前景区暂未配置地图坐标' }}
+      </view>
     </view>
 
     <view class="panel">
@@ -39,15 +43,12 @@
       </view>
 
       <view v-else-if="!hasAnyMapPoint" class="map-tip warning card">
-        当前景区暂无有效经纬度数据，请后端补充景区或景点 latitude / longitude 字段。
+        当前景区暂未配置地图坐标，暂无法展示地图。
       </view>
 
       <view class="action-row">
         <view class="action-btn" @click="locateMe">
           当前位置
-        </view>
-        <view class="action-btn" @click="drawRecommendRoute">
-          推荐路线
         </view>
         <view class="action-btn primary" @click="startParkGuide">
           景区讲解
@@ -57,7 +58,10 @@
       <view v-if="selectedScenic" class="selected-card card">
         <view class="selected-top">
           <view class="selected-info">
-            <view class="selected-name">{{ selectedScenic.name }}</view>
+            <view class="selected-name-row">
+              <view class="selected-name">{{ selectedScenic.name }}</view>
+              <view class="selected-badge">当前选中</view>
+            </view>
             <view class="selected-intro">{{ selectedScenic.intro }}</view>
           </view>
 
@@ -84,7 +88,7 @@
       </view>
 
       <view class="section-title">
-        <text>推荐游览顺序</text>
+        <text>景点位置</text>
         <text class="route-tip">{{ routeTip }}</text>
       </view>
 
@@ -93,7 +97,7 @@
           v-for="item in scenicList"
           :key="item.id"
           class="scenic-chip"
-          :class="{ active: selectedScenic && selectedScenic.id === item.id }"
+          :class="{ active: isSelectedScenic(item) }"
           @click="selectScenic(item)"
         >
           <text class="chip-index">{{ item.sort }}</text>
@@ -132,8 +136,36 @@ const DEFAULT_CENTER = {
   longitude: 120.130663
 }
 
+const SCENIC_DISPLAY_LAT_KEYS = [
+  'latitude',
+  'lat',
+  'scenicLatitude',
+  'centerLatitude',
+  'center_latitude',
+  'mapLatitude',
+  'map_latitude',
+  'mapLat',
+  'gcjLat',
+  'gcj02Lat'
+]
+
+const SCENIC_DISPLAY_LNG_KEYS = [
+  'longitude',
+  'lng',
+  'lon',
+  'scenicLongitude',
+  'centerLongitude',
+  'center_longitude',
+  'mapLongitude',
+  'map_longitude',
+  'mapLng',
+  'gcjLng',
+  'gcj02Lng'
+]
+
 const USER_LOCATION_MARKER_ID = 99999
 const USER_LOCATION_ICON = '/static/map/current-location.png'
+const SELECTED_SCENIC_MARKER_ICON = '/static/map/marker-selected.png'
 
 const loading = ref(false)
 const currentParkId = ref('')
@@ -163,10 +195,11 @@ const mapCenter = ref({
 
 const mapScale = ref(14)
 const selectedScenic = ref(null)
+const selectedScenicId = ref('')
 const userLocation = ref(null)
 const polylines = ref([])
 const locationText = ref('尚未获取当前位置')
-const routeTip = ref('等待生成路线')
+const routeTip = ref('仅展示地图点位')
 
 const scenicList = computed(() => {
   return [...(park.value.scenics || [])].sort((a, b) => {
@@ -230,6 +263,7 @@ const markers = computed(() => {
 
   scenicList.value.forEach((item, index) => {
     if (!item.hasLocation) return
+    const isSelected = isSelectedScenic(item)
 
     result.push({
       id: index + 100,
@@ -237,20 +271,26 @@ const markers = computed(() => {
       latitude: Number(item.latitude),
       longitude: Number(item.longitude),
       title: item.name,
-      width: 30,
-      height: 30,
-      zIndex: selectedScenic.value && selectedScenic.value.id === item.id ? 80 : 40,
+      ...(isSelected
+        ? {
+            iconPath: SELECTED_SCENIC_MARKER_ICON,
+            anchor: {
+              x: 0.5,
+              y: 1
+            }
+          }
+        : {}),
+      width: isSelected ? 60 : 30,
+      height: isSelected ? 60 : 30,
+      zIndex: isSelected ? 999 : 40,
       callout: {
-        content: `${item.sort}. ${item.name}`,
-        display:
-          selectedScenic.value && selectedScenic.value.id === item.id
-            ? 'ALWAYS'
-            : 'BYCLICK',
-        padding: 8,
-        borderRadius: 8,
-        bgColor: '#ffffff',
-        color: '#16a34a',
-        fontSize: 13
+        content: isSelected ? `当前：${item.sort} ${item.name}` : `${item.sort} ${item.name}`,
+        display: isSelected ? 'ALWAYS' : 'BYCLICK',
+        padding: isSelected ? 12 : 8,
+        borderRadius: isSelected ? 10 : 8,
+        bgColor: isSelected ? '#16a34a' : '#ffffff',
+        color: isSelected ? '#ffffff' : '#16a34a',
+        fontSize: isSelected ? 15 : 13
       }
     })
   })
@@ -345,42 +385,43 @@ function toNumber(value) {
     return null
   }
 
-  const num = Number(value)
+  const num = parseFloat(value)
   return Number.isFinite(num) ? num : null
 }
 
 function isValidCoordinate(latitude, longitude) {
-  const lat = Number(latitude)
-  const lng = Number(longitude)
+  const lat = parseFloat(latitude)
+  const lng = parseFloat(longitude)
 
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
     return false
   }
 
-  if (lat === 0 && lng === 0) {
+  if (lat === 0 || lng === 0) {
     return false
   }
 
   return lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180
 }
 
-function normalizeScenic(item, index) {
-  const latitude = toNumber(pick(item, [
-    'latitude',
-    'lat',
-    'mapLat',
-    'gcjLat',
-    'gcj02Lat'
-  ], null))
+function resolveScenicDisplayCoords(source = {}) {
+  const latitude = toNumber(pick(source, SCENIC_DISPLAY_LAT_KEYS, null))
+  const longitude = toNumber(pick(source, SCENIC_DISPLAY_LNG_KEYS, null))
 
-  const longitude = toNumber(pick(item, [
-    'longitude',
-    'lng',
-    'lon',
-    'mapLng',
-    'gcjLng',
-    'gcj02Lng'
-  ], null))
+  if (!isValidCoordinate(latitude, longitude)) {
+    return null
+  }
+
+  return {
+    latitude,
+    longitude
+  }
+}
+
+function normalizeScenic(item, index) {
+  const displayCoords = resolveScenicDisplayCoords(item)
+  const latitude = displayCoords?.latitude ?? null
+  const longitude = displayCoords?.longitude ?? null
 
   const sortValue = toNumber(pick(item, ['sort', 'order', 'index'], index + 1))
 
@@ -396,29 +437,40 @@ function normalizeScenic(item, index) {
   }
 }
 
-function resolveMapCenter(parkLatitude, parkLongitude, scenics) {
-  if (isValidCoordinate(parkLatitude, parkLongitude)) {
+function resolveScenicDisplayMapCenter(parkCoords, scenics) {
+  if (parkCoords) {
     return {
-      latitude: parkLatitude,
-      longitude: parkLongitude,
+      latitude: parkCoords.latitude,
+      longitude: parkCoords.longitude,
       source: 'park'
     }
   }
 
-  const firstScenic = scenics.find(item => item.hasLocation)
+  const scenicCoords = scenics
+    .filter(item => item.hasLocation)
+    .map(item => ({
+      latitude: Number(item.latitude),
+      longitude: Number(item.longitude)
+    }))
 
-  if (firstScenic) {
-    return {
-      latitude: firstScenic.latitude,
-      longitude: firstScenic.longitude,
-      source: 'scenic'
-    }
+  if (!scenicCoords.length) {
+    return null
   }
 
+  const total = scenicCoords.reduce((sum, item) => {
+    return {
+      latitude: sum.latitude + item.latitude,
+      longitude: sum.longitude + item.longitude
+    }
+  }, {
+    latitude: 0,
+    longitude: 0
+  })
+
   return {
-    latitude: DEFAULT_CENTER.latitude,
-    longitude: DEFAULT_CENTER.longitude,
-    source: 'default'
+    latitude: total.latitude / scenicCoords.length,
+    longitude: total.longitude / scenicCoords.length,
+    source: scenicCoords.length === 1 ? 'scenic' : 'scenic_average'
   }
 }
 
@@ -526,31 +578,17 @@ function normalizeParkMapData(parkRaw, scenicsRaw) {
         ? parkData.scenics
         : Array.isArray(parkData.scenicList)
           ? parkData.scenicList
-          : []
+          : Array.isArray(parkData.spots)
+            ? parkData.spots
+            : []
 
   const normalizedScenics = scenicArray.map((item, index) => {
     return normalizeScenic(item, index)
   })
 
-  const parkLatitude = toNumber(pick(parkData, [
-    'latitude',
-    'lat',
-    'mapLat',
-    'gcjLat',
-    'gcj02Lat'
-  ], null))
-
-  const parkLongitude = toNumber(pick(parkData, [
-    'longitude',
-    'lng',
-    'lon',
-    'mapLng',
-    'gcjLng',
-    'gcj02Lng'
-  ], null))
-
-  const parkHasLocation = isValidCoordinate(parkLatitude, parkLongitude)
-  const center = resolveMapCenter(parkLatitude, parkLongitude, normalizedScenics)
+  const parkCoords = resolveScenicDisplayCoords(parkData)
+  const parkHasLocation = !!parkCoords
+  const center = resolveScenicDisplayMapCenter(parkCoords, normalizedScenics)
 
   return {
     ...parkData,
@@ -558,11 +596,11 @@ function normalizeParkMapData(parkRaw, scenicsRaw) {
     name: pick(parkData, ['name', 'parkName', 'areaName', 'area_name'], '未命名景区'),
     address: pick(parkData, ['address', 'location'], '暂无地址信息'),
     desc: pick(parkData, ['desc', 'intro', 'introduction', 'description'], '暂无景区简介'),
-    latitude: parkHasLocation ? parkLatitude : center.latitude,
-    longitude: parkHasLocation ? parkLongitude : center.longitude,
+    latitude: center?.latitude ?? mapCenter.value.latitude,
+    longitude: center?.longitude ?? mapCenter.value.longitude,
     hasLocation: parkHasLocation,
     isFallbackLocation: false,
-    centerSource: center.source,
+    centerSource: center?.source || 'none',
     scenics: normalizedScenics
   }
 }
@@ -576,16 +614,19 @@ function applyMapData(mapData, text = '已加载地图数据') {
   }
 
   const firstLocatedScenic = scenicList.value.find(item => item.hasLocation)
-  selectedScenic.value = firstLocatedScenic || scenicList.value[0] || null
+  setSelectedScenic(firstLocatedScenic || scenicList.value[0] || null)
 
-  drawRecommendRoute(false)
+  polylines.value = []
+  routeTip.value = validScenicPoints.value.length ? '已展示有坐标的景点' : '暂无可展示景点坐标'
 
   if (mapData.centerSource === 'onsite_context') {
     locationText.value = `${text}，后端景区坐标暂缺，已使用现场定位坐标作为地图中心`
   } else if (!hasAnyMapPoint.value) {
-    locationText.value = '当前景区暂无有效经纬度数据'
+    locationText.value = '当前景区暂未配置地图坐标，暂无法展示地图'
   } else if (!mapData.hasLocation && mapData.centerSource === 'scenic') {
     locationText.value = `${text}，景区中心点暂缺，已使用首个有坐标的景点作为地图中心`
+  } else if (!mapData.hasLocation && mapData.centerSource === 'scenic_average') {
+    locationText.value = `${text}，景区中心点暂缺，已使用景点坐标平均值作为地图中心`
   } else {
     locationText.value = text
   }
@@ -717,8 +758,19 @@ function onMarkerTap(e) {
 }
 
 function selectScenic(item) {
-  selectedScenic.value = item
+  setSelectedScenic(item)
   focusScenic(item)
+}
+
+function setSelectedScenic(item) {
+  selectedScenic.value = item || null
+  selectedScenicId.value = item?.id !== undefined && item?.id !== null
+    ? String(item.id)
+    : ''
+}
+
+function isSelectedScenic(item) {
+  return !!item && selectedScenicId.value === String(item.id)
 }
 
 function focusScenic(item) {
@@ -736,48 +788,6 @@ function focusScenic(item) {
   }
 
   mapScale.value = 16
-}
-
-function drawRecommendRoute(showTip = true) {
-  const points = scenicList.value
-    .filter(item => item.hasLocation)
-    .map(item => ({
-      latitude: Number(item.latitude),
-      longitude: Number(item.longitude)
-    }))
-
-  if (points.length < 2) {
-    polylines.value = []
-    routeTip.value = '可连线景点不足'
-
-    if (showTip) {
-      uni.showToast({
-        title: '可连线景点不足',
-        icon: 'none'
-      })
-    }
-
-    return
-  }
-
-  polylines.value = [
-    {
-      points,
-      color: '#16A34ACC',
-      width: 6,
-      dottedLine: false,
-      arrowLine: true
-    }
-  ]
-
-  routeTip.value = '已按有坐标的景点生成路线'
-
-  if (showTip) {
-    uni.showToast({
-    title: '已生成推荐路线',
-      icon: 'none'
-    })
-  }
 }
 
 function openParkGuide() {
@@ -905,6 +915,17 @@ function handleTripInfoConfirm(selection) {
   height: 560rpx;
 }
 
+.map-empty {
+  width: 750rpx;
+  height: 560rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26rpx;
+  color: #6b7280;
+  background: #eef2f7;
+}
+
 .panel {
   margin-top: -10rpx;
   padding: 24rpx;
@@ -1024,10 +1045,27 @@ function handleTripInfoConfirm(selection) {
   flex: 1;
 }
 
+.selected-name-row {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  flex-wrap: wrap;
+}
+
 .selected-name {
   font-size: 30rpx;
   font-weight: 700;
   color: #111827;
+}
+
+.selected-badge {
+  padding: 6rpx 14rpx;
+  border-radius: 999rpx;
+  background: #dcfce7;
+  color: #15803d;
+  font-size: 20rpx;
+  font-weight: 700;
+  line-height: 1.2;
 }
 
 .selected-intro {

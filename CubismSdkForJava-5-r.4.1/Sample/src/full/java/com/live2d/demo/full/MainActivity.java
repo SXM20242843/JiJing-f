@@ -3343,6 +3343,9 @@ public class MainActivity extends Activity {
         }
 
         ensureGuideAiContractFields(requestJson, routeIntent, !routeIntent || suppressRoute);
+        RouteNode chatContextNode = getCurrentRouteNodeForChatContext(routeIntent);
+        applyRouteNodeToGuideRequestContext(requestJson, chatContextNode, routeIntent);
+        logChatContext(requestJson, question, chatContextNode, routeIntent, suppressRoute, realConversationId);
 
         Log.d(TAG, "文本问答真实身份参数 realUserId=" + realUserId
                 + ", appUserId=" + appUserId
@@ -3639,6 +3642,102 @@ public class MainActivity extends Activity {
                 + ", currentSpotId=" + requestSpotId
                 + ", currentSpotName=" + requestSpotName
                 + ", sceneCode=" + requestSceneCode);
+    }
+
+    private RouteNode getCurrentRouteNodeForChatContext(boolean routeIntent) {
+        if (!isOnsiteGuide || routeIntent) {
+            return null;
+        }
+        return firstNotNull(getCurrentActiveRouteNode(), currentDemoRouteNode);
+    }
+
+    private void applyRouteNodeToGuideRequestContext(JSONObject requestJson, RouteNode node, boolean routeIntent) throws Exception {
+        if (requestJson == null || node == null || routeIntent) {
+            return;
+        }
+        String requestType = getJsonText(requestJson, "requestType", "request_type");
+        if ("route_recommend".equalsIgnoreCase(requestType)) {
+            return;
+        }
+
+        String currentSpotId = getRouteNodeCurrentSpotId(node);
+        String currentSpotName = getRouteNodeCurrentSpotName(node);
+        putLongOrString(requestJson, "currentSpotId", currentSpotId);
+        putLongOrString(requestJson, "current_spot_id", currentSpotId);
+        requestJson.put("currentSpotName", safeString(currentSpotName));
+        requestJson.put("current_spot_name", safeString(currentSpotName));
+
+        JSONObject currentVisitContext = getJsonObject(requestJson, "currentVisitContext", "current_visit_context");
+        if (currentVisitContext == null) {
+            currentVisitContext = new JSONObject();
+        }
+        syncCurrentSpotContextObject(currentVisitContext, currentSpotId, currentSpotName);
+        requestJson.put("currentVisitContext", currentVisitContext);
+        requestJson.put("current_visit_context", currentVisitContext);
+
+        JSONObject location = getJsonObject(requestJson, "locationContext", "location_context");
+        if (location == null) {
+            location = new JSONObject();
+        }
+        syncCurrentSpotContextObject(location, currentSpotId, currentSpotName);
+        requestJson.put("locationContext", location);
+        requestJson.put("location_context", location);
+
+        JSONObject context = getJsonObject(requestJson, "context");
+        if (context == null) {
+            context = new JSONObject();
+        }
+        syncCurrentSpotContextObject(context, currentSpotId, currentSpotName);
+        context.put("currentVisitContext", currentVisitContext);
+        context.put("current_visit_context", currentVisitContext);
+        context.put("location", location);
+        requestJson.put("context", context);
+    }
+
+    private void syncCurrentSpotContextObject(JSONObject object, String currentSpotId, String currentSpotName) throws Exception {
+        if (object == null) {
+            return;
+        }
+        putLongOrString(object, "currentSpotId", currentSpotId);
+        putLongOrString(object, "current_spot_id", currentSpotId);
+        object.put("currentSpotName", safeString(currentSpotName));
+        object.put("current_spot_name", safeString(currentSpotName));
+    }
+
+    private String getRouteNodeCurrentSpotId(RouteNode node) {
+        if (node == null) {
+            return "";
+        }
+        return firstNotEmpty(getRouteNodeScenicId(node), node.spotId, node.scenicId, node.id);
+    }
+
+    private String getRouteNodeCurrentSpotName(RouteNode node) {
+        if (node == null) {
+            return "";
+        }
+        return firstNotEmpty(getRouteNodeName(node), node.spotName, node.scenicName);
+    }
+
+    private void logChatContext(JSONObject requestJson,
+                                String question,
+                                RouteNode activeNode,
+                                boolean routeIntent,
+                                boolean suppressRoute,
+                                String conversationIdText) {
+        try {
+            Log.d(TAG, "[ChatContext] question=" + safeLogText(question)
+                    + ", currentSpotName=" + getJsonText(requestJson, "currentSpotName", "current_spot_name")
+                    + ", currentSpotId=" + getJsonText(requestJson, "currentSpotId", "current_spot_id")
+                    + ", activeNodeName=" + getRouteNodeName(activeNode)
+                    + ", routeGuideActive=" + routeGuideActive
+                    + ", requestType=" + getJsonText(requestJson, "requestType", "request_type")
+                    + ", route=" + (requestJson != null && requestJson.has("route") ? String.valueOf(requestJson.opt("route")) : "")
+                    + ", routeIntent=" + routeIntent
+                    + ", suppressRoute=" + suppressRoute
+                    + ", conversationId=" + safeString(conversationIdText));
+        } catch (Exception e) {
+            Log.d(TAG, "[ChatContext] log error: " + e.getMessage());
+        }
     }
 
     private JSONObject buildGuideLocationContextObject(String requestAreaId,
@@ -3989,6 +4088,13 @@ public class MainActivity extends Activity {
                     String requestSceneName = firstNotEmpty(spotName, scenicName);
                     String requestSpotId = firstNotEmpty(spotId, scenicId);
                     String requestSpotName = firstNotEmpty(spotName, scenicName);
+                    RouteNode voiceContextNode = getCurrentRouteNodeForChatContext(false);
+                    if (voiceContextNode != null) {
+                        requestSpotId = getRouteNodeCurrentSpotId(voiceContextNode);
+                        requestSpotName = getRouteNodeCurrentSpotName(voiceContextNode);
+                        requestSceneCode = firstNotEmpty(requestSpotId, requestSceneCode);
+                        requestSceneName = firstNotEmpty(requestSpotName, requestSceneName);
+                    }
                     JSONObject voiceLocationContext = buildGuideLocationContextObject(
                             requestAreaId,
                             requestAreaCode,
@@ -3997,7 +4103,10 @@ public class MainActivity extends Activity {
                             requestSpotName,
                             requestSceneCode
                     );
+                    syncCurrentSpotContextObject(voiceLocationContext, requestSpotId, requestSpotName);
                     JSONObject voiceNetworkContext = buildGuideNetworkContextObject();
+                    JSONObject voiceCurrentVisitContext = new JSONObject();
+                    syncCurrentSpotContextObject(voiceCurrentVisitContext, requestSpotId, requestSpotName);
                     JSONObject voiceContext = new JSONObject();
                     voiceContext.put("currentSpotId", safeString(requestSpotId));
                     voiceContext.put("current_spot_id", safeString(requestSpotId));
@@ -4005,6 +4114,8 @@ public class MainActivity extends Activity {
                     voiceContext.put("current_spot_name", safeString(requestSpotName));
                     voiceContext.put("sceneCode", safeString(requestSceneCode));
                     voiceContext.put("scene_code", safeString(requestSceneCode));
+                    voiceContext.put("currentVisitContext", voiceCurrentVisitContext);
+                    voiceContext.put("current_visit_context", voiceCurrentVisitContext);
                     voiceContext.put("location", voiceLocationContext);
                     JSONObject voiceOptions = new JSONObject();
                     voiceOptions.put("responseMode", "digital_human");
@@ -4106,6 +4217,7 @@ public class MainActivity extends Activity {
                     }
                     JSONObject routeLocationContext = buildRouteLocationContextForRequest();
                     if (routeLocationContext != null) {
+                        syncCurrentSpotContextObject(routeLocationContext, requestSpotId, requestSpotName);
                         writeFormField(outputStream, boundary, "location_context", routeLocationContext.toString());
                         writeFormField(outputStream, boundary, "locationContext", routeLocationContext.toString());
                     } else {
@@ -4114,6 +4226,8 @@ public class MainActivity extends Activity {
                     }
                     writeFormField(outputStream, boundary, "network_context", voiceNetworkContext.toString());
                     writeFormField(outputStream, boundary, "networkContext", voiceNetworkContext.toString());
+                    writeFormField(outputStream, boundary, "currentVisitContext", voiceCurrentVisitContext.toString());
+                    writeFormField(outputStream, boundary, "current_visit_context", voiceCurrentVisitContext.toString());
                     writeFormField(outputStream, boundary, "context", voiceContext.toString());
                     writeFormField(outputStream, boundary, "options", voiceOptions.toString());
                     writeFormField(outputStream, boundary, "route", "false");
@@ -4138,6 +4252,11 @@ public class MainActivity extends Activity {
                             + ", groupSize=" + groupSize
                             + ", travelType=" + travelType
                             + ", visitPreference=" + visitPreference);
+                    Log.d(TAG, "[VoiceChatContext] currentSpotName=" + requestSpotName
+                            + ", currentSpotId=" + requestSpotId
+                            + ", activeNodeName=" + getRouteNodeName(voiceContextNode)
+                            + ", routeGuideActive=" + routeGuideActive
+                            + ", conversationId=" + realConversationId);
                     logAiQuestion("[voice]");
 
                     writeFileField(outputStream, boundary, "audio", audioFile, "audio/mp4");
@@ -7629,6 +7748,10 @@ public class MainActivity extends Activity {
                 }
             }
         }
+        if (routeGuideActive) {
+            currentDemoRouteNode = node;
+            applyDemoNodeToCurrentContext(node);
+        }
         LatLng latLng = toLatLng(node);
         if (routeAMap != null && latLng != null) {
             routeAMap.animateCamera(CameraUpdateFactory.newLatLngZoom(latLng, 17f));
@@ -7998,7 +8121,9 @@ public class MainActivity extends Activity {
             RouteNode current = getCurrentActiveRouteNode();
             RouteNode next = getNextActiveRouteNode();
             String statusText = "路线导览中\n当前：" + (current == null ? "当前起点" : getRouteNodeName(current))
-                    + "\n下一站：" + (next == null ? "暂无下一站" : getRouteNodeName(next));
+                    + "\n下一站：" + (next == null ? "暂无下一站" : getRouteNodeName(next))
+                    + "\n提示：已到达" + (current == null ? "当前起点" : getRouteNodeName(current))
+                    + "，可点击“讲解当前景点”";
             routeDemoStatusText.setText(statusText);
             routeDemoStatusText.setVisibility(View.VISIBLE);
         }
@@ -8147,12 +8272,14 @@ public class MainActivity extends Activity {
                                 routeCardContainer.setVisibility(View.VISIBLE);
                             }
                             refreshRouteMapForRouteState();
-                            speakRouteGuideText("已到达" + getRouteNodeName(nextNode) + "，下面为你讲解这里的特色。");
+                            if (routeMapModeActive) {
+                                showRouteBottomSheet(route);
+                            }
+                            showDemoArrivalPrompt(nextNode);
                             if (!previousLeaveOk) {
                                 showToast("已到达新景点，但上一景点离开记录写入失败");
                             }
-                            Log.d(TAG, "[RouteNav] keep route card after spot explain");
-                            askGuideForCurrentNode(nextNode);
+                            Log.d(TAG, "[RouteNav] arrived next node, wait for manual spot explain");
                         } else {
                             renderRouteCard(route);
                             showToast("到达景点记录写入失败，请查看 Logcat");
@@ -8226,6 +8353,7 @@ public class MainActivity extends Activity {
             showToast("当前起点暂无景点讲解");
             return;
         }
+        applyDemoNodeToCurrentContext(node);
         if (requesting) {
             showToast("数字人正在处理，请稍候");
             return;
@@ -8447,16 +8575,13 @@ public class MainActivity extends Activity {
 
     private void showDemoArrivalPrompt(RouteNode node) {
         String nodeName = getRouteNodeName(node);
-        String prompt = "你已到达" + nodeName + "，我来为你讲解";
         if (guideStateText != null) {
-            guideStateText.setText("路线节点演示");
+            guideStateText.setText("已到达" + nodeName);
         }
         if (lastQuestionText != null) {
-            lastQuestionText.setText("路线节点演示：到达" + nodeName);
+            lastQuestionText.setText("提示：可点击“讲解当前景点”");
         }
-        showGuideAnswer(prompt);
-        applyDigitalHumanState("explain", "warm");
-        speakText(prompt);
+        showToast("已到达" + nodeName + "，可点击“讲解当前景点”");
     }
 
     private void applyDemoNodeToCurrentContext(RouteNode node) {
@@ -8464,18 +8589,29 @@ public class MainActivity extends Activity {
             return;
         }
 
-        spotId = firstNotEmpty(node.spotId, spotId);
-        spotName = firstNotEmpty(node.spotName, node.scenicName, spotName);
+        String oldSpotName = spotName;
+        String oldSpotId = spotId;
+        String nodeName = getRouteNodeCurrentSpotName(node);
+        String nodeSpotId = getRouteNodeCurrentSpotId(node);
+
+        spotId = firstNotEmpty(nodeSpotId, spotId);
+        spotName = firstNotEmpty(nodeName, spotName);
         scenicId = firstNotEmpty(node.scenicId, scenicId);
         scenicName = firstNotEmpty(node.scenicName, node.spotName, scenicName);
         routeStartType = "current_spot";
-        routeStartCurrentSpotId = firstNotEmpty(node.spotId, node.scenicId, node.id, routeStartCurrentSpotId);
-        routeStartCurrentSpotName = firstNotEmpty(getRouteNodeName(node), routeStartCurrentSpotName, "当前景点");
+        routeStartCurrentSpotId = firstNotEmpty(nodeSpotId, routeStartCurrentSpotId);
+        routeStartCurrentSpotName = firstNotEmpty(nodeName, routeStartCurrentSpotName, "当前景点");
         routeStartLatitude = firstNotEmpty(node.latitude, routeStartLatitude);
         routeStartLongitude = firstNotEmpty(node.longitude, routeStartLongitude);
         latitude = firstNotEmpty(node.latitude, latitude);
         longitude = firstNotEmpty(node.longitude, longitude);
         updateGuideContext();
+
+        Log.d(TAG, "[RouteNodeContext] nodeName=" + nodeName
+                + ", oldSpotName=" + safeString(oldSpotName)
+                + ", newSpotName=" + safeString(spotName)
+                + ", oldSpotId=" + safeString(oldSpotId)
+                + ", newSpotId=" + safeString(spotId));
 
         if (targetText != null) {
             targetText.setText(getTopTargetText());
@@ -13511,7 +13647,7 @@ public class MainActivity extends Activity {
     private void triggerNfcAiGuide() {
         if (questionInput == null) return;
 
-        String question = "给我讲讲这里";
+        String question = "请讲解当前 NFC 识别到的景点：" + spotName;
         if (requesting) {
             Log.d(TAG, "[GuideChat] duplicate NFC guide skipped: guide/chat requesting");
             return;

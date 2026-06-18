@@ -50,7 +50,6 @@
 
       <view class="section-header">
         <view class="section-title">景点列表</view>
-        <view class="section-more" @click="goAiExplainPark">AI讲解景区</view>
       </view>
 
       <view
@@ -171,6 +170,27 @@ const park = ref({
 
 const scenicListInPark = ref([])
 
+const SCENIC_DISPLAY_LAT_KEYS = [
+  'latitude',
+  'lat',
+  'scenicLatitude',
+  'centerLatitude',
+  'center_latitude',
+  'mapLatitude',
+  'map_latitude'
+]
+
+const SCENIC_DISPLAY_LNG_KEYS = [
+  'longitude',
+  'lng',
+  'lon',
+  'scenicLongitude',
+  'centerLongitude',
+  'center_longitude',
+  'mapLongitude',
+  'map_longitude'
+]
+
 function requestGet(url) {
   return new Promise((resolve, reject) => {
     uni.request({
@@ -205,6 +225,86 @@ function formatShortDesc(desc, maxLength = 56) {
 function getCoverText(item) {
   const name = String(item?.name || '景区').trim()
   return name.slice(0, 2)
+}
+
+function pickScenicDisplayValue(source, keys) {
+  for (const key of keys) {
+    if (source && source[key] !== undefined && source[key] !== null && source[key] !== '') {
+      return source[key]
+    }
+  }
+
+  return null
+}
+
+function parseScenicDisplayCoord(value) {
+  if (value === undefined || value === null || value === '') {
+    return null
+  }
+
+  const coord = parseFloat(value)
+  return Number.isFinite(coord) ? coord : null
+}
+
+function isValidScenicDisplayCoords(latitude, longitude) {
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    return false
+  }
+
+  if (latitude === 0 || longitude === 0) {
+    return false
+  }
+
+  return latitude >= -90 && latitude <= 90 && longitude >= -180 && longitude <= 180
+}
+
+function resolveScenicDisplayCoords(source = {}) {
+  const latitude = parseScenicDisplayCoord(pickScenicDisplayValue(source, SCENIC_DISPLAY_LAT_KEYS))
+  const longitude = parseScenicDisplayCoord(pickScenicDisplayValue(source, SCENIC_DISPLAY_LNG_KEYS))
+
+  if (!isValidScenicDisplayCoords(latitude, longitude)) {
+    return null
+  }
+
+  return {
+    latitude,
+    longitude
+  }
+}
+
+function resolveScenicDisplayMapCenter(parkSource = {}, spotSources = []) {
+  const parkCoords = resolveScenicDisplayCoords(parkSource)
+
+  if (parkCoords) {
+    return {
+      ...parkCoords,
+      source: 'park'
+    }
+  }
+
+  const spotCoords = (Array.isArray(spotSources) ? spotSources : [])
+    .map(item => resolveScenicDisplayCoords(item))
+    .filter(Boolean)
+
+  if (!spotCoords.length) {
+    return null
+  }
+
+  const total = spotCoords.reduce((sum, item) => {
+    return {
+      latitude: sum.latitude + item.latitude,
+      longitude: sum.longitude + item.longitude
+    }
+  }, {
+    latitude: 0,
+    longitude: 0
+  })
+
+  return {
+    latitude: total.latitude / spotCoords.length,
+    longitude: total.longitude / spotCoords.length,
+    source: spotCoords.length === 1 ? 'spot' : 'spots_average'
+  }
 }
 
 function getParkImage() {
@@ -358,8 +458,8 @@ async function fetchParkDetail(id) {
     location: data.location || '',
     address: data.address || data.location || '',
     imageUrl: data.imageUrl || '',
-    latitude: data.latitude ?? data.lat ?? null,
-    longitude: data.longitude ?? data.lng ?? data.lon ?? null,
+    latitude: data.latitude ?? data.lat ?? data.scenicLatitude ?? data.centerLatitude ?? data.center_latitude ?? data.mapLatitude ?? data.map_latitude ?? null,
+    longitude: data.longitude ?? data.lng ?? data.lon ?? data.scenicLongitude ?? data.centerLongitude ?? data.center_longitude ?? data.mapLongitude ?? data.map_longitude ?? null,
 	digitalHumanConfig: normalizeDigitalHumanConfig(data, data.name || '')
   }
 }
@@ -372,7 +472,9 @@ async function fetchParkScenics(id) {
   scenicListInPark.value = Array.isArray(data)
     ? data.map(item => ({
         ...item,
-        imageUrl: item.imageUrl || item.image_url || ''
+        imageUrl: item.imageUrl || item.image_url || '',
+        latitude: item.latitude ?? item.lat ?? item.scenicLatitude ?? item.centerLatitude ?? item.center_latitude ?? item.mapLatitude ?? item.map_latitude ?? null,
+        longitude: item.longitude ?? item.lng ?? item.lon ?? item.scenicLongitude ?? item.centerLongitude ?? item.center_longitude ?? item.mapLongitude ?? item.map_longitude ?? null
       }))
     : []
 }
@@ -423,6 +525,19 @@ function goParkMap() {
     return
   }
 
+  const displayMapCenter = resolveScenicDisplayMapCenter(
+    park.value,
+    scenicListInPark.value
+  )
+
+  if (!displayMapCenter) {
+    uni.showToast({
+      title: '当前景区暂未配置地图坐标',
+      icon: 'none'
+    })
+    return
+  }
+
   trackUserBehavior('view_map', {
     ...buildParkBehaviorPayload({
       trigger: 'click_map_button'
@@ -432,7 +547,8 @@ function goParkMap() {
 
   uni.setStorageSync('selectedParkMapContext', JSON.stringify({
     ...park.value,
-    scenics: scenicListInPark.value
+    scenics: scenicListInPark.value,
+    displayMapCenter
   }))
 
   uni.navigateTo({

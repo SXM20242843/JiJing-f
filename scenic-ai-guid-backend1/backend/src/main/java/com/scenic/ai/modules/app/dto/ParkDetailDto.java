@@ -3,6 +3,7 @@ package com.scenic.ai.modules.app.dto;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.Data;
 
+import java.math.BigDecimal;
 import java.util.List;
 
 @Data
@@ -20,6 +21,8 @@ public class ParkDetailDto {
     private String openInfo;          // open_info
     private String location;          // location
     private String imageUrl;          // image_url
+    private BigDecimal latitude;      // latitude
+    private BigDecimal longitude;     // longitude
 
     /**
      * 管理员为该景区配置的数字人信息。
