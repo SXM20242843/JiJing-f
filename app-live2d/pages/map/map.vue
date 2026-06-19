@@ -169,6 +169,7 @@ const SELECTED_SCENIC_MARKER_ICON = '/static/map/marker-selected.png'
 
 const loading = ref(false)
 const currentParkId = ref('')
+const currentMapSource = ref('')
 const {
   showTripInfoPopup,
   openTripInfoConfirm,
@@ -339,11 +340,21 @@ onLoad(options => {
   // 避免页面栈重复、返回首页异常、登录状态显示混乱等问题。
   clearNativeGuideReturnState()
 
-  const parkId = options?.parkId || options?.areaCode || options?.id || ''
-  currentParkId.value = parkId
+  const source = options?.source || ''
+  const parkLoadIds = buildParkLoadIds(options)
+  currentMapSource.value = source
+  currentParkId.value = parkLoadIds[0] || ''
 
-  if (parkId) {
-    loadParkMapData(parkId)
+  if (isHomeOnsiteSource(source) && !parkLoadIds.length) {
+    showHomeOnsiteMapUnavailable()
+    return
+  }
+
+  if (parkLoadIds.length) {
+    loadParkMapData(parkLoadIds, {
+      source,
+      routeOptions: options || {}
+    })
   } else {
     loadMockMapData()
   }
@@ -378,6 +389,41 @@ function pick(obj, keys, fallback = '') {
     }
   }
   return fallback
+}
+
+function isHomeOnsiteSource(source) {
+  return source === 'home-onsite'
+}
+
+function normalizeQueryValue(value) {
+  if (value === undefined || value === null || value === '') {
+    return ''
+  }
+
+  return String(value)
+}
+
+function buildParkLoadIds(options = {}) {
+  const source = options?.source || ''
+  const candidates = isHomeOnsiteSource(source)
+    ? [
+        options.parkId,
+        options.areaCode,
+        options.parkCode,
+        options.id,
+        options.areaId
+      ]
+    : [
+        options.parkId,
+        options.areaCode,
+        options.id,
+        options.areaId
+      ]
+
+  return candidates
+    .map(normalizeQueryValue)
+    .filter(Boolean)
+    .filter((item, index, list) => list.indexOf(item) === index)
 }
 
 function toNumber(value) {
@@ -567,6 +613,59 @@ function applyFallbackLocationFromContext(mapData, context) {
   }
 }
 
+function unwrapApiData(payload) {
+  if (payload && Object.prototype.hasOwnProperty.call(payload, 'data')) {
+    return payload.data
+  }
+
+  return payload
+}
+
+function hasLoadedParkPayload(parkRaw, scenicsRaw) {
+  const parkData = unwrapApiData(parkRaw)
+  const scenicData = unwrapApiData(scenicsRaw)
+
+  const hasParkData = !!parkData &&
+    typeof parkData === 'object' &&
+    !Array.isArray(parkData) &&
+    Object.keys(parkData).length > 0
+  const hasScenicData = Array.isArray(scenicData) && scenicData.length > 0
+
+  return hasParkData || hasScenicData
+}
+
+function hasDisplayMapData(mapData) {
+  return !!mapData?.hasLocation || (mapData?.scenics || []).some(item => item.hasLocation)
+}
+
+function applyRouteMapMeta(mapData, routeOptions = {}) {
+  const routeName = normalizeQueryValue(routeOptions.parkName || routeOptions.areaName)
+  const routeParkId = normalizeQueryValue(routeOptions.parkId || routeOptions.areaCode || routeOptions.id)
+
+  return {
+    ...mapData,
+    id: mapData.id || routeParkId || normalizeQueryValue(routeOptions.areaId) || currentParkId.value,
+    name: mapData.name && mapData.name !== '未命名景区'
+      ? mapData.name
+      : (routeName || mapData.name)
+  }
+}
+
+function showHomeOnsiteMapUnavailable() {
+  locationText.value = '当前暂未获取到景区地图数据'
+  uni.showToast({
+    title: '当前暂未获取到景区地图数据',
+    icon: 'none'
+  })
+
+  setTimeout(() => {
+    const pages = getCurrentPages()
+    if (pages && pages.length > 1) {
+      uni.navigateBack({ delta: 1 })
+    }
+  }, 700)
+}
+
 function normalizeParkMapData(parkRaw, scenicsRaw) {
   const parkData = parkRaw?.data || parkRaw || {}
 
@@ -637,23 +736,73 @@ function applyMapData(mapData, text = '已加载地图数据') {
   })
 }
 
-async function loadParkMapData(parkId) {
+async function loadParkMapData(parkIds, options = {}) {
+  const source = options.source || currentMapSource.value || ''
+  const routeOptions = options.routeOptions || {}
+  const isHomeOnsite = isHomeOnsiteSource(source)
+  const loadIds = (Array.isArray(parkIds) ? parkIds : [parkIds])
+    .map(normalizeQueryValue)
+    .filter(Boolean)
+    .filter((item, index, list) => list.indexOf(item) === index)
+
   loading.value = true
   locationText.value = '正在加载数据库地图数据...'
 
   try {
-    const [parkRes, scenicRes] = await Promise.all([
-      requestGet(`${API_BASE}/api/app/parks/${parkId}`),
-      requestGet(`${API_BASE}/api/app/parks/${parkId}/scenics`)
-    ])
+    let loaded = false
+    let lastError = null
 
-    const cacheContext = readSelectedParkMapContext()
-    applyUserLocationFromContext(cacheContext)
+    for (const parkId of loadIds) {
+      try {
+        const [parkRes, scenicRes] = await Promise.all([
+          requestGet(`${API_BASE}/api/app/parks/${parkId}`),
+          requestGet(`${API_BASE}/api/app/parks/${parkId}/scenics`)
+        ])
 
-    let mapData = normalizeParkMapData(parkRes, scenicRes)
-    mapData = applyFallbackLocationFromContext(mapData, cacheContext)
+        if (isHomeOnsite && !hasLoadedParkPayload(parkRes, scenicRes)) {
+          lastError = new Error(`empty map payload: ${parkId}`)
+          continue
+        }
 
-    applyMapData(mapData, '已加载数据库地图数据')
+        const cacheContext = readSelectedParkMapContext()
+        if (!isHomeOnsite) {
+          applyUserLocationFromContext(cacheContext)
+        }
+
+        let mapData = normalizeParkMapData(parkRes, scenicRes)
+
+        if (isHomeOnsite) {
+          mapData = applyRouteMapMeta(mapData, routeOptions)
+
+          if (!hasDisplayMapData(mapData)) {
+            lastError = new Error(`empty display coordinates: ${parkId}`)
+            continue
+          }
+        } else {
+          mapData = applyFallbackLocationFromContext(mapData, cacheContext)
+        }
+
+        currentParkId.value = parkId
+        applyMapData(mapData, '已加载数据库地图数据')
+        loaded = true
+        break
+      } catch (error) {
+        lastError = error
+        console.log('地图数据候选加载失败：', parkId, error)
+      }
+    }
+
+    if (loaded) {
+      return
+    }
+
+    if (isHomeOnsite) {
+      console.log('首页现场地图数据不可用：', lastError)
+      showHomeOnsiteMapUnavailable()
+      return
+    }
+
+    throw lastError || new Error('地图数据加载失败')
   } catch (error) {
     console.log('地图数据加载失败：', error)
 

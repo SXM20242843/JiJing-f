@@ -26,7 +26,7 @@ class OfflinePackageInfo {
         info.packageVersion = optString(json, "packageVersion", "package_version", "version");
         info.packageUrl = optString(json, "packageUrl", "package_url");
         info.packageSize = optLong(json, "packageSize", "package_size");
-        info.contentHash = optString(json, "contentHash", "content_hash");
+        info.contentHash = optString(json, "contentHash", "content_hash", "sha256", "hash");
         info.includesAudio = optInt(json, "includesAudio", "includes_audio");
         info.includesMap = optInt(json, "includesMap", "includes_map");
         info.spotCount = optInt(json, "spotCount", "spot_count");

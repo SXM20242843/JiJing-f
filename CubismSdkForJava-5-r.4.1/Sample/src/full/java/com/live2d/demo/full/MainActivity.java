@@ -4136,9 +4136,6 @@ public class MainActivity extends Activity {
                     writeFormField(outputStream, boundary, "auth_session_id", safeString(appAuthSessionId));
                     writeFormField(outputStream, boundary, "app_session_id", safeString(appAuthSessionId));
 
-                    writeFormField(outputStream, boundary, "userId", realUserId);
-                    writeFormField(outputStream, boundary, "user_id", realUserId);
-
                     writeFormField(outputStream, boundary, "loginUserId", loginUserId);
                     writeFormField(outputStream, boundary, "login_user_id", loginUserId);
 
@@ -4235,6 +4232,13 @@ public class MainActivity extends Activity {
                     writeFormField(outputStream, boundary, "suppress_route", "true");
                     writeFormField(outputStream, boundary, "requestType", "voice_chat");
                     writeFormField(outputStream, boundary, "request_type", "voice_chat");
+
+                    Log.d(TAG, "[VoiceUpload] userId=" + realUserId);
+                    Log.d(TAG, "[VoiceUpload] user_id=" + realUserId);
+                    Log.d(TAG, "[VoiceUpload] duplicateUserFieldFixed=true");
+                    Log.d(TAG, "[VoiceUpload] url=" + url);
+                    Log.d(TAG, "[VoiceUpload] fileName=" + audioFile.getName());
+                    Log.d(TAG, "[VoiceUpload] fileSize=" + audioFile.length());
 
                     Log.d(TAG, "语音问答真实身份参数 realUserId=" + realUserId
                             + ", appUserId=" + appUserId
@@ -12967,7 +12971,9 @@ public class MainActivity extends Activity {
         NetworkLevel networkLevel = networkStateHelper != null
                 ? networkStateHelper.getNetworkLevel()
                 : NetworkLevel.NORMAL;
-        if (networkLevel == NetworkLevel.OFFLINE) {
+        if (networkLevel != NetworkLevel.NORMAL) {
+            Log.d(TAG, "[OfflinePackage] skip update networkLevel=" + networkLevel
+                    + ", use local cache");
             return;
         }
 
@@ -12981,21 +12987,51 @@ public class MainActivity extends Activity {
         new Thread(new Runnable() {
             @Override
             public void run() {
+                OfflinePackageClient client = new OfflinePackageClient(
+                        MainActivity.this,
+                        apiBaseUrl,
+                        authToken
+                );
                 try {
-                    OfflinePackageClient client = new OfflinePackageClient(
-                            MainActivity.this,
-                            apiBaseUrl,
-                            authToken
-                    );
                     OfflinePackageInfo latest = client.fetchLatest(offlineAreaId);
-                    if (latest == null || latest.packageUrl == null
-                            || latest.packageUrl.trim().length() == 0) {
+                    if (latest == null) {
+                        handleOfflinePackageUpdateFailed(client, offlineAreaId, "latest unavailable");
                         return;
                     }
 
-                    String localVersion = client.getLocalPackageVersion(offlineAreaId);
-                    Log.d(TAG, "[OfflinePackage] server version=" + latest.packageVersion
-                            + ", local version=" + localVersion);
+                    OfflinePackageInfo local = client.getLocalPackageInfo(offlineAreaId);
+                    String serverVersion = normalizeOfflinePackageText(latest.packageVersion);
+                    String serverHash = normalizeOfflinePackageText(latest.contentHash);
+                    String localVersion = local == null
+                            ? ""
+                            : normalizeOfflinePackageText(local.packageVersion);
+                    String localHash = local == null
+                            ? ""
+                            : normalizeOfflinePackageText(local.contentHash);
+
+                    Log.d(TAG, "[OfflinePackage] local version=" + localVersion
+                            + ", server version=" + serverVersion);
+
+                    if (isOfflinePackageAlreadyLatest(
+                            serverVersion,
+                            serverHash,
+                            localVersion,
+                            localHash
+                    )) {
+                        if (hasComparableOfflinePackageHash(serverHash, localHash)) {
+                            Log.d(TAG, "[OfflinePackage] already latest area=" + offlineAreaId
+                                    + ", version=" + serverVersion);
+                        } else {
+                            Log.d(TAG, "[OfflinePackage] already latest by version area="
+                                    + offlineAreaId + ", version=" + serverVersion);
+                        }
+                        return;
+                    }
+
+                    if (latest.packageUrl == null || latest.packageUrl.trim().length() == 0) {
+                        handleOfflinePackageUpdateFailed(client, offlineAreaId, "packageUrl empty");
+                        return;
+                    }
 
                     boolean downloaded = client.downloadManifest(latest, offlineAreaId);
                     if (downloaded && offlinePackageManager != null) {
@@ -13004,14 +13040,103 @@ public class MainActivity extends Activity {
                             offlinePackageManager.reloadPackage(areaIdInt);
                         }
                     } else if (!downloaded) {
-                        showToast("离线包更新失败，已继续使用本地缓存。");
+                        handleOfflinePackageUpdateFailed(
+                                client,
+                                offlineAreaId,
+                                "downloadManifest returned false"
+                        );
                     }
                 } catch (Exception e) {
-                    Log.w(TAG, "[OfflinePackage] update failed: " + e.getMessage(), e);
-                    showToast("离线包更新失败，已继续使用本地缓存。");
+                    handleOfflinePackageUpdateFailed(
+                            client,
+                            offlineAreaId,
+                            buildOfflinePackageFailureReason(e),
+                            e
+                    );
                 }
             }
         }).start();
+    }
+
+    private boolean isOfflinePackageAlreadyLatest(
+            String serverVersion,
+            String serverHash,
+            String localVersion,
+            String localHash
+    ) {
+        if (serverVersion == null || serverVersion.length() == 0) {
+            return false;
+        }
+        if (!serverVersion.equals(localVersion)) {
+            return false;
+        }
+        if (hasComparableOfflinePackageHash(serverHash, localHash)) {
+            return serverHash.equalsIgnoreCase(localHash);
+        }
+        return true;
+    }
+
+    private boolean hasComparableOfflinePackageHash(String serverHash, String localHash) {
+        return serverHash != null && serverHash.length() > 0
+                && localHash != null && localHash.length() > 0;
+    }
+
+    private void handleOfflinePackageUpdateFailed(
+            OfflinePackageClient client,
+            String areaId,
+            String reason
+    ) {
+        handleOfflinePackageUpdateFailed(client, areaId, reason, null);
+    }
+
+    private void handleOfflinePackageUpdateFailed(
+            OfflinePackageClient client,
+            String areaId,
+            String reason,
+            Throwable throwable
+    ) {
+        boolean hasLocalManifest = client != null && client.hasLocalManifest(areaId);
+        String safeReason = normalizeOfflinePackageText(reason);
+        if (safeReason.length() == 0) {
+            safeReason = "unknown";
+        }
+
+        String message;
+        if (hasLocalManifest) {
+            message = "[OfflinePackage] update failed, keep local cache area="
+                    + areaId + ", reason=" + safeReason;
+            if (throwable == null) {
+                Log.w(TAG, message);
+            } else {
+                Log.w(TAG, message, throwable);
+            }
+            return;
+        }
+
+        message = "[OfflinePackage] update failed, local manifest unavailable area="
+                + areaId + ", reason=" + safeReason;
+        if (throwable == null) {
+            Log.w(TAG, message);
+        } else {
+            Log.w(TAG, message, throwable);
+        }
+        showToast("离线包暂不可用，请联网后重试");
+    }
+
+    private String buildOfflinePackageFailureReason(Throwable throwable) {
+        if (throwable == null) {
+            return "unknown";
+        }
+        String name = throwable.getClass().getSimpleName();
+        String message = normalizeOfflinePackageText(throwable.getMessage());
+        if (message.length() == 0) {
+            return name;
+        }
+        return name + ": " + message;
+    }
+
+    private String normalizeOfflinePackageText(String value) {
+        return value == null ? "" : value.trim();
     }
 
     private boolean isOfflinePackageCheckThrottled(String areaIdText) {

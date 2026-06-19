@@ -841,6 +841,195 @@ function buildPageQuery(query = {}) {
     .join('&')
 }
 
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    if (value !== undefined && value !== null && value !== '') {
+      return value
+    }
+  }
+
+  return ''
+}
+
+function readStorageObject(key) {
+  try {
+    const value = uni.getStorageSync(key)
+    if (!value) return {}
+    if (typeof value === 'object') return value
+    return JSON.parse(value)
+  } catch (error) {
+    console.log('读取首页现场导览缓存失败：', key, error)
+    return {}
+  }
+}
+
+function resolveDemoParkOption(area = {}) {
+  const areaId = parseNumericAreaId(area.parkId, area.areaId, area.areaCode, area.parkCode)
+
+  if (!areaId) {
+    return null
+  }
+
+  return DEMO_PARK_OPTIONS.find(item => {
+    const optionId = parseNumericAreaId(item.parkId, item.areaId, item.areaCode, item.parkCode)
+    return optionId === areaId
+  }) || null
+}
+
+function buildCurrentParkMapArea() {
+  refreshOnsiteStatus()
+
+  const status = onsiteStatus.value || {}
+  const context = status.context || {}
+  const scenic = status.scenic || {}
+  const location = status.location || {}
+  const hitArea = locationState.value.hitArea || {}
+  const activeVisit = readStorageObject('activeVisit')
+  const currentVisitInfo = readStorageObject('currentVisitInfo')
+  const currentParkId = uni.getStorageSync('currentParkId') || ''
+  const currentParkName = uni.getStorageSync('currentParkName') || ''
+
+  const rawArea = {
+    areaId: firstNonEmpty(
+      context.areaId,
+      context.area_id,
+      scenic.areaId,
+      scenic.area_id,
+      hitArea.areaId,
+      activeVisit.areaId,
+      activeVisit.currentAreaId,
+      currentVisitInfo.areaId,
+      visitState.value.areaId,
+      currentParkId
+    ),
+    parkId: firstNonEmpty(
+      context.parkId,
+      context.park_id,
+      scenic.parkId,
+      scenic.park_id,
+      hitArea.parkId,
+      activeVisit.parkId,
+      activeVisit.currentParkId,
+      currentVisitInfo.parkId,
+      currentVisitInfo.currentParkId,
+      visitState.value.areaId,
+      currentParkId
+    ),
+    areaCode: firstNonEmpty(
+      context.areaCode,
+      context.area_code,
+      context.parkCode,
+      context.park_code,
+      scenic.areaCode,
+      scenic.area_code,
+      scenic.parkCode,
+      scenic.park_code,
+      hitArea.areaCode,
+      hitArea.parkCode,
+      activeVisit.areaCode,
+      activeVisit.parkCode,
+      currentVisitInfo.areaCode,
+      currentVisitInfo.parkCode,
+      isAreaBusinessCode(currentParkId) ? currentParkId : ''
+    ),
+    parkCode: firstNonEmpty(
+      context.parkCode,
+      context.park_code,
+      context.areaCode,
+      context.area_code,
+      scenic.parkCode,
+      scenic.park_code,
+      scenic.areaCode,
+      scenic.area_code,
+      hitArea.parkCode,
+      hitArea.areaCode,
+      activeVisit.parkCode,
+      activeVisit.areaCode,
+      currentVisitInfo.parkCode,
+      currentVisitInfo.areaCode,
+      isAreaBusinessCode(currentParkId) ? currentParkId : ''
+    ),
+    areaName: firstNonEmpty(
+      context.areaName,
+      context.area_name,
+      context.parkName,
+      scenic.areaName,
+      scenic.area_name,
+      scenic.parkName,
+      hitArea.areaName,
+      visitState.value.areaName,
+      activeVisit.areaName,
+      activeVisit.parkName,
+      activeVisit.currentParkName,
+      currentVisitInfo.areaName,
+      currentVisitInfo.parkName,
+      currentVisitInfo.currentParkName,
+      currentParkName,
+      resolveCurrentParkName(status)
+    ),
+    parkName: firstNonEmpty(
+      context.parkName,
+      context.areaName,
+      context.area_name,
+      scenic.parkName,
+      scenic.areaName,
+      scenic.area_name,
+      hitArea.parkName,
+      hitArea.areaName,
+      visitState.value.areaName,
+      activeVisit.parkName,
+      activeVisit.currentParkName,
+      activeVisit.areaName,
+      currentVisitInfo.parkName,
+      currentVisitInfo.currentParkName,
+      currentVisitInfo.areaName,
+      currentParkName,
+      resolveCurrentParkName(status)
+    ),
+    latitude: firstNonEmpty(
+      scenic.latitude,
+      scenic.lat,
+      context.latitude,
+      context.lat,
+      hitArea.latitude,
+      location.latitude,
+      activeVisit.latitude,
+      currentVisitInfo.latitude
+    ),
+    longitude: firstNonEmpty(
+      scenic.longitude,
+      scenic.lng,
+      scenic.lon,
+      context.longitude,
+      context.lng,
+      context.lon,
+      hitArea.longitude,
+      location.longitude,
+      activeVisit.longitude,
+      currentVisitInfo.longitude
+    )
+  }
+
+  const demoPark = resolveDemoParkOption(rawArea)
+  const area = normalizeArea({
+    ...(demoPark || {}),
+    ...rawArea,
+    areaCode: rawArea.areaCode || demoPark?.areaCode || '',
+    parkCode: rawArea.parkCode || demoPark?.parkCode || '',
+    areaName: rawArea.areaName || demoPark?.areaName || '',
+    parkName: rawArea.parkName || demoPark?.parkName || ''
+  })
+
+  const mapParkId = area.parkCode || area.areaCode || area.parkId || area.areaId || ''
+  const mapParkName = area.parkName || area.areaName || ''
+
+  return {
+    ...area,
+    mapParkId,
+    mapParkName
+  }
+}
+
 function resolveCurrentParkId(status) {
   const context = status?.context || {}
   const scenic = status?.scenic || {}
@@ -1548,24 +1737,25 @@ async function handleContinueCurrentVisit() {
 }
 
 function goCurrentParkMap() {
-  const area = normalizeArea({
-    areaId: visitState.value.areaId || locationState.value.hitArea?.areaId || resolveCurrentParkId(onsiteStatus.value),
-    areaName: visitState.value.areaName || locationState.value.hitArea?.areaName || resolveCurrentParkName(onsiteStatus.value),
-    latitude: locationState.value.hitArea?.latitude || onsiteStatus.value?.location?.latitude || '',
-    longitude: locationState.value.hitArea?.longitude || onsiteStatus.value?.location?.longitude || ''
-  })
+  const area = buildCurrentParkMapArea()
 
-  if (!area.areaId) {
+  if (!area.mapParkId && !area.areaId) {
     uni.showToast({
-      title: '暂无景区地图信息',
+      title: '当前暂未获取到景区地图数据，请先进入景区详情或继续导览',
       icon: 'none'
     })
     return
   }
 
   uni.setStorageSync('selectedParkMapContext', JSON.stringify({
-    id: area.areaId,
-    name: area.areaName,
+    id: area.mapParkId || area.areaId,
+    parkId: area.mapParkId || '',
+    areaId: area.areaId || '',
+    areaCode: area.areaCode || '',
+    parkCode: area.parkCode || '',
+    name: area.mapParkName,
+    parkName: area.mapParkName,
+    areaName: area.areaName || area.mapParkName,
     latitude: area.latitude || '',
     longitude: area.longitude || '',
     source: 'home-onsite'
@@ -1573,11 +1763,14 @@ function goCurrentParkMap() {
 
   uni.navigateTo({
     url: `/pages/map/map?${buildPageQuery({
-      parkId: area.areaId,
-      areaName: area.areaName,
+      source: 'home-onsite',
+      parkId: area.mapParkId || '',
+      areaId: area.areaId || '',
+      areaCode: area.areaCode || '',
+      parkName: area.mapParkName,
+      areaName: area.areaName || area.mapParkName,
       latitude: area.latitude || '',
-      longitude: area.longitude || '',
-      source: 'home-onsite'
+      longitude: area.longitude || ''
     })}`
   })
 }

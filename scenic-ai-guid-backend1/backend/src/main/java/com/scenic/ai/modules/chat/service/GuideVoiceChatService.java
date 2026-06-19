@@ -161,8 +161,9 @@ public class GuideVoiceChatService {
                 : isInsideArea;
 
         try {
-            String url = aiProperties.getBaseUrl() + aiProperties.getTextChatEndpoint();
-            log.info("调用语音问答服务: {}", url);
+            String url = aiProperties.getBaseUrl() + aiProperties.getVoiceChatEndpoint();
+            log.info("[VoiceChat] forward ai url={}", url);
+            log.info("[VoiceChat] forward mode=multipart/files-data");
 
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.MULTIPART_FORM_DATA);
@@ -181,6 +182,10 @@ public class GuideVoiceChatService {
             fileHeaders.setContentType(hasText(contentType) ? MediaType.parseMediaType(contentType) : MediaType.APPLICATION_OCTET_STREAM);
             HttpEntity<ByteArrayResource> filePart = new HttpEntity<>(audioResource, fileHeaders);
             body.add("audio_file", filePart);
+            log.info("[VoiceChat] audio part name=audio_file, filename={}, size={}, contentType={}",
+                    audio.getOriginalFilename(),
+                    audio.getSize(),
+                    contentType);
 
             putIfHasText(routeBody, "question", finalQuestion);
             putIfHasText(routeBody, "userId", finalUserId);
@@ -365,6 +370,8 @@ public class GuideVoiceChatService {
 
             HttpEntity<MultiValueMap<String, Object>> entity = new HttpEntity<>(body, headers);
             ResponseEntity<Map> response = restTemplate.exchange(url, HttpMethod.POST, entity, Map.class);
+            log.info("[VoiceChat] ai status={}", response.getStatusCode());
+            log.info("[VoiceChat] ai body summary={}", truncateAiErrorBody(sanitizeBodyForLog(response.getBody())));
             log.info("[GuideChat] httpStatus={}", response.getStatusCode());
 
             if (response.getStatusCode() == HttpStatus.OK && response.getBody() != null) {

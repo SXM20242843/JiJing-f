@@ -75,18 +75,75 @@ public class OfflinePackageClient {
     }
 
     public String getLocalPackageVersion(String areaId) {
-        try {
-            File metaFile = getMetaFile(areaId);
-            if (!metaFile.exists()) {
-                return "";
+        OfflinePackageInfo info = getLocalPackageInfo(areaId);
+        return info == null ? "" : info.packageVersion;
+    }
+
+    public OfflinePackageInfo getLocalPackageInfo(String areaId) {
+        if (areaId == null || areaId.trim().length() == 0) {
+            return null;
+        }
+
+        OfflinePackageInfo info = readLocalPackageInfo(getMetaFile(areaId));
+        OfflinePackageInfo manifestInfo = null;
+        if (info == null || isEmptyText(info.packageVersion) || isEmptyText(info.contentHash)) {
+            manifestInfo = readLocalPackageInfo(getManifestFile(areaId));
+        }
+
+        if (info == null) {
+            return manifestInfo;
+        }
+        if (manifestInfo != null) {
+            if (isEmptyText(info.packageVersion) && !isEmptyText(manifestInfo.packageVersion)) {
+                info.packageVersion = manifestInfo.packageVersion;
             }
-            InputStream is = new FileInputStream(metaFile);
+            if (isEmptyText(info.contentHash) && !isEmptyText(manifestInfo.contentHash)) {
+                info.contentHash = manifestInfo.contentHash;
+            }
+        }
+        return info;
+    }
+
+    public boolean hasLocalManifest(String areaId) {
+        if (areaId == null || areaId.trim().length() == 0) {
+            return false;
+        }
+        File manifestFile = getManifestFile(areaId);
+        return manifestFile.exists() && manifestFile.isFile() && manifestFile.length() > 0L;
+    }
+
+    private OfflinePackageInfo readLocalPackageInfo(File file) {
+        try {
+            if (file == null || !file.exists() || !file.isFile() || file.length() <= 0L) {
+                return null;
+            }
+            InputStream is = new FileInputStream(file);
             String text = readString(is);
             JSONObject json = new JSONObject(text);
-            return json.optString("packageVersion", "");
+            OfflinePackageInfo info = new OfflinePackageInfo();
+            info.packageVersion = optLocalString(json, "packageVersion", "package_version", "version");
+            info.contentHash = optLocalString(json, "contentHash", "content_hash", "sha256", "hash");
+            return info;
         } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private String optLocalString(JSONObject json, String... keys) {
+        if (json == null || keys == null) {
             return "";
         }
+        for (int i = 0; i < keys.length; i++) {
+            String value = json.optString(keys[i], "");
+            if (value != null && value.trim().length() > 0) {
+                return value.trim();
+            }
+        }
+        return "";
+    }
+
+    private boolean isEmptyText(String value) {
+        return value == null || value.trim().length() == 0;
     }
 
     public boolean downloadManifest(OfflinePackageInfo info, String fallbackAreaId) {
