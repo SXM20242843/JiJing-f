@@ -1,0 +1,114 @@
+{
+  "area_id": 1,
+  "area_name": "灵山胜境",
+  "version": "2026.06.07.001",
+  "map": {
+    "type": "IMAGE",
+    "local_path": "maps/area_1_map.png",
+    "width": 1200,
+    "height": 800
+  },
+  "spots": [
+    {
+      "spot_id": 6,
+      "scene_code": "LS-006",
+      "name": "九龙灌浴",
+      "x": 450,
+      "y": 320,
+      "short_intro": "九龙灌浴是灵山胜境大型动态音乐群雕，再现佛祖释迦牟尼诞生时的壮观景象。",
+      "guide_text": "九龙灌浴位于灵山胜境入口广场，是一座大型青铜动态群雕，高27.5米。每天定时表演时，九条龙同时向太子佛像喷水，再现'九龙灌浴、花开见佛'的祥瑞景象。",
+      "local_audio": "audio/LS-006.mp3"
+    },
+    {
+      "spot_id": 10,
+      "scene_code": "LS-010",
+      "name": "灵山大佛",
+      "x": 580,
+      "y": 180,
+      "short_intro": "灵山大佛高88米，是目前世界上最大的青铜立佛像之一。",
+      "guide_text": "灵山大佛位于灵山胜境最高处，青铜铸造，总高度88米，其中佛像本体高79米，莲花座9米。大佛右手指天表示'施无畏印'，左手指地表示'与愿印'，寓意除众生苦、予众生乐。",
+      "local_audio": "audio/LS-010.mp3"
+    },
+    {
+      "spot_id": 11,
+      "scene_code": "LS-011",
+      "name": "五印坛城",
+      "x": 680,
+      "y": 350,
+      "short_intro": "五印坛城是一座藏传佛教风格的坛城建筑杰作。",
+      "guide_text": "五印坛城位于灵山梵宫东侧，以藏传佛教坛城为原型，融合了藏族传统建筑艺术与佛教密宗文化。坛城内供奉有五方佛，外围有转经筒，是灵山胜境中最具藏传佛教特色的景点。",
+      "local_audio": "audio/LS-011.mp3"
+    },
+    {
+      "spot_id": 13,
+      "scene_code": "SPOT_0013",
+      "name": "灵山梵宫",
+      "x": 720,
+      "y": 410,
+      "short_intro": "灵山梵宫是灵山胜境内建筑规模最大、艺术价值最高的佛教艺术殿堂。",
+      "guide_text": "灵山梵宫融合佛教艺术、传统工艺与现代建筑技术，被誉为东方卢浮宫。这里汇集了壁画、木雕、琉璃、灯光艺术和大型佛教文化展示空间，是灵山胜境中极具代表性的文化建筑。",
+      "local_audio": "audio/LS-013.mp3"
+    },
+    {
+      "spot_id": 14,
+      "scene_code": "LS-014",
+      "name": "曼飞龙塔",
+      "x": 750,
+      "y": 460,
+      "short_intro": "曼飞龙塔是一组南传佛教风格的塔群建筑。",
+      "guide_text": "曼飞龙塔位于灵山胜境南端，仿云南西双版纳曼飞龙白塔而建，由一座主塔和八座小塔组成，是南传佛教建筑艺术的代表。",
+      "local_audio": "audio/LS-014.mp3"
+    }
+  ],
+  "nfc_markers": [
+    {
+      "marker_code": "NFC_LS_013",
+      "target_type": "SPOT",
+      "target_id": 13,
+      "scene_code": "SPOT_0013",
+      "target_name": "灵山梵宫"
+    },
+    {
+      "marker_code": "NFC_LS_006",
+      "target_type": "SPOT",
+      "target_id": 6,
+      "scene_code": "LS-006",
+      "target_name": "九龙灌浴"
+    },
+    {
+      "marker_code": "NFC_LS_010",
+      "target_type": "SPOT",
+      "target_id": 10,
+      "scene_code": "LS-010",
+      "target_name": "灵山大佛"
+    },
+    {
+      "marker_code": "NFC_LS_011",
+      "target_type": "SPOT",
+      "target_id": 11,
+      "scene_code": "LS-011",
+      "target_name": "五印坛城"
+    },
+    {
+      "marker_code": "NFC_LS_014",
+      "target_type": "SPOT",
+      "target_id": 14,
+      "scene_code": "LS-014",
+      "target_name": "曼飞龙塔"
+    }
+  ],
+  "routes": [
+    {
+      "route_id": "culture_route_4h",
+      "route_name": "历史文化路线",
+      "spot_ids": [6, 10, 11, 13, 14],
+      "description": "适合喜欢佛教文化、建筑艺术和历史讲解的游客。"
+    }
+  ],
+  "faqs": [
+    {
+      "question": "九龙灌浴几点表演？",
+      "answer": "平日演出时间一般为10:00、11:30、13:30、15:00，具体以景区当天公告为准。"
+    }
+  ]
+}

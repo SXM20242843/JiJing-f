@@ -34,21 +34,6 @@
       </view>
     </view>
 
-    <view class="location-status-card card">
-      <view class="location-status-title">系统支持真实 GPS 识别用户是否进入景区</view>
-      <view class="location-status-text">
-        当前定位状态：{{ locationStatusText }}
-      </view>
-      <view class="location-status-meta" v-if="locationState.source === 'demo'">
-        当前为演示进入景区
-      </view>
-      <view class="location-actions">
-        <view class="location-demo-btn" @click="handleDemoEnterScenic">
-          演示进入景区
-        </view>
-      </view>
-    </view>
-
     <!-- AI 数字人导览入口卡 -->
     <view class="guide-entry-card card" :class="{ onsite: isOnsiteMode }">
       <view class="guide-entry-main">
@@ -863,6 +848,51 @@ function readStorageObject(key) {
   }
 }
 
+function hasRunningCurrentVisitInfo() {
+  const currentVisitInfo = readStorageObject('currentVisitInfo')
+  const visitId = firstNonEmpty(
+    currentVisitInfo.currentVisitId,
+    currentVisitInfo.visitId,
+    currentVisitInfo.visit_id,
+    currentVisitInfo.id
+  )
+
+  if (!visitId) {
+    return false
+  }
+
+  const statusText = String(firstNonEmpty(
+    currentVisitInfo.status,
+    currentVisitInfo.visitStatus,
+    currentVisitInfo.visit_status,
+    currentVisitInfo.state,
+    currentVisitInfo.sessionStatus,
+    currentVisitInfo.session_status
+  )).trim().toUpperCase()
+
+  if (['ENDED', 'COMPLETED', 'FINISHED', 'DONE', 'INVALID', 'NOT_FOUND', 'NONE', 'CANCELLED', 'CANCELED'].includes(statusText)) {
+    return false
+  }
+
+  if (firstNonEmpty(currentVisitInfo.endTime, currentVisitInfo.end_time, currentVisitInfo.finishedAt, currentVisitInfo.finished_at)) {
+    return false
+  }
+
+  return true
+}
+
+async function hasRunningVisitBeforeDemoSwitch() {
+  await syncVisitState()
+  return visitState.value.hasRunningVisit || getCurrentVisitId() || hasRunningCurrentVisitInfo()
+}
+
+function showRunningVisitBeforeDemoSwitchToast() {
+  uni.showToast({
+    title: '当前已有现场导览进行中，请先结束后再切换演示景区',
+    icon: 'none'
+  })
+}
+
 function resolveDemoParkOption(area = {}) {
   const areaId = parseNumericAreaId(area.parkId, area.areaId, area.areaCode, area.parkCode)
 
@@ -1584,7 +1614,7 @@ function showDemoParkSelector() {
   })
 }
 
-function setCurrentDemoPark(park) {
+async function setCurrentDemoPark(park) {
   const normalizedArea = normalizeArea(park || {})
 
   if (!normalizedArea.areaId) {
@@ -1592,6 +1622,11 @@ function setCurrentDemoPark(park) {
       title: '演示景区ID异常',
       icon: 'none'
     })
+    return
+  }
+
+  if (await hasRunningVisitBeforeDemoSwitch()) {
+    showRunningVisitBeforeDemoSwitchToast()
     return
   }
 
@@ -1612,13 +1647,8 @@ function clearCurrentDemoPark() {
 }
 
 async function triggerDemoScenicHit(park) {
-  await syncVisitState()
-
-  if (visitState.value.hasRunningVisit || getCurrentVisitId()) {
-    uni.showToast({
-      title: '当前已有进行中的现场导览',
-      icon: 'none'
-    })
+  if (await hasRunningVisitBeforeDemoSwitch()) {
+    showRunningVisitBeforeDemoSwitchToast()
     return
   }
 

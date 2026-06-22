@@ -167,6 +167,13 @@ public class MainActivity extends Activity {
     private final StringBuilder chatTranscriptBuilder = new StringBuilder();
     private boolean chatHistoryStarted = false;
 
+    // 对话记录展开/收起
+    private boolean answerExpanded = false;
+    private Button answerExpandButton;
+    // 底部输入模式：true=语音，false=文字
+    private boolean voiceInputMode = true;
+    private Button voiceTextToggleButton;
+
     private EditText questionInput;
 
     private Button quickBtn1;
@@ -280,6 +287,7 @@ public class MainActivity extends Activity {
     private boolean routeReadyThisTurn = false;
     private long backendAudioStartMs = 0L;
     private long lastSpeakingMotionMs = 0L;
+    private int guideVoicePlaybackSeq = 0;
     private int nextSpeechIndexToPlay = 0;
     private int currentSpeechChunkCount = 0;
     private int missingFallbackScheduledIndex = -1;
@@ -533,23 +541,6 @@ public class MainActivity extends Activity {
         firstRow.addView(titleText, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
         firstRow.addView(onlineText, new LinearLayout.LayoutParams(dp(56), LinearLayout.LayoutParams.WRAP_CONTENT));
 
-        endVisitButton = new Button(this);
-        endVisitButton.setText("结束导览");
-        endVisitButton.setTextSize(12);
-        endVisitButton.setTextColor(Color.rgb(180, 72, 28));
-        endVisitButton.setAllCaps(false);
-        endVisitButton.setPadding(0, 0, 0, 0);
-        endVisitButton.setBackground(createStrokeRoundBg(
-                Color.rgb(255, 247, 237),
-                Color.rgb(251, 146, 60),
-                dp(14)
-        ));
-        endVisitButton.setVisibility(shouldShowEndVisitButton() ? View.VISIBLE : View.GONE);
-
-        LinearLayout.LayoutParams endParams = new LinearLayout.LayoutParams(dp(76), dp(30));
-        endParams.leftMargin = dp(6);
-        firstRow.addView(endVisitButton, endParams);
-
         targetText = new TextView(this);
         targetText.setText(getTopTargetText());
         targetText.setTextColor(Color.rgb(95, 116, 138));
@@ -670,11 +661,25 @@ public class MainActivity extends Activity {
                 dp(18)
         ));
 
+        // 标题行：左侧“对话记录”标签 + 右侧展开/收起按钮
+        LinearLayout answerTitleRow = new LinearLayout(this);
+        answerTitleRow.setOrientation(LinearLayout.HORIZONTAL);
+        answerTitleRow.setGravity(Gravity.CENTER_VERTICAL);
+
         TextView answerLabel = new TextView(this);
         answerLabel.setText("对话记录");
         answerLabel.setTextColor(Color.rgb(47, 128, 237));
         answerLabel.setTextSize(12);
         answerLabel.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+
+        answerExpandButton = createMiniActionButton("展开");
+        answerExpandButton.setMinWidth(dp(52));
+        answerExpandButton.setMinHeight(dp(24));
+        answerExpandButton.setTextSize(11);
+
+        answerTitleRow.addView(answerLabel, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        answerTitleRow.addView(answerExpandButton, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(24)));
+        answerBox.addView(answerTitleRow);
 
         answerScrollView = new ScrollView(this);
         answerScrollView.setFillViewport(false);
@@ -693,29 +698,54 @@ public class MainActivity extends Activity {
                 )
         );
 
-        answerBox.addView(answerLabel);
-        answerBox.addView(answerScrollView, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(58)));
+        answerBox.addView(answerScrollView, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(88)));
         panel.addView(answerBox);
 
+        answerExpandButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                answerExpanded = !answerExpanded;
+                int targetHeight = answerExpanded ? dp(220) : dp(88);
+                answerExpandButton.setText(answerExpanded ? "收起" : "展开");
+                LinearLayout.LayoutParams scrollParams = (LinearLayout.LayoutParams) answerScrollView.getLayoutParams();
+                if (scrollParams != null) {
+                    scrollParams.height = targetHeight;
+                    answerScrollView.setLayoutParams(scrollParams);
+                }
+                scrollChatToBottom();
+            }
+        });
+
+        // 底部输入栏：左侧语音/文字切换 + 中间输入区域 + 右侧发送
+        LinearLayout inputBar = new LinearLayout(this);
+        inputBar.setOrientation(LinearLayout.HORIZONTAL);
+        inputBar.setGravity(Gravity.CENTER_VERTICAL);
+        inputBar.setPadding(0, dp(8), 0, 0);
+
+        // 左侧：语音/文字模式切换按钮
+        voiceTextToggleButton = new Button(this);
+        voiceTextToggleButton.setText("🎙");
+        voiceTextToggleButton.setTextSize(16);
+        voiceTextToggleButton.setAllCaps(false);
+        voiceTextToggleButton.setPadding(0, 0, 0, 0);
+        voiceTextToggleButton.setBackground(createRoundBg(Color.rgb(232, 243, 255), dp(20)));
+
+        LinearLayout.LayoutParams toggleParams = new LinearLayout.LayoutParams(dp(42), dp(42));
+        toggleParams.rightMargin = dp(8);
+        inputBar.addView(voiceTextToggleButton, toggleParams);
+
+        // 中间：FrameLayout 装语音按钮和文字输入框，按模式切换可见性
+        FrameLayout inputContainer = new FrameLayout(this);
+
         voiceMainButton = new Button(this);
-        voiceMainButton.setText("🎙 长按说话");
-        voiceMainButton.setTextSize(16);
+        voiceMainButton.setText("🎙 按住说话");
+        voiceMainButton.setTextSize(15);
         voiceMainButton.setTextColor(Color.WHITE);
         voiceMainButton.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         voiceMainButton.setAllCaps(false);
-        voiceMainButton.setBackground(createRoundBg(Color.rgb(47, 128, 237), dp(25)));
-
-        LinearLayout.LayoutParams voiceMainParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                dp(48)
-        );
-        voiceMainParams.topMargin = dp(9);
-        panel.addView(voiceMainButton, voiceMainParams);
-
-        LinearLayout inputRow = new LinearLayout(this);
-        inputRow.setOrientation(LinearLayout.HORIZONTAL);
-        inputRow.setGravity(Gravity.CENTER_VERTICAL);
-        inputRow.setPadding(0, dp(8), 0, 0);
+        voiceMainButton.setBackground(createRoundBg(Color.rgb(47, 128, 237), dp(20)));
+        inputContainer.addView(voiceMainButton,
+                new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
 
         questionInput = new EditText(this);
         questionInput.setHint("也可以输入文字问题...");
@@ -723,7 +753,14 @@ public class MainActivity extends Activity {
         questionInput.setSingleLine(true);
         questionInput.setPadding(dp(12), 0, dp(12), 0);
         questionInput.setBackground(createRoundBg(Color.rgb(245, 249, 255), dp(18)));
+        questionInput.setVisibility(View.GONE);
+        inputContainer.addView(questionInput,
+                new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
 
+        LinearLayout.LayoutParams containerParams = new LinearLayout.LayoutParams(0, dp(42), 1);
+        inputBar.addView(inputContainer, containerParams);
+
+        // 右侧：发送按钮
         sendButton = new Button(this);
         sendButton.setText("发送");
         sendButton.setTextSize(14);
@@ -731,13 +768,29 @@ public class MainActivity extends Activity {
         sendButton.setAllCaps(false);
         sendButton.setBackground(createRoundBg(Color.rgb(35, 135, 230), dp(18)));
 
-        LinearLayout.LayoutParams inputParams = new LinearLayout.LayoutParams(0, dp(40), 1);
-        inputParams.rightMargin = dp(8);
-        inputRow.addView(questionInput, inputParams);
+        LinearLayout.LayoutParams sendParams = new LinearLayout.LayoutParams(dp(64), dp(42));
+        sendParams.leftMargin = dp(8);
+        inputBar.addView(sendButton, sendParams);
+        panel.addView(inputBar);
 
-        LinearLayout.LayoutParams sendParams = new LinearLayout.LayoutParams(dp(72), dp(40));
-        inputRow.addView(sendButton, sendParams);
-        panel.addView(inputRow);
+        // 语音/文字模式切换
+        voiceTextToggleButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                voiceInputMode = !voiceInputMode;
+                if (voiceInputMode) {
+                    voiceMainButton.setVisibility(View.VISIBLE);
+                    questionInput.setVisibility(View.GONE);
+                    voiceTextToggleButton.setText("🎙");
+                    hideKeyboard();
+                } else {
+                    voiceMainButton.setVisibility(View.GONE);
+                    questionInput.setVisibility(View.VISIBLE);
+                    voiceTextToggleButton.setText("⌨");
+                    questionInput.requestFocus();
+                }
+            }
+        });
 
         FrameLayout.LayoutParams panelParams = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -1447,6 +1500,8 @@ public class MainActivity extends Activity {
             handleSseAnswerDone(eventData, roundSeq);
         } else if ("route_ready".equals(event)) {
             handleSseRouteReady(eventData, allowRouteResponse, routeRequestSource, roundSeq);
+        } else if ("route_failed".equals(event)) {
+            handleSseRouteFailed(eventData);
         } else if ("speech_chunk_ready".equals(event)) {
             handleSseSpeechChunkReady(eventData, roundSeq);
         } else if ("speech_done".equals(event)) {
@@ -1456,6 +1511,13 @@ public class MainActivity extends Activity {
         } else if ("error".equals(event)) {
             String code = firstNotEmpty(getJsonText(eventData, "code", "errorCode", "error_code"), "error");
             String message = firstNotEmpty(getJsonText(eventData, "message", "msg", "error"), "AI 服务返回错误");
+            String scope = getJsonText(eventData, "scope");
+            if ("route".equalsIgnoreCase(scope)) {
+                Log.w(TAG, "[SSE][Route] route scoped error code=" + code
+                        + ", message=" + safeLogText(message));
+                handleSseRouteFailed(eventData);
+                return;
+            }
             Log.e(TAG, "[SSE] error code=" + code + ", message=" + safeLogText(message));
             handleGuideChatSseFailure(question, message, false);
         } else if ("done".equals(event)) {
@@ -1708,6 +1770,10 @@ public class MainActivity extends Activity {
                 + " nodes=" + (route == null || route.nodes == null ? 0 : route.nodes.size())
                 + " title=" + safeLogText(getRouteReadyTitle(data, route))
                 + " summary=" + safeLogText(routeFallbackText));
+        Log.d(TAG, "[RouteReady] routeId=" + (route == null ? "" : getProvidedRouteId(route))
+                + ", routeName=" + (route == null ? "" : safeLogText(route.routeName))
+                + ", replaceExisting=" + (currentRoute != null)
+                + ", navigationStarted=" + isRouteNavigationStarted());
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
@@ -1739,6 +1805,28 @@ public class MainActivity extends Activity {
         } else {
             Log.d(TAG, "[SSE][Route] route_ready fallback skipped because answer bubble already has text");
         }
+    }
+
+    private void handleSseRouteFailed(final JSONObject data) {
+        final String message = firstNotEmpty(
+                getJsonText(data, "message", "msg", "error", "detail"),
+                "路线暂时没有重新规划成功，已保留当前路线。"
+        );
+        Log.w(TAG, "[SSE][Route] route_failed message=" + safeLogText(message)
+                + ", keepCurrentRoute=" + (currentRoute != null)
+                + ", navigationStarted=" + isRouteNavigationStarted());
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                if (guideEnded) {
+                    return;
+                }
+                if (currentRoutePreview != null) {
+                    updateRouteCard(currentRoutePreview);
+                }
+                showToast(message);
+            }
+        });
     }
 
     private String buildRouteReadyFallbackText(JSONObject data, RouteInfo route) {
@@ -2227,6 +2315,14 @@ public class MainActivity extends Activity {
         chunk.audioUrl = firstNotEmpty(
                 getJsonText(data, "audioUrl", "audio_url", "url"),
                 getJsonText(audioJson, "url", "audioUrl", "audio_url")
+        );
+        chunk.audioFormat = firstNotEmpty(
+                getJsonText(data, "audioFormat", "audio_format", "format"),
+                getJsonText(audioJson, "format", "audioFormat", "audio_format", "mime", "mimeType", "mime_type")
+        );
+        chunk.status = firstNotEmpty(
+                getJsonText(data, "status", "audioStatus", "audio_status", "ttsStatus", "tts_status"),
+                getJsonText(audioJson, "status", "audioStatus", "audio_status", "ttsStatus", "tts_status")
         );
         chunk.durationMs = parseLongOrDefault(firstNotEmpty(
                 getJsonText(data, "durationMs", "duration_ms", "audioDurationMs", "audio_duration_ms"),
@@ -2824,6 +2920,12 @@ public class MainActivity extends Activity {
             Log.d(TAG, "[RouteIntent] text=, matched=false");
             return false;
         }
+        String navigationStartedBlockReason = findNavigationStartedRouteChangeBlockReason(safeText);
+        if (navigationStartedBlockReason.length() > 0) {
+            Log.d(TAG, "[RouteIntent] text=" + safeRouteIntentLogText(safeText)
+                    + ", matched=false, reason=" + navigationStartedBlockReason);
+            return false;
+        }
         if (!isOnsiteMode() && ("route".equals(contextType) || "route_planning".equals(mode))) {
             Log.d(TAG, "[RouteIntent] text=" + safeRouteIntentLogText(safeText)
                     + ", matched=true, reason=context:route_mode");
@@ -2839,6 +2941,11 @@ public class MainActivity extends Activity {
     }
 
     private String findRouteRecommendIntentReason(String text) {
+        String explicitRouteKeyword = findExplicitRouteKeyword(text);
+        if (explicitRouteKeyword.length() > 0) {
+            return "route_keyword:" + explicitRouteKeyword;
+        }
+
         String[] strongKeywords = new String[]{
                 "推荐路线",
                 "路线推荐",
@@ -2924,7 +3031,145 @@ public class MainActivity extends Activity {
             return "combo:" + planningAction + "+景点顺序";
         }
 
+        if (looksLikeSpotHistoryExplainQuestion(text)) {
+            return "";
+        }
+
+        if (hasRouteCardForModification() && !isRouteNavigationStarted()) {
+            String modifyKeyword = findRouteModificationKeyword(text);
+            if (modifyKeyword.length() > 0) {
+                return "route_modify:" + modifyKeyword;
+            }
+
+            String constraintKeyword = findRouteConstraintKeyword(text);
+            if (constraintKeyword.length() > 0) {
+                return "route_constraint:" + constraintKeyword;
+            }
+        }
+
         return "";
+    }
+
+    private boolean looksLikeSpotHistoryExplainQuestion(String text) {
+        String explainKeyword = firstMatchedKeyword(text, new String[]{
+                "介绍",
+                "讲讲",
+                "讲一下",
+                "讲解",
+                "说说"
+        });
+        if (explainKeyword.length() == 0) {
+            return false;
+        }
+        boolean hasSpotSubject = containsAnyKeyword(text, new String[]{
+                "这个景点",
+                "当前景点",
+                "这里",
+                "这个地方",
+                "此处"
+        });
+        boolean hasHistoryTopic = containsAnyKeyword(text, new String[]{
+                "历史",
+                "文化",
+                "故事",
+                "来历",
+                "典故"
+        });
+        return hasSpotSubject && hasHistoryTopic;
+    }
+
+    private String findNavigationStartedRouteChangeBlockReason(String text) {
+        if (!hasRouteCardForModification() || !isRouteNavigationStarted()) {
+            return "";
+        }
+        String modifyKeyword = findRouteModificationKeyword(text);
+        if (modifyKeyword.length() > 0) {
+            return "navigation_started_keep_current_route:" + modifyKeyword;
+        }
+        String constraintKeyword = findRouteConstraintKeyword(text);
+        if (constraintKeyword.length() > 0) {
+            return "navigation_started_keep_current_route:" + constraintKeyword;
+        }
+        String explicitRouteKeyword = findExplicitRouteKeyword(text);
+        if (explicitRouteKeyword.length() > 0) {
+            return "navigation_started_keep_current_route:" + explicitRouteKeyword;
+        }
+        return "";
+    }
+
+    private String findExplicitRouteKeyword(String text) {
+        return firstMatchedKeyword(text, new String[]{
+                "推荐路线",
+                "规划路线",
+                "导览路线",
+                "游览路线",
+                "路线",
+                "行程",
+                "线路"
+        });
+    }
+
+    private String findRouteModificationKeyword(String text) {
+        return firstMatchedKeyword(text, new String[]{
+                "换一条",
+                "换个",
+                "换成",
+                "换路线",
+                "改路线",
+                "改成",
+                "改为",
+                "重新推荐",
+                "重新规划",
+                "重新安排",
+                "不太满意",
+                "不满意",
+                "不喜欢",
+                "还有别的",
+                "另一条",
+                "别的路线",
+                "调整一下",
+                "优化一下"
+        });
+    }
+
+    private String findRouteConstraintKeyword(String text) {
+        return firstMatchedKeyword(text, new String[]{
+                "历史文化",
+                "历史",
+                "亲子",
+                "自然",
+                "拍照",
+                "打卡",
+                "祈福",
+                "轻松",
+                "少走路",
+                "不爬山",
+                "避开",
+                "不去",
+                "增加",
+                "加上",
+                "两小时",
+                "2小时",
+                "三小时",
+                "3小时",
+                "半日",
+                "一日",
+                "老人",
+                "孩子",
+                "儿童",
+                "无障碍"
+        });
+    }
+
+    private boolean hasRouteCardForModification() {
+        if (currentRoute != null) {
+            return true;
+        }
+        return routeCardContainer != null && routeCardContainer.getVisibility() == View.VISIBLE;
+    }
+
+    private boolean isRouteNavigationStarted() {
+        return routeGuideActive || routeNavigationModeActive;
     }
 
     private boolean containsAnyKeyword(String text, String[] keywords) {
@@ -3358,6 +3603,12 @@ public class MainActivity extends Activity {
                 + ", groupSize=" + groupSize
                 + ", travelType=" + travelType
                 + ", visitPreference=" + visitPreference);
+        Log.d(TAG, "[RouteRequest] route=" + routeIntent
+                + ", routeIntent=" + routeIntent
+                + ", requestType=" + (routeIntent ? "route_recommend" : "spot_explain")
+                + ", suppressRoute=" + (!routeIntent)
+                + ", source=" + routeRequestSource
+                + ", conversationId=" + realConversationId);
         if (routeIntent) {
             Log.d(TAG, "[RouteRequest] source=" + routeRequestSource);
             Log.d(TAG, "[RouteRequest] routeIntent=true, suppressRoute=false, requestType=route_recommend");
@@ -4553,6 +4804,26 @@ public class MainActivity extends Activity {
                     getJsonText(audioJson, "url", "audioUrl", "audio_url"),
                     getJsonText(rootAudioJson, "url", "audioUrl", "audio_url")
             );
+            JSONArray speechChunksArray = findSpeechChunksArray(source, root, audioJson, rootAudioJson);
+            if (speechChunksArray != null) {
+                for (int i = 0; i < speechChunksArray.length(); i++) {
+                    JSONObject chunkJson = speechChunksArray.optJSONObject(i);
+                    if (chunkJson == null) {
+                        continue;
+                    }
+                    SpeechChunk chunk = parseSpeechChunk(chunkJson);
+                    if (chunk == null) {
+                        continue;
+                    }
+                    if (chunk.messageId == null || chunk.messageId.trim().length() == 0) {
+                        chunk.messageId = firstNotEmpty(result.messageId, getJsonText(source, "messageId", "message_id"), getJsonText(root, "messageId", "message_id"));
+                    }
+                    if (chunk.text == null || chunk.text.trim().length() == 0) {
+                        chunk.text = parsedAnswer;
+                    }
+                    result.speechChunks.add(chunk);
+                }
+            }
             result.audioStatus = firstNotEmpty(
                     getJsonText(source, "audioStatus", "audio_status", "ttsStatus", "tts_status"),
                     getJsonText(root, "audioStatus", "audio_status", "ttsStatus", "tts_status"),
@@ -4720,6 +4991,8 @@ public class MainActivity extends Activity {
             Log.d(TAG, "解析到 questionText: " + result.questionText);
             Log.d(TAG, "解析到 audioUrl: " + result.audioUrl);
             Log.d(TAG, "解析到 mouthFrames 数量: " + result.mouthFrames.size());
+            Log.d(TAG, "[VoicePlayback] response audioUrl=" + safeString(result.audioUrl));
+            Log.d(TAG, "[VoicePlayback] speechChunks count=" + result.speechChunks.size());
             Log.d(TAG, "[GuideResponse] answer=" + safeLogText(result.answer)
                     + ", audioUrl=" + safeString(result.audioUrl)
                     + ", audioStatus=" + safeString(result.audioStatus));
@@ -4800,6 +5073,19 @@ public class MainActivity extends Activity {
             return candidate;
         }
 
+        return null;
+    }
+
+    private JSONArray findSpeechChunksArray(JSONObject... sources) {
+        if (sources == null) {
+            return null;
+        }
+        for (JSONObject source : sources) {
+            JSONArray chunks = getJsonArray(source, "speechChunks", "speech_chunks");
+            if (chunks != null) {
+                return chunks;
+            }
+        }
         return null;
     }
 
@@ -8780,7 +9066,7 @@ public class MainActivity extends Activity {
         dialogCard.addView(title);
 
         TextView message = new TextView(this);
-        message.setText("结束后将停止本次现场导览记录，并为你生成游玩报告。");
+        message.setText("将结束当前现场导览，并生成本次游玩报告。");
         message.setTextColor(Color.rgb(65, 83, 105));
         message.setTextSize(14);
         message.setLineSpacing(dp(4), 1.0f);
@@ -8791,7 +9077,7 @@ public class MainActivity extends Activity {
         buttonRow.setOrientation(LinearLayout.HORIZONTAL);
         buttonRow.setGravity(Gravity.CENTER_VERTICAL);
 
-        Button cancelButton = createMiniActionButton("继续导览");
+        Button cancelButton = createMiniActionButton("取消");
         Button confirmButton = new Button(this);
         confirmButton.setText("结束并查看报告");
         confirmButton.setTextSize(14);
@@ -8819,6 +9105,7 @@ public class MainActivity extends Activity {
             @Override
             public void onClick(View view) {
                 dismissEndVisitDialog();
+                dismissRouteStartPicker();
                 handleNativeEndCurrentVisit();
             }
         });
@@ -9857,14 +10144,14 @@ public class MainActivity extends Activity {
         });
 
         TextView titleText = new TextView(this);
-        titleText.setText("选择路线起点");
+        titleText.setText("选择当前位置");
         titleText.setTextColor(Color.rgb(24, 48, 72));
         titleText.setTextSize(17);
         titleText.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         pickerPanel.addView(titleText);
 
         TextView subtitleText = new TextView(this);
-        subtitleText.setText("已根据 GPS 为你推荐附近起点");
+        subtitleText.setText("已根据 GPS 为你推荐附近位置");
         subtitleText.setTextColor(Color.rgb(112, 128, 145));
         subtitleText.setTextSize(12);
         subtitleText.setPadding(0, dp(4), 0, dp(10));
@@ -9878,6 +10165,14 @@ public class MainActivity extends Activity {
                 new ScrollView.LayoutParams(ScrollView.LayoutParams.MATCH_PARENT, ScrollView.LayoutParams.WRAP_CONTENT)
         );
         pickerPanel.addView(optionsScrollView, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(238)));
+
+        LinearLayout.LayoutParams leaveParkParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        leaveParkParams.topMargin = dp(2);
+        leaveParkParams.bottomMargin = dp(2);
+        pickerPanel.addView(createLeaveParkReportEntryView(), leaveParkParams);
 
         LinearLayout actionRow = new LinearLayout(this);
         actionRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -10001,6 +10296,40 @@ public class MainActivity extends Activity {
         params.bottomMargin = dp(8);
         optionView.setLayoutParams(params);
         return optionView;
+    }
+
+    private View createLeaveParkReportEntryView() {
+        LinearLayout entryView = new LinearLayout(this);
+        entryView.setOrientation(LinearLayout.VERTICAL);
+        entryView.setPadding(dp(13), dp(10), dp(13), dp(10));
+        entryView.setClickable(true);
+        entryView.setBackground(createStrokeRoundBg(
+                Color.rgb(255, 247, 237),
+                Color.rgb(251, 146, 60),
+                dp(14)
+        ));
+        entryView.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                showEndVisitConfirmDialog();
+            }
+        });
+
+        TextView titleText = new TextView(this);
+        titleText.setText("我已离开景区");
+        titleText.setTextColor(Color.rgb(180, 72, 28));
+        titleText.setTextSize(14);
+        titleText.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        entryView.addView(titleText);
+
+        TextView subtitleText = new TextView(this);
+        subtitleText.setText("结束本次导览并生成游玩报告");
+        subtitleText.setTextColor(Color.rgb(145, 91, 43));
+        subtitleText.setTextSize(11);
+        subtitleText.setPadding(0, dp(3), 0, 0);
+        entryView.addView(subtitleText);
+
+        return entryView;
     }
 
     private String buildRouteStartOptionMeta(RouteStartSpot spot, boolean selected, boolean recommended, String distanceText) {
@@ -12043,6 +12372,9 @@ public class MainActivity extends Activity {
         }
         String audioUrl = guideResponse.audioUrl == null ? "" : guideResponse.audioUrl.trim();
         String audioStatus = firstNotEmpty(guideResponse.audioStatus, guideResponse.ttsStatus);
+        Log.d(TAG, "[VoicePlayback] response audioUrl=" + safeString(audioUrl));
+        Log.d(TAG, "[VoicePlayback] speechChunks count="
+                + (guideResponse.speechChunks == null ? 0 : guideResponse.speechChunks.size()));
         Log.d(TAG, "[AudioPlay] final response audioStatus=" + safeString(audioStatus)
                 + ", audioUrl=" + safeString(audioUrl)
                 + ", ttsTaskId=" + safeString(guideResponse.ttsTaskId)
@@ -12050,6 +12382,13 @@ public class MainActivity extends Activity {
                 + ", mouthStatus=" + safeString(guideResponse.mouthStatus)
                 + ", mouthError=" + safeString(guideResponse.mouthError)
                 + ", mouthFrames=" + (guideResponse.mouthFrames == null ? 0 : guideResponse.mouthFrames.size()));
+        if (guideResponse.speechChunks != null && !guideResponse.speechChunks.isEmpty()) {
+            if (playSpeechChunksFromGuideResponse(guideResponse)) {
+                return;
+            }
+        } else {
+            Log.d(TAG, "[VoicePlayback] no speechChunks, fallback to main audioUrl");
+        }
         if (audioUrl.length() > 0) {
             playAudioUrl(audioUrl, guideResponse);
             return;
@@ -12066,6 +12405,219 @@ public class MainActivity extends Activity {
         Log.d(TAG, "[TTS] fallback speak");
         applyGuideResponseDigitalHuman(guideResponse, "explain", "warm");
         speakText(guideResponse.answer);
+    }
+
+    private boolean playSpeechChunksFromGuideResponse(final GuideResponse guideResponse) {
+        final List<SpeechChunk> chunks = buildPlayableSpeechChunks(guideResponse);
+        if (chunks.isEmpty()) {
+            Log.w(TAG, "[VoicePlayback] speechChunks present but no playable audioUrl");
+            return false;
+        }
+
+        stopCurrentAudio();
+        final int playbackSeq = guideVoicePlaybackSeq;
+        if (guideStateText != null) {
+            guideStateText.setText("正在讲解");
+        }
+        if (voiceMainButton != null) {
+            voiceMainButton.setText("数字人正在讲解...");
+        }
+        playNextGuideVoiceChunk(chunks, 0, guideResponse, playbackSeq);
+        return true;
+    }
+
+    private List<SpeechChunk> buildPlayableSpeechChunks(GuideResponse guideResponse) {
+        List<SpeechChunk> playable = new ArrayList<SpeechChunk>();
+        if (guideResponse == null || guideResponse.speechChunks == null || guideResponse.speechChunks.isEmpty()) {
+            return playable;
+        }
+
+        Set<String> seen = new HashSet<String>();
+        for (SpeechChunk chunk : guideResponse.speechChunks) {
+            if (chunk == null) {
+                continue;
+            }
+            String rawUrl = safeString(chunk.audioUrl).trim();
+            String status = safeString(chunk.status).trim();
+            Log.d(TAG, "[VoicePlayback] enqueue chunkIndex=" + chunk.chunkIndex
+                    + ", urlPresent=" + (rawUrl.length() > 0)
+                    + ", status=" + status
+                    + ", format=" + safeString(chunk.audioFormat));
+            if (rawUrl.length() == 0 || "FAILED".equalsIgnoreCase(status)) {
+                continue;
+            }
+            String key = buildGuideVoiceChunkDedupKey(chunk);
+            if (seen.contains(key)) {
+                continue;
+            }
+            seen.add(key);
+            playable.add(chunk);
+        }
+
+        Collections.sort(playable, new Comparator<SpeechChunk>() {
+            @Override
+            public int compare(SpeechChunk left, SpeechChunk right) {
+                int leftIndex = left == null ? 0 : left.chunkIndex;
+                int rightIndex = right == null ? 0 : right.chunkIndex;
+                if (leftIndex != rightIndex) {
+                    return leftIndex - rightIndex;
+                }
+                return safeString(left == null ? "" : left.audioUrl).compareTo(safeString(right == null ? "" : right.audioUrl));
+            }
+        });
+        return playable;
+    }
+
+    private String buildGuideVoiceChunkDedupKey(SpeechChunk chunk) {
+        if (chunk == null) {
+            return "";
+        }
+        return safeString(chunk.messageId).trim()
+                + ":" + chunk.chunkIndex
+                + ":" + safeString(chunk.audioUrl).trim();
+    }
+
+    private void playNextGuideVoiceChunk(final List<SpeechChunk> chunks,
+                                         final int index,
+                                         final GuideResponse parentResponse,
+                                         final int playbackSeq) {
+        if (guideEnded || playbackSeq != guideVoicePlaybackSeq) {
+            return;
+        }
+        if (chunks == null || index >= chunks.size()) {
+            Log.d(TAG, "[VoicePlayback] all chunks completed");
+            stopBackendAudioSpeaking();
+            stopMouthSync();
+            returnDigitalHumanToIdle();
+            if (guideStateText != null) {
+                guideStateText.setText("讲解完成");
+            }
+            if (voiceMainButton != null) {
+                voiceMainButton.setText("🎙 长按说话");
+            }
+            return;
+        }
+
+        final SpeechChunk chunk = chunks.get(index);
+        final String finalUrl = resolveAudioUrl(chunk == null ? "" : chunk.audioUrl);
+        Log.d(TAG, "[VoicePlayback] play chunkIndex=" + (chunk == null ? -1 : chunk.chunkIndex)
+                + ", queueRemaining=" + Math.max(0, chunks.size() - index - 1));
+        if (finalUrl.length() == 0) {
+            playNextGuideVoiceChunk(chunks, index + 1, parentResponse, playbackSeq);
+            return;
+        }
+
+        try {
+            releaseMediaPlayerOnly();
+            final GuideResponse chunkResponse = buildGuideVoiceChunkResponse(parentResponse, chunk, finalUrl);
+            mediaPlayer = new MediaPlayer();
+            mediaPlayer.setAudioStreamType(AudioManager.STREAM_MUSIC);
+            mediaPlayer.setVolume(1f, 1f);
+            mediaPlayer.setDataSource(finalUrl);
+            mediaPlayer.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
+                @Override
+                public void onPrepared(MediaPlayer mp) {
+                    if (playbackSeq != guideVoicePlaybackSeq || guideEnded) {
+                        releaseMediaPlayerInstance(mp);
+                        return;
+                    }
+                    try {
+                        if (guideStateText != null) {
+                            guideStateText.setText("正在讲解");
+                        }
+                        if (voiceMainButton != null) {
+                            voiceMainButton.setText("数字人正在讲解...");
+                        }
+                        mp.start();
+                    } catch (Exception e) {
+                        Log.e(TAG, "[VoicePlayback] chunk start failed chunkIndex=" + chunk.chunkIndex, e);
+                        releaseMediaPlayerInstance(mp);
+                        stopMouthSync();
+                        playNextGuideVoiceChunk(chunks, index + 1, parentResponse, playbackSeq);
+                        return;
+                    }
+
+                    long startUptimeMs = android.os.SystemClock.uptimeMillis();
+                    long durationMs = chunk.durationMs;
+                    if (durationMs <= 0L) {
+                        try {
+                            durationMs = mp.getDuration();
+                        } catch (Exception ignored) {
+                        }
+                    }
+                    if (hasMouthFrames(chunkResponse.mouthFrames, chunkResponse.controllerMouthFrames)) {
+                        startMouthSyncWithFrames(chunkResponse.mouthFrames, chunkResponse.controllerMouthFrames, durationMs, startUptimeMs);
+                    } else {
+                        startMouthSyncWithText(chunkResponse.answer, durationMs, startUptimeMs, finalUrl);
+                    }
+                    startBackendAudioSpeaking(chunkResponse);
+                    forceRenderLive2D();
+                }
+            });
+            mediaPlayer.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
+                @Override
+                public void onCompletion(MediaPlayer mp) {
+                    if (playbackSeq != guideVoicePlaybackSeq || guideEnded) {
+                        releaseMediaPlayerInstance(mp);
+                        return;
+                    }
+                    Log.d(TAG, "[VoicePlayback] chunk completed chunkIndex=" + chunk.chunkIndex);
+                    releaseMediaPlayerInstance(mp);
+                    stopMouthSync();
+                    playNextGuideVoiceChunk(chunks, index + 1, parentResponse, playbackSeq);
+                }
+            });
+            mediaPlayer.setOnErrorListener(new MediaPlayer.OnErrorListener() {
+                @Override
+                public boolean onError(MediaPlayer mp, int what, int extra) {
+                    if (playbackSeq != guideVoicePlaybackSeq || guideEnded) {
+                        releaseMediaPlayerInstance(mp);
+                        return true;
+                    }
+                    Log.e(TAG, "[VoicePlayback] chunk error chunkIndex=" + chunk.chunkIndex
+                            + ", what=" + what
+                            + ", extra=" + extra);
+                    releaseMediaPlayerInstance(mp);
+                    stopMouthSync();
+                    playNextGuideVoiceChunk(chunks, index + 1, parentResponse, playbackSeq);
+                    return true;
+                }
+            });
+            mediaPlayer.prepareAsync();
+        } catch (Exception e) {
+            Log.e(TAG, "[VoicePlayback] chunk prepare failed chunkIndex=" + (chunk == null ? -1 : chunk.chunkIndex), e);
+            releaseMediaPlayerOnly();
+            stopMouthSync();
+            playNextGuideVoiceChunk(chunks, index + 1, parentResponse, playbackSeq);
+        }
+    }
+
+    private GuideResponse buildGuideVoiceChunkResponse(GuideResponse parent, SpeechChunk chunk, String audioUrl) {
+        GuideResponse result = new GuideResponse();
+        if (parent != null) {
+            result.answer = parent.answer;
+            result.questionText = parent.questionText;
+            result.action = parent.action;
+            result.actionCode = parent.actionCode;
+            result.emotion = parent.emotion;
+            result.emotionCode = parent.emotionCode;
+            result.audioStatus = parent.audioStatus;
+            result.ttsStatus = parent.ttsStatus;
+        }
+        if (chunk != null) {
+            result.answer = firstNotEmpty(chunk.text, result.answer);
+            result.audioDurationMs = chunk.durationMs;
+            result.audioStatus = firstNotEmpty(chunk.status, result.audioStatus);
+            result.ttsStatus = firstNotEmpty(chunk.status, result.ttsStatus);
+            result.action = firstNotEmpty(chunk.action, result.action);
+            result.emotion = firstNotEmpty(chunk.emotion, result.emotion);
+            if (hasMouthFrames(chunk.mouthFrames, chunk.controllerMouthFrames)) {
+                result.mouthFrames = chunk.mouthFrames;
+                result.controllerMouthFrames = chunk.controllerMouthFrames;
+            }
+        }
+        result.audioUrl = audioUrl;
+        return result;
     }
 
     private void playAudioUrl(String audioUrl, final GuideResponse guideResponse) {
@@ -12474,7 +13026,25 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void releaseMediaPlayerInstance(MediaPlayer player) {
+        if (player == null) {
+            return;
+        }
+        try {
+            if (player.isPlaying()) {
+                player.stop();
+            }
+            player.release();
+        } catch (Exception e) {
+            Log.w(TAG, "[VoicePlayback] release player failed: " + e.getMessage());
+        }
+        if (mediaPlayer == player) {
+            mediaPlayer = null;
+        }
+    }
+
     private void stopCurrentAudio() {
+        guideVoicePlaybackSeq++;
         stopBackendAudioSpeaking();
         stopMouthSync();
         currentTtsUtteranceId = "";
@@ -12822,6 +13392,7 @@ public class MainActivity extends Activity {
         boolean routeIntent = false;
         RouteInfo route;
         List<String> suggestions = new ArrayList<>();
+        List<SpeechChunk> speechChunks = new ArrayList<SpeechChunk>();
         List<MouthSyncManager.MouthFrame> mouthFrames = new ArrayList<>();
         List<MouthSyncController.MouthFrame> controllerMouthFrames = new ArrayList<>();
     }
@@ -12833,6 +13404,8 @@ public class MainActivity extends Activity {
         int chunkIndex = 0;
         String text = "";
         String audioUrl = "";
+        String audioFormat = "";
+        String status = "";
         long durationMs = 0L;
         boolean isLast = false;
         String action = "";
@@ -13095,16 +13668,16 @@ public class MainActivity extends Activity {
             String reason,
             Throwable throwable
     ) {
-        boolean hasLocalManifest = client != null && client.hasLocalManifest(areaId);
+        String usablePackageSource = getUsableOfflinePackageSource(client, areaId);
         String safeReason = normalizeOfflinePackageText(reason);
         if (safeReason.length() == 0) {
             safeReason = "unknown";
         }
 
         String message;
-        if (hasLocalManifest) {
-            message = "[OfflinePackage] update failed, keep local cache area="
-                    + areaId + ", reason=" + safeReason;
+        if (usablePackageSource.length() > 0) {
+            message = "[OfflinePackage] update failed, keep usable local package area="
+                    + areaId + ", source=" + usablePackageSource + ", reason=" + safeReason;
             if (throwable == null) {
                 Log.w(TAG, message);
             } else {
@@ -13113,7 +13686,7 @@ public class MainActivity extends Activity {
             return;
         }
 
-        message = "[OfflinePackage] update failed, local manifest unavailable area="
+        message = "[OfflinePackage] update failed, no usable local package area="
                 + areaId + ", reason=" + safeReason;
         if (throwable == null) {
             Log.w(TAG, message);
@@ -13121,6 +13694,50 @@ public class MainActivity extends Activity {
             Log.w(TAG, message, throwable);
         }
         showToast("离线包暂不可用，请联网后重试");
+    }
+
+    private String getUsableOfflinePackageSource(OfflinePackageClient client, String areaId) {
+        if (client != null && client.hasLocalManifest(areaId)) {
+            return "filesDir";
+        }
+
+        int areaIdInt = parsePositiveInt(areaId, 0);
+        if (areaIdInt > 0 && offlinePackageManager != null) {
+            try {
+                OfflineGuidePackage pkg = offlinePackageManager.getPackage(areaIdInt);
+                if (pkg != null) {
+                    return hasOfflinePackageAssetManifest(areaId) ? "assets" : "manager";
+                }
+            } catch (Exception ignored) {}
+        }
+
+        if (hasOfflinePackageAssetManifest(areaId)) {
+            return "assets";
+        }
+
+        return "";
+    }
+
+    private boolean hasOfflinePackageAssetManifest(String areaId) {
+        String safeAreaId = normalizeOfflinePackageText(areaId);
+        if (safeAreaId.length() == 0) {
+            return false;
+        }
+
+        InputStream inputStream = null;
+        try {
+            String assetPath = "offline_packages/area_" + safeAreaId + "/manifest.json";
+            inputStream = getAssets().open(assetPath);
+            return inputStream.read() >= 0;
+        } catch (Exception ignored) {
+            return false;
+        } finally {
+            if (inputStream != null) {
+                try {
+                    inputStream.close();
+                } catch (Exception ignored) {}
+            }
+        }
     }
 
     private String buildOfflinePackageFailureReason(Throwable throwable) {

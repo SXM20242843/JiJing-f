@@ -20,6 +20,8 @@ import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.BufferedReader;
+import java.io.StringReader;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.math.BigDecimal;
@@ -60,6 +62,8 @@ public class GuideVoiceChatService {
             "candidate_spots",
             "enable_personalization",
             "options",
+            "stream",
+            "stream_audio",
             "input_type",
             "enable_tts",
             "enable_context",
@@ -167,6 +171,8 @@ public class GuideVoiceChatService {
 
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+            headers.setAccept(Collections.singletonList(MediaType.APPLICATION_JSON));
+            log.info("[VoiceChat] request accept=application/json");
             MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
             Map<String, Object> routeBody = new LinkedHashMap<>();
 
@@ -334,6 +340,14 @@ public class GuideVoiceChatService {
                 routeRequest.setVisitId(null);
             }
             result.setVisitId(finalVisitId);
+            applyVoiceJsonTransportOptions(routeBody);
+            log.info("[VoiceChat] request stream={}", routeBody.get("stream"));
+            log.info("[VoiceChat] request stream_audio={}", routeBody.get("stream_audio"));
+            Map<String, Object> voiceOptionsForLog = readMap(routeBody, "options");
+            log.info("[VoiceChat] request enable_tts={}",
+                    firstNonNull(routeBody.get("enable_tts"), readObject(voiceOptionsForLog, "enable_tts", "enableTts")));
+            log.info("[VoiceChat] request include_mouth_frames={}",
+                    readObject(voiceOptionsForLog, "include_mouth_frames", "includeMouthFrames"));
             logRouteContextPayload(routeBody, allowRoute);
             logRouteContractRequest(routeBody, allowRoute);
             addMultipartFields(body, routeBody);
@@ -369,14 +383,24 @@ public class GuideVoiceChatService {
                     allowRoute && "IN_PARK".equalsIgnoreCase(normalizeVisitStatus(firstNotBlank(visitStatus))));
 
             HttpEntity<MultiValueMap<String, Object>> entity = new HttpEntity<>(body, headers);
-            ResponseEntity<Map> response = restTemplate.exchange(url, HttpMethod.POST, entity, Map.class);
+            ResponseEntity<String> response = restTemplate.exchange(url, HttpMethod.POST, entity, String.class);
+            MediaType responseContentType = response.getHeaders().getContentType();
+            String responseText = response.getBody();
+            log.info("[VoiceChat] ai response contentType={}", responseContentType);
             log.info("[VoiceChat] ai status={}", response.getStatusCode());
-            log.info("[VoiceChat] ai body summary={}", truncateAiErrorBody(sanitizeBodyForLog(response.getBody())));
+            log.info("[VoiceChat] ai body summary={}", summarizeAiResponseBody(responseText));
             log.info("[GuideChat] httpStatus={}", response.getStatusCode());
 
-            if (response.getStatusCode() == HttpStatus.OK && response.getBody() != null) {
-                Map<String, Object> responseBody = response.getBody();
-                log.info("[GuideChat] responseBody={}", sanitizeBodyForLog(responseBody));
+            if (response.getStatusCode() == HttpStatus.OK && responseText != null) {
+                Map<String, Object> responseBody;
+                if (isEventStream(responseContentType) || looksLikeSse(responseText)) {
+                    log.info("[VoiceChat] parse mode=sse");
+                    responseBody = parseAiSseToVoiceResult(responseText);
+                } else {
+                    log.info("[VoiceChat] parse mode=json");
+                    responseBody = parseAiJsonToMap(responseText);
+                }
+                log.info("[GuideChat] responseBody={}", truncateAiBodySummary(sanitizeBodyForLog(responseBody)));
                 logProfileDeltaIgnored(responseBody, finalUserId, finalSessionId);
                 GuideVoiceChatResponse parsedResponse = parseVoiceAiResponse(responseBody);
                 log.info("[GuideChat] parsed answerStatus={}, interactionCategory={}, conversationId={}, success=true",
@@ -613,6 +637,41 @@ public class GuideVoiceChatService {
         options.putIfAbsent("includeMouthFrames", true);
         options.putIfAbsent("includeSources", false);
         options.putIfAbsent("includeDebug", false);
+        body.put("options", options);
+    }
+
+    private void applyVoiceJsonTransportOptions(Map<String, Object> body) {
+        if (body == null) {
+            return;
+        }
+        body.put("stream", false);
+        body.put("stream_audio", true);
+
+        Map<String, Object> options = asMutableMap(normalizeFlexibleObject(body.get("options")));
+        if (options == null) {
+            options = new LinkedHashMap<>();
+        }
+
+        Object responseMode = firstNonNull(options.get("response_mode"), options.get("responseMode"));
+        if (responseMode != null && hasText(String.valueOf(responseMode))) {
+            options.put("response_mode", responseMode);
+        } else {
+            options.put("response_mode", "digital_human");
+        }
+        options.put("enable_tts", true);
+        options.putIfAbsent("tts_mode", "async");
+        options.put("include_mouth_frames", true);
+        options.putIfAbsent("include_sources", false);
+        options.putIfAbsent("include_debug", false);
+        options.put("stream", false);
+        options.put("stream_audio", true);
+        options.remove("responseMode");
+        options.remove("enableTts");
+        options.remove("ttsMode");
+        options.remove("includeMouthFrames");
+        options.remove("includeSources");
+        options.remove("includeDebug");
+        options.remove("streamAudio");
         body.put("options", options);
     }
 
@@ -855,6 +914,500 @@ public class GuideVoiceChatService {
             }
         }
         return false;
+    }
+
+    private boolean isEventStream(MediaType contentType) {
+        return contentType != null && MediaType.TEXT_EVENT_STREAM.includes(contentType);
+    }
+
+    private boolean looksLikeSse(String body) {
+        if (!hasText(body)) {
+            return false;
+        }
+        String text = body.trim();
+        return text.startsWith("event:") || text.startsWith("data:");
+    }
+
+    private Map<String, Object> parseAiJsonToMap(String body) throws Exception {
+        if (!hasText(body)) {
+            return new LinkedHashMap<>();
+        }
+        return objectMapper.readValue(body.trim(), new TypeReference<Map<String, Object>>() {});
+    }
+
+    private Map<String, Object> parseAiSseToVoiceResult(String sseBody) {
+        AiSseParseState state = new AiSseParseState();
+        if (!hasText(sseBody)) {
+            state.result.put("answerStatus", "FAILED");
+            state.result.put("answer_status", "FAILED");
+            state.result.put("ttsStatus", "FAILED");
+            state.result.put("tts_status", "FAILED");
+            state.result.put("message", "语音问答服务暂时不可用，请稍后再试。");
+            logAiSseParseSummary(state);
+            return state.result;
+        }
+
+        String eventName = "";
+        List<String> dataLines = new ArrayList<>();
+        try (BufferedReader reader = new BufferedReader(new StringReader(sseBody))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.isEmpty()) {
+                    eventName = flushAiSseEvent(eventName, dataLines, state);
+                    dataLines.clear();
+                    continue;
+                }
+                if (line.startsWith(":")) {
+                    continue;
+                }
+                if (line.startsWith("event:")) {
+                    eventName = line.substring("event:".length()).trim();
+                    continue;
+                }
+                if (line.startsWith("data:")) {
+                    String data = line.substring("data:".length());
+                    if (data.startsWith(" ")) {
+                        data = data.substring(1);
+                    }
+                    dataLines.add(data);
+                }
+            }
+            flushAiSseEvent(eventName, dataLines, state);
+        } catch (Exception e) {
+            log.warn("[VoiceChat] parse sse failed, bodySummary={}", truncateAiBodySummary(sseBody), e);
+            if (!hasText(readString(state.result, "answer", "message"))) {
+                state.result.put("message", "语音问答服务暂时不可用，请稍后再试。");
+            }
+            state.result.put("answerStatus", "FAILED");
+            state.result.put("answer_status", "FAILED");
+        }
+
+        finishAiSseResult(state);
+        logAiSseParseSummary(state);
+        return state.result;
+    }
+
+    private String flushAiSseEvent(String eventName, List<String> dataLines, AiSseParseState state) {
+        if (!hasText(eventName) && (dataLines == null || dataLines.isEmpty())) {
+            return "";
+        }
+
+        String event = firstNotBlank(eventName, "message");
+        String dataText = dataLines == null || dataLines.isEmpty() ? "" : String.join("\n", dataLines);
+        state.eventCount++;
+        state.eventTypeCounts.put(event, state.eventTypeCounts.getOrDefault(event, 0) + 1);
+        try {
+            Object payload = parseAiSseData(dataText);
+            handleAiSseEvent(event, payload, dataText, state);
+        } catch (Exception e) {
+            log.warn("[VoiceChat] ignore malformed sse event={}, dataSummary={}",
+                    event,
+                    truncateAiBodySummary(dataText),
+                    e);
+        }
+        return "";
+    }
+
+    private Object parseAiSseData(String dataText) {
+        if (!hasText(dataText)) {
+            return new LinkedHashMap<String, Object>();
+        }
+        String trimmed = dataText.trim();
+        if ("[DONE]".equalsIgnoreCase(trimmed)) {
+            Map<String, Object> done = new LinkedHashMap<>();
+            done.put("done", true);
+            return done;
+        }
+        if ((trimmed.startsWith("{") && trimmed.endsWith("}"))
+                || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
+            try {
+                return objectMapper.readValue(trimmed, Object.class);
+            } catch (Exception e) {
+                log.warn("[VoiceChat] sse data json parse failed, dataSummary={}", truncateAiBodySummary(trimmed), e);
+            }
+        }
+        return trimmed;
+    }
+
+    private void handleAiSseEvent(String eventName, Object payload, String dataText, AiSseParseState state) {
+        String event = firstNotBlank(eventName, "message").toLowerCase();
+        Map<String, Object> payloadMap = asSsePayloadMap(payload);
+        Map<String, Object> dataMap = readMap(payloadMap, "data");
+        copySseCommonFields(payloadMap, dataMap, state.result);
+
+        if ("context".equals(event)) {
+            copySseContextFields(payloadMap, dataMap, state.result);
+            return;
+        }
+
+        if ("answer_delta".equals(event)) {
+            String delta = firstNotBlank(
+                    readStringCascade(payloadMap, dataMap, "delta", "answer_delta", "content", "text", "answer"),
+                    payload instanceof String ? dataText : ""
+            );
+            if (hasText(delta)) {
+                state.answerBuilder.append(delta);
+            }
+            return;
+        }
+
+        if ("answer_done".equals(event) || "done".equals(event)) {
+            String finalAnswer = firstNotBlank(
+                    readStringCascade(payloadMap, dataMap, "answer", "content", "text"),
+                    payload instanceof String && !"[DONE]".equalsIgnoreCase(dataText.trim()) ? dataText : ""
+            );
+            if (hasText(finalAnswer)) {
+                state.finalAnswer = finalAnswer;
+            }
+            mergeSseVoicePayload(payloadMap, dataMap, state);
+            return;
+        }
+
+        if ("speech_chunk_ready".equals(event)
+                || "speech_chunk".equals(event)
+                || "speech_done".equals(event)) {
+            mergeSseVoicePayload(payloadMap, dataMap, state);
+            return;
+        }
+
+        if ("route_ready".equals(event)) {
+            mergeSseRoutePayload(payloadMap, dataMap, state.result);
+            return;
+        }
+
+        if ("error".equals(event)) {
+            String message = firstNotBlank(
+                    readStringCascade(payloadMap, dataMap, "message", "msg", "error", "detail"),
+                    payload instanceof String ? dataText : ""
+            );
+            if (!hasText(message)) {
+                message = "语音问答服务暂时不可用，请稍后再试。";
+            }
+            state.errorMessage = message;
+            state.result.put("message", message);
+            state.result.put("answerStatus", "FAILED");
+            state.result.put("answer_status", "FAILED");
+            state.result.put("ttsStatus", "FAILED");
+            state.result.put("tts_status", "FAILED");
+            state.result.put("audioStatus", "FAILED");
+            state.result.put("audio_status", "FAILED");
+        }
+    }
+
+    private void copySseContextFields(Map<String, Object> payloadMap,
+                                      Map<String, Object> dataMap,
+                                      Map<String, Object> target) {
+        copyTextAliases(payloadMap, dataMap, target, "rewrittenQuestion", "rewritten_question",
+                "rewrittenQuestion", "rewritten_question");
+        copyTextAliases(payloadMap, dataMap, target, "intent", null, "intent");
+        Object currentEntity = firstNonNull(
+                readObject(payloadMap, "currentEntity", "current_entity"),
+                readObject(dataMap, "currentEntity", "current_entity")
+        );
+        if (currentEntity instanceof Map<?, ?>) {
+            Object normalized = objectMapper.convertValue(currentEntity, new TypeReference<Map<String, Object>>() {});
+            target.put("currentEntity", normalized);
+            target.put("current_entity", normalized);
+        }
+    }
+
+    private void copySseCommonFields(Map<String, Object> payloadMap,
+                                     Map<String, Object> dataMap,
+                                     Map<String, Object> target) {
+        copyTextAliases(payloadMap, dataMap, target, "messageId", "message_id",
+                "messageId", "message_id");
+        copyTextAliases(payloadMap, dataMap, target, "conversationId", "conversation_id",
+                "conversationId", "conversation_id", "sessionId", "session_id");
+        copyTextAliases(payloadMap, dataMap, target, "recognizedText", "asr_text",
+                "recognizedText", "recognized_text", "asrText", "asr_text", "questionText", "question_text", "question");
+    }
+
+    private void mergeSseVoicePayload(Map<String, Object> payloadMap,
+                                      Map<String, Object> dataMap,
+                                      AiSseParseState state) {
+        copyTextAliases(payloadMap, dataMap, state.result, "audioUrl", "audio_url",
+                "audioUrl", "audio_url", "url", "ttsUrl", "tts_url", "speechUrl", "speech_url");
+        copyTextAliases(payloadMap, dataMap, state.result, "audioFormat", "audio_format",
+                "audioFormat", "audio_format", "format", "mime", "mimeType", "mime_type");
+        copyTextAliases(payloadMap, dataMap, state.result, "ttsStatus", "tts_status",
+                "ttsStatus", "tts_status", "status", "audioStatus", "audio_status");
+        copyTextAliases(payloadMap, dataMap, state.result, "audioStatus", "audio_status",
+                "audioStatus", "audio_status", "ttsStatus", "tts_status", "status");
+        copyTextAliases(payloadMap, dataMap, state.result, "ttsTaskId", "tts_task_id",
+                "ttsTaskId", "tts_task_id", "taskId", "task_id");
+
+        Object speechChunks = firstNonNull(
+                readObject(payloadMap, "speechChunks", "speech_chunks", "chunks"),
+                readObject(dataMap, "speechChunks", "speech_chunks", "chunks"),
+                readObject(payloadMap, "items")
+        );
+        appendSpeechChunks(state, speechChunks);
+        if (speechChunks == null && hasText(readString(payloadMap, "audioUrl", "audio_url", "url"))) {
+            appendSpeechChunks(state, Collections.singletonList(payloadMap));
+        }
+
+        Object mouthFrames = firstNonNull(
+                readObject(payloadMap, "mouthFrames", "mouth_frames"),
+                readObject(dataMap, "mouthFrames", "mouth_frames"),
+                readNestedSseObject(payloadMap, "mouth", "frames", "mouthFrames", "mouth_frames"),
+                readNestedSseObject(payloadMap, "audio", "frames", "mouthFrames", "mouth_frames")
+        );
+        appendMouthFrames(state, mouthFrames);
+
+        Map<String, Object> audioMap = firstNonNullMap(readMap(payloadMap, "audio"), readMap(dataMap, "audio"));
+        if (audioMap != null) {
+            copyTextAliases(audioMap, null, state.result, "audioUrl", "audio_url",
+                    "url", "audioUrl", "audio_url");
+            copyTextAliases(audioMap, null, state.result, "audioFormat", "audio_format",
+                    "format", "audioFormat", "audio_format", "mime", "mimeType", "mime_type");
+            copyTextAliases(audioMap, null, state.result, "ttsStatus", "tts_status",
+                    "ttsStatus", "tts_status", "status");
+            copyTextAliases(audioMap, null, state.result, "audioStatus", "audio_status",
+                    "audioStatus", "audio_status", "status");
+        }
+    }
+
+    private void mergeSseRoutePayload(Map<String, Object> payloadMap,
+                                      Map<String, Object> dataMap,
+                                      Map<String, Object> target) {
+        Object route = firstNonNull(
+                readObject(payloadMap, "route", "routePlan", "route_plan"),
+                readObject(dataMap, "route", "routePlan", "route_plan")
+        );
+        if (route == null && hasRouteKey(payloadMap)) {
+            route = payloadMap;
+        }
+        if (route != null) {
+            target.put("route", route);
+        }
+        Object routeRecommendation = firstNonNull(
+                readObject(payloadMap, "routeRecommendation", "route_recommendation"),
+                readObject(dataMap, "routeRecommendation", "route_recommendation")
+        );
+        if (routeRecommendation != null) {
+            target.put("routeRecommendation", routeRecommendation);
+            target.put("route_recommendation", routeRecommendation);
+        }
+    }
+
+    private void finishAiSseResult(AiSseParseState state) {
+        if (!state.speechChunks.isEmpty()) {
+            state.result.put("speechChunks", state.speechChunks);
+            state.result.put("speech_chunks", state.speechChunks);
+        }
+        if (!state.mouthFrames.isEmpty()) {
+            state.result.put("mouthFrames", state.mouthFrames);
+            state.result.put("mouth_frames", state.mouthFrames);
+        }
+
+        String chunkAudioUrl = firstSuccessfulSpeechChunkAudioUrl(state.speechChunks);
+        if (hasText(chunkAudioUrl)) {
+            state.result.put("audioUrl", chunkAudioUrl);
+            state.result.put("audio_url", chunkAudioUrl);
+        }
+
+        String answer = firstNotBlank(state.errorMessage, state.finalAnswer, state.answerBuilder.toString());
+        if (hasText(answer)) {
+            state.result.put("answer", answer);
+        }
+
+        String audioUrl = readString(state.result, "audioUrl", "audio_url");
+        if (hasText(audioUrl)) {
+            putIfMissing(state.result, "ttsStatus", "SUCCESS");
+            putIfMissing(state.result, "tts_status", "SUCCESS");
+            putIfMissing(state.result, "audioStatus", "SUCCESS");
+            putIfMissing(state.result, "audio_status", "SUCCESS");
+        } else if (!hasText(readString(state.result, "ttsStatus", "tts_status"))) {
+            state.result.put("ttsStatus", "FAILED");
+            state.result.put("tts_status", "FAILED");
+            state.result.put("audioStatus", "FAILED");
+            state.result.put("audio_status", "FAILED");
+        }
+
+        Map<String, Object> audio = asMutableMap(state.result.get("audio"));
+        if (audio == null) {
+            audio = new LinkedHashMap<>();
+        }
+        putMapTextIfAbsent(audio, "url", audioUrl);
+        putMapTextIfAbsent(audio, "audioUrl", audioUrl);
+        putMapTextIfAbsent(audio, "audio_url", audioUrl);
+        putMapTextIfAbsent(audio, "format", readString(state.result, "audioFormat", "audio_format"));
+        putMapTextIfAbsent(audio, "audioFormat", readString(state.result, "audioFormat", "audio_format"));
+        putMapTextIfAbsent(audio, "audio_format", readString(state.result, "audioFormat", "audio_format"));
+        putMapTextIfAbsent(audio, "status", readString(state.result, "audioStatus", "audio_status", "ttsStatus", "tts_status"));
+        putMapTextIfAbsent(audio, "ttsStatus", readString(state.result, "ttsStatus", "tts_status"));
+        putMapTextIfAbsent(audio, "tts_status", readString(state.result, "ttsStatus", "tts_status"));
+        if (!state.speechChunks.isEmpty()) {
+            audio.put("speechChunks", state.speechChunks);
+            audio.put("speech_chunks", state.speechChunks);
+        }
+        if (!audio.isEmpty()) {
+            state.result.put("audio", audio);
+        }
+    }
+
+    private void logAiSseParseSummary(AiSseParseState state) {
+        int answerLength = readString(state.result, "answer").length();
+        boolean audioUrlPresent = hasText(readString(state.result, "audioUrl", "audio_url"));
+        int speechChunkCount = state.speechChunks.size();
+        boolean mouthFramesPresent = !state.mouthFrames.isEmpty();
+        log.info("[VoiceChat] sse event count={}", state.eventCount);
+        log.info("[VoiceChat] sse parsed answerLength={}, audioUrlPresent={}, speechChunkCount={}",
+                answerLength,
+                audioUrlPresent,
+                speechChunkCount);
+        log.info("[VoiceChat] sse parsed answerLength={}", answerLength);
+        log.info("[VoiceChat] sse parsed audioUrlPresent={}", audioUrlPresent);
+        log.info("[VoiceChat] sse parsed speechChunkCount={}", speechChunkCount);
+        log.info("[VoiceChat] sse parsed mouthFramesPresent={}", mouthFramesPresent);
+        if (!audioUrlPresent) {
+            log.info("[VoiceChat] sse event types={}", state.eventTypeCounts);
+        }
+    }
+
+    private Map<String, Object> asSsePayloadMap(Object payload) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        if (payload instanceof Map<?, ?> rawMap) {
+            return objectMapper.convertValue(rawMap, new TypeReference<Map<String, Object>>() {});
+        }
+        if (payload instanceof List<?> list) {
+            result.put("items", list);
+            return result;
+        }
+        if (payload != null) {
+            result.put("text", String.valueOf(payload));
+        }
+        return result;
+    }
+
+    private Map<String, Object> firstNonNullMap(Map<String, Object> primary, Map<String, Object> fallback) {
+        return primary != null ? primary : fallback;
+    }
+
+    private Object readNestedSseObject(Map<String, Object> source, String mapKey, String... keys) {
+        Map<String, Object> nested = readMap(source, mapKey);
+        return readObject(nested, keys);
+    }
+
+    private void copyTextAliases(Map<String, Object> primary,
+                                 Map<String, Object> fallback,
+                                 Map<String, Object> target,
+                                 String camelKey,
+                                 String snakeKey,
+                                 String... sourceKeys) {
+        String value = firstNotBlank(readString(primary, sourceKeys), readString(fallback, sourceKeys));
+        if (!hasText(value)) {
+            return;
+        }
+        if (hasText(camelKey)) {
+            target.put(camelKey, value);
+        }
+        if (hasText(snakeKey)) {
+            target.put(snakeKey, value);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void appendSpeechChunks(AiSseParseState state, Object chunks) {
+        if (chunks instanceof List<?> list) {
+            for (Object item : list) {
+                if (item instanceof Map<?, ?> itemMap) {
+                    state.speechChunks.add(objectMapper.convertValue(itemMap, new TypeReference<Map<String, Object>>() {}));
+                }
+            }
+            return;
+        }
+        if (chunks instanceof Map<?, ?> chunkMap) {
+            state.speechChunks.add(objectMapper.convertValue(chunkMap, new TypeReference<Map<String, Object>>() {}));
+        }
+    }
+
+    private void appendMouthFrames(AiSseParseState state, Object frames) {
+        if (!(frames instanceof List<?> list)) {
+            return;
+        }
+        state.mouthFrames.addAll(list);
+    }
+
+    private String firstSuccessfulSpeechChunkAudioUrl(Object chunks) {
+        if (!(chunks instanceof List<?> list)) {
+            return "";
+        }
+        for (Object item : list) {
+            if (!(item instanceof Map<?, ?> rawMap)) {
+                continue;
+            }
+            Map<String, Object> chunk = objectMapper.convertValue(rawMap, new TypeReference<Map<String, Object>>() {});
+            String audioUrl = firstNotBlank(
+                    readString(chunk, "audioUrl", "audio_url", "url"),
+                    readString(readMap(chunk, "audio"), "url", "audioUrl", "audio_url")
+            );
+            if (hasText(audioUrl) && isSuccessfulSpeechChunk(chunk)) {
+                return audioUrl;
+            }
+        }
+        return "";
+    }
+
+    private boolean isSuccessfulSpeechChunk(Map<String, Object> chunk) {
+        Boolean success = readBoolean(chunk, "success", "ok");
+        if (Boolean.TRUE.equals(success)) {
+            return true;
+        }
+        if (Boolean.FALSE.equals(success)) {
+            return false;
+        }
+        String status = firstNotBlank(
+                readString(chunk, "status", "ttsStatus", "tts_status", "audioStatus", "audio_status"),
+                readString(readMap(chunk, "audio"), "status", "ttsStatus", "tts_status", "audioStatus", "audio_status")
+        ).toUpperCase();
+        if (!hasText(status)) {
+            return true;
+        }
+        return "SUCCESS".equals(status)
+                || "READY".equals(status)
+                || "DONE".equals(status)
+                || "COMPLETED".equals(status)
+                || "OK".equals(status);
+    }
+
+    private void putIfMissing(Map<String, Object> map, String key, String value) {
+        if (map == null || !hasText(key) || !hasText(value)) {
+            return;
+        }
+        if (!hasText(readString(map, key))) {
+            map.put(key, value);
+        }
+    }
+
+    private String truncateAiBodySummary(String body) {
+        String text = body == null ? "" : body.trim();
+        if (text.length() <= 500) {
+            return text;
+        }
+        return text.substring(0, 500);
+    }
+
+    private String summarizeAiResponseBody(String body) {
+        if (!hasText(body)) {
+            return "";
+        }
+        Object parsed = normalizeFlexibleObject(body);
+        if (parsed instanceof Map<?, ?> || parsed instanceof List<?>) {
+            return truncateAiBodySummary(sanitizeBodyForLog(parsed));
+        }
+        return truncateAiBodySummary(body);
+    }
+
+    private static class AiSseParseState {
+        private final Map<String, Object> result = new LinkedHashMap<>();
+        private final StringBuilder answerBuilder = new StringBuilder();
+        private final List<Map<String, Object>> speechChunks = new ArrayList<>();
+        private final List<Object> mouthFrames = new ArrayList<>();
+        private final Map<String, Integer> eventTypeCounts = new LinkedHashMap<>();
+        private String finalAnswer;
+        private String errorMessage;
+        private int eventCount;
     }
 
     private void applyUserProfileSnapshot(Map<String, Object> body,
@@ -1258,8 +1811,11 @@ public class GuideVoiceChatService {
     private boolean isSensitiveLogKey(String key) {
         String text = key == null ? "" : key.toLowerCase();
         return text.contains("token")
+                || text.contains("cookie")
                 || text.contains("authorization")
-                || text.contains("authsession");
+                || text.contains("authsession")
+                || text.contains("audiobytes")
+                || text.contains("audio_bytes");
     }
 
     private Object parseJsonObject(String value) {
@@ -1518,6 +2074,11 @@ public class GuideVoiceChatService {
 
         Map<String, Object> audioMap = readMapCascade(dataMap, rootMap,
                 "audio", "tts", "voice", "speech", "audioData", "audio_data");
+        Object speechChunks = firstNonNull(
+                readObject(dataMap, "speechChunks", "speech_chunks"),
+                readObject(rootMap, "speechChunks", "speech_chunks"),
+                readObject(audioMap, "speechChunks", "speech_chunks", "chunks")
+        );
         Map<String, Object> mouthMap = readMapCascade(dataMap, rootMap,
                 "mouth", "mouthSync", "mouth_sync", "lipSync", "lip_sync", "mouthData", "mouth_data");
         Map<String, Object> asrMap = readMapCascade(dataMap, rootMap,
@@ -1579,6 +2140,7 @@ public class GuideVoiceChatService {
         ));
 
         String audioUrl = firstNotBlank(
+                firstSuccessfulSpeechChunkAudioUrl(speechChunks),
                 readStringCascade(dataMap, rootMap,
                         "audioUrl",
                         "audio_url",
@@ -1713,6 +2275,7 @@ public class GuideVoiceChatService {
         result.setMouth(buildMouthPayload(result));
         result.setDigitalHuman(buildDigitalHumanPayload(result));
         hydrateDigitalHumanPayloads(result);
+        attachSpeechChunksToAudioPayload(result, speechChunks);
 
         Object suggestions = firstNonNull(
                 readObject(dataMap, "suggestions"),
@@ -1974,6 +2537,26 @@ public class GuideVoiceChatService {
         payload.put("format", firstNotBlank(result.getAudioFormat()));
         payload.put("durationMs", result.getAudioDurationMs());
         return payload;
+    }
+
+    private void attachSpeechChunksToAudioPayload(GuideVoiceChatResponse result, Object speechChunks) {
+        if (result == null || !(speechChunks instanceof List<?> chunks) || chunks.isEmpty()) {
+            return;
+        }
+        Map<String, Object> audio = result.getAudio();
+        if (audio == null) {
+            audio = new LinkedHashMap<>();
+        }
+        String chunkAudioUrl = firstSuccessfulSpeechChunkAudioUrl(chunks);
+        if (hasText(chunkAudioUrl)) {
+            result.setAudioUrl(normalizeAudioUrl(chunkAudioUrl));
+            putMapTextIfAbsent(audio, "url", result.getAudioUrl());
+            putMapTextIfAbsent(audio, "audioUrl", result.getAudioUrl());
+            putMapTextIfAbsent(audio, "audio_url", result.getAudioUrl());
+        }
+        audio.put("speechChunks", chunks);
+        audio.put("speech_chunks", chunks);
+        result.setAudio(audio);
     }
 
     private void hydrateDigitalHumanPayloads(GuideVoiceChatResponse result) {
